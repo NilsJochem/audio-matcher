@@ -3,38 +3,51 @@ use std::fs::File;
 use std::time::Duration;
 
 mod progress_bar {
+    use itertools::Itertools;
     use pad::PadStr;
     use std::io::{stdout, Write};
-    pub struct Arrow<'a> {
+    pub struct Arrow<'a, const N: usize> {
         pub arrow_prefix: &'a str,
         pub arrow_suffix: &'a str,
-        pub arrow_char: char,
+        pub arrow_chars: [char; N],
         pub arrow_tip: char,
     }
 
-    impl Default for Arrow<'_> {
+    impl Default for Arrow<'_, 1> {
         fn default() -> Self {
             Self {
                 arrow_prefix: "[",
                 arrow_suffix: "]",
-                arrow_char: '=',
+                arrow_chars: ['='],
                 arrow_tip: '>',
             }
         }
     }
+    impl Default for Arrow<'_, 2> {
+        fn default() -> Self {
+            Self {
+                arrow_chars: ['=', '-'],
+                arrow_prefix: Arrow::<'_, 1>::default().arrow_prefix,
+                arrow_suffix: Arrow::<'_, 1>::default().arrow_suffix,
+                arrow_tip: Arrow::<'_, 1>::default().arrow_tip,
+            }
+        }
+    }
 
-    impl Arrow<'_> {
-        fn build(&self, fraction: f64, bar_length: usize) -> String {
-            let fraction = fraction.clamp(0.0, 1.0);
-
+    impl<const N: usize> Arrow<'_, N> {
+        fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
             let mut arrow = String::new();
             arrow.push_str(self.arrow_prefix);
-            arrow.push_str(
-                &self
-                    .arrow_char
-                    .to_string()
-                    .repeat((fraction * bar_length as f64).round() as usize),
-            );
+
+            for i in 0..N {
+                let fraction = fractions[i];
+                let char = self.arrow_chars[i];
+                arrow.push_str(&char.to_string().repeat(
+                    (fraction * bar_length as f64).round() as usize
+                        - (arrow.len() - self.arrow_prefix.len()),
+                ));
+            }
+
             if bar_length - (arrow.len() - self.arrow_prefix.len()) > 0 {
                 arrow.push(self.arrow_tip);
             }
@@ -47,13 +60,22 @@ mod progress_bar {
         }
     }
 
-    pub struct ProgressBar<'a> {
+    pub struct ProgressBar<'a, const N: usize> {
         pub bar_length: usize,
         pub pre_msg: &'a str,
-        pub arrow: Arrow<'a>,
+        pub arrow: Arrow<'a, N>,
     }
 
-    impl Default for ProgressBar<'_> {
+    impl Default for ProgressBar<'_, 1> {
+        fn default() -> Self {
+            Self {
+                bar_length: 20,
+                pre_msg: "Progress: ",
+                arrow: Arrow::default(),
+            }
+        }
+    }
+    impl Default for ProgressBar<'_, 2> {
         fn default() -> Self {
             Self {
                 bar_length: 20,
@@ -63,24 +85,33 @@ mod progress_bar {
         }
     }
 
-    impl ProgressBar<'_> {
-        pub fn print_bar(&self, current: usize, total: usize, post_msg: &str) {
-            let total = total.max(current);
-            let fraction = current as f64 / total as f64;
+    impl<const N: usize> ProgressBar<'_, N> {
+        pub fn print_bar(&self, mut current: [usize; N], total: usize, post_msg: &str) {
+            current[N - 1] = current[N - 1].max(0);
+            for i in N - 1..0 {
+                current[i + 1] = current[i + 1].min(current[i])
+            }
+            let total = total.max(current[0]);
+            let fractions = current.map(|c| c as f64 / total as f64);
 
-            let current_fmt = current.to_string().pad(
-                (current as f32).log10().ceil() as usize,
-                '0',
-                pad::Alignment::Right,
-                false,
-            );
-            let start = if current == 0 { "" } else { "\r" };
-            let ending = if current == total { "\n" } else { "" };
+            let current_fmt = current
+                .iter()
+                .map(|f| {
+                    f.to_string().pad(
+                        (total as f32).log10().ceil() as usize,
+                        '0',
+                        pad::Alignment::Right,
+                        false,
+                    )
+                })
+                .join("+");
+            let start = if current[N - 1] == 0 { "" } else { "\r" };
+            let ending = if current[0] == total { "\n" } else { "" };
 
             print!(
                 "{start}{}{} {current_fmt}/{}{}{ending}",
                 self.pre_msg,
-                self.arrow.build(fraction, self.bar_length),
+                self.arrow.build(fractions, self.bar_length),
                 total,
                 post_msg,
             );
@@ -96,30 +127,38 @@ mod progress_bar {
         #[test]
         fn empty_arrow() {
             assert_eq!(
-                Arrow::default().build(0.0, 10),
+                Arrow::default().build([0.0], 10),
                 String::from("[>         ]")
             )
         }
         #[test]
         fn short_arrow() {
             assert_eq!(
-                Arrow::default().build(0.2, 10),
+                Arrow::default().build([0.2], 10),
                 String::from("[==>       ]")
             )
         }
         #[test]
         fn long_arrow() {
             assert_eq!(
-                Arrow::default().build(0.9, 10),
+                Arrow::default().build([0.9], 10),
                 String::from("[=========>]")
             )
         }
         #[test]
         fn full_arrow() {
             assert_eq!(
-                Arrow::default().build(1.0, 10),
+                Arrow::default().build([1.0], 10),
                 String::from("[==========]")
             )
+        }
+
+        #[test]
+        fn double_arrow() {
+            assert_eq!(
+                Arrow::default().build([0.3, 0.5], 10),
+                String::from("[===-->    ]")
+            );
         }
     }
 }
@@ -357,10 +396,14 @@ mod audio_matcher {
     use crate::progress_bar::ProgressBar;
     use crate::{chunked, offset_range};
     use fftconvolve::fftcorrelate;
-    use find_peaks::PeakFinder;
+    use find_peaks::{Peak, PeakFinder};
     use itertools::Itertools;
     use ndarray::Array1;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    use std::sync::mpsc::channel;
+    use threadpool::ThreadPool;
 
     pub fn calc_chunks(
         sr: u16,
@@ -377,34 +420,66 @@ mod audio_matcher {
         let overlap_length = (overlap_length.as_secs_f64() * sr as f64).round() as u64;
         let chunk_size = (chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
-        let s_samples: Array1<f64> = Array1::from_iter(s_samples);
-        let progress_bar = ProgressBar {
+        println!("collecting snippet");
+        let s_samples: Arc<Array1<f64>> = Arc::new(Array1::from_iter(s_samples));
+        let progress_bar = Arc::new(ProgressBar {
             bar_length: chunks.min(80),
             ..ProgressBar::default()
-        };
+        });
+        let progress_state = Arc::new(Mutex::new((0, 0)));
 
-        chunked(
+        // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
+        // should use less, cause RAM fills up
+        let n_workers = 6;
+        let pool = ThreadPool::new(n_workers);
+
+        let (tx, rx) = channel::<Vec<Peak<f64>>>();
+
+        for (i, chunk) in chunked(
             m_samples,
             chunk_size as usize + overlap_length as usize,
             chunk_size as usize,
         )
         .enumerate()
-        .flat_map(|(i, chunk)| {
-            progress_bar.print_bar(i, chunks - 1, "");
-            let offset = chunk_size as usize * i;
-            let m_samples = Array1::from_iter(chunk.into_iter());
-            let _matches = fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
-                .unwrap()
-                .to_vec();
-            find_peaks(&_matches, sr, distance, prominence)
-                .iter()
-                .map(|p| {
-                    let mut p = p.clone();
-                    p.position = offset_range(&p.position, offset);
-                    p
-                }).collect::<Vec<_>>()
-        })
-        .collect_vec()
+        {
+            if chunks <= i {
+                panic!("to many chunks")
+            }
+            let s_samples = Arc::clone(&s_samples);
+            let progress_state = Arc::clone(&progress_state);
+            let progress_bar = Arc::clone(&progress_bar);
+            let tx = tx.clone();
+            pool.execute(move || {
+                let mut lock = progress_state.lock().unwrap();
+                lock.1 += 1; // incrementing started counter
+                progress_bar.print_bar([lock.0, lock.1], chunks, "");
+                drop(lock);
+
+                let offset = chunk_size as usize * i;
+                let m_samples = Array1::from_iter(chunk.into_iter());
+                let _matches = fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
+                    .unwrap()
+                    .to_vec();
+                let peaks = find_peaks(&_matches, sr, distance, prominence)
+                    .iter()
+                    .map(|p| {
+                        let mut p = p.clone();
+                        p.position = offset_range(&p.position, offset);
+                        p
+                    })
+                    .collect::<Vec<_>>();
+
+                let mut lock = progress_state.lock().unwrap();
+                lock.0 += 1; // incrementing finished counter
+                progress_bar.print_bar([lock.0, lock.1], chunks, "");
+                drop(lock);
+
+                tx.send(peaks)
+                    .expect("channel will be there waiting for the pool");
+            });
+        }
+
+        rx.iter().take(chunks).flatten().collect_vec()
     }
 
     fn find_peaks(
