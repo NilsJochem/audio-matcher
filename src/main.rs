@@ -1,6 +1,10 @@
 use itertools::Itertools;
-use std::fs::File;
 use std::time::Duration;
+use std::fs::File;
+
+use crate::args::Arguments;
+use crate::leveled_output::{info, error, verbose, debug};
+use clap::Parser;
 
 mod progress_bar {
     use itertools::Itertools;
@@ -108,12 +112,15 @@ mod progress_bar {
             let start = if current[N - 1] == 0 { "" } else { "\r" };
             let ending = if current[0] == total { "\n" } else { "" };
 
-            print!(
-                "{start}{}{} {current_fmt}/{}{}{ending}",
-                self.pre_msg,
-                self.arrow.build(fractions, self.bar_length),
-                total,
-                post_msg,
+            crate::leveled_output::print(
+                crate::leveled_output::OutputLevel::Info,
+                &format!(
+                    "{start}{}{} {current_fmt}/{}{}{ending}",
+                    self.pre_msg,
+                    self.arrow.build(fractions, self.bar_length),
+                    total,
+                    post_msg,
+                ),
             );
 
             stdout().flush().unwrap();
@@ -167,25 +174,6 @@ fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Rang
     (range.start + offset)..(range.end + offset)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn chunked_test() {
-        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
-        let expected = vec![0..6, 4..10, 8..14, 12..15]
-            .into_iter()
-            .map(|r| r.collect_vec())
-            .collect_vec();
-        assert!(
-            &is.eq(&expected),
-            "expected {:?} but was {:?}",
-            expected,
-            is
-        );
-    }
-}
-
 fn chunked<T: Clone>(
     mut data: impl Iterator<Item = T> + 'static,
     window_size: usize,
@@ -209,6 +197,25 @@ fn chunked<T: Clone>(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn chunked_test() {
+        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
+        let expected = vec![0..6, 4..10, 8..14, 12..15]
+            .into_iter()
+            .map(|r| r.collect_vec())
+            .collect_vec();
+        assert!(
+            &is.eq(&expected),
+            "expected {:?} but was {:?}",
+            expected,
+            is
+        );
+    }
+}
+
 fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
     for (i, peak) in peaks
         .iter()
@@ -219,66 +226,196 @@ fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
         let seconds = pos % 60;
         let minutes = (pos / 60) % 60;
         let hours = pos / 3600;
-        println!(
+        info(&format!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
             i + 1,
             hours,
             minutes,
             seconds,
             &peak.prominence.unwrap()
-        );
+        ));
     }
 }
 
-fn open_file_or_exit(snippet_path: &str) -> File {
-    match File::open(snippet_path) {
+fn open_file_or_exit<P>(path: &P) -> File
+where
+    P: AsRef<std::path::Path>,
+{
+    match File::open(path) {
         Ok(file) => file,
         Err(_) => {
-            println!("couldn't find file '{snippet_path}'");
+            error(&format!("couldn't find file '{}'", path.as_ref().display()));
             std::process::exit(1);
         }
     }
 }
 
-fn main() {
-    let snippet_path = "res/Interlude.mp3";
-    let main_path = "res/big_test.mp3";
+mod args {
+    use clap::{Args, Parser};
+    use std::path::PathBuf;
 
-    println!("preparing data");
-    let snippet = open_file_or_exit(snippet_path);
-    let (s_header, s_samples) = mp3_reader::read_mp3(snippet).expect("invalid snippet mp3");
+    #[derive(Debug, Parser, Clone)]
+    #[clap(version = env!("CARGO_PKG_VERSION"))]
+    pub struct Arguments {
+        #[clap(value_name = "FILE", help = "file in which samples are searched")]
+        pub within: Vec<PathBuf>,
 
-    let main_data = open_file_or_exit(main_path);
-    let (m_header, m_samples) = mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
-    println!("prepared data");
+        #[clap(long, value_name = "FILE", help = "snippet to be found in file")]
+        pub snippet: PathBuf,
 
-    if s_header != m_header {
-        panic!("sample rate dosn't match")
+        #[clap(
+            short,
+            long,
+            default_value_t = 250.0,
+            help = "minimum prominence of the peaks"
+        )]
+        pub prominence: f64,
+        #[clap(long, default_value_t = 5*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
+        pub distance: usize,
+        #[clap(long, default_value_t = 2*60, value_name = "SECONDS", help="length in seconds of chunks to be processed")]
+        pub chunk_size: usize,
+
+        #[command(flatten)]
+        pub always_answer: Inputs,
+        #[command(flatten)]
+        pub out_file: OutFile,
+        #[command(flatten)]
+        pub output_level: OutputLevel,
     }
-    let sr = s_header;
+
+    #[derive(Args, Debug, Clone)]
+    #[group(required = false, multiple = false)]
+    pub struct OutFile {
+        #[clap(long, help = "generates no file with times")]
+        pub no_out: bool,
+        #[clap(
+            short,
+            long = "out",
+            value_name = "FILE",
+            help = "file to save a text track"
+        )]
+        pub out_file: Option<PathBuf>,
+    }
+
+    #[derive(Args, Debug, Clone, Copy)]
+    #[group(required = false, multiple = false)]
+    pub struct Inputs {
+        #[clap(short, help = "always answer yes")]
+        pub yes: bool,
+        #[clap(short, help = "always answer no")]
+        pub no: bool,
+    }
+
+    #[derive(Args, Debug, Clone, Copy)]
+    #[group(required = false, multiple = false)]
+    pub struct OutputLevel {
+        #[clap(short, long, help = "print maximum info")]
+        debug: bool,
+        #[clap(short, long, help = "print more info")]
+        verbose: bool,
+        #[clap(short, long, help = "print less info")]
+        silent: bool,
+    }
+
+    impl Into<super::leveled_output::OutputLevel> for OutputLevel {
+        fn into(self) -> super::leveled_output::OutputLevel {
+            return if self.silent {
+                super::leveled_output::OutputLevel::Error
+            } else if self.verbose {
+                super::leveled_output::OutputLevel::Verbose
+            } else  if self.debug {
+                super::leveled_output::OutputLevel::Debug
+            } else {
+                super::leveled_output::OutputLevel::Info
+            };
+        }
+    }
+}
+
+mod leveled_output {
+    #[derive(PartialEq, PartialOrd)]
+    pub(crate) enum OutputLevel {
+        Debug,
+        Verbose,
+        Info,
+        Error,
+    }
+    pub(super) static mut OUTPUT_LEVEL: OutputLevel = OutputLevel::Info;
+    pub(crate) fn println(level: OutputLevel, msg: &dyn AsRef<str>) {
+        if unsafe { &OUTPUT_LEVEL <= &level } {
+            println!("{}", msg.as_ref())
+        }
+    }
+    pub(crate) fn print(level: OutputLevel, msg: &dyn AsRef<str>) {
+        if unsafe { &OUTPUT_LEVEL <= &level } {
+            print!("{}", msg.as_ref())
+        }
+    }
+    pub(crate) fn error(msg: &dyn AsRef<str>) {
+        println(OutputLevel::Error, msg);
+    }
+    pub(crate) fn info(msg: &dyn AsRef<str>) {
+        println(OutputLevel::Info, msg);
+    }
+    pub(crate) fn verbose(msg: &dyn AsRef<str>) {
+        println(OutputLevel::Verbose, msg);
+    }
+    pub(crate) fn debug(msg: &dyn AsRef<str>) {
+        println(OutputLevel::Debug, msg);
+    }
+}
+
+fn main() {
+    let args = Arguments::parse();
+    unsafe { leveled_output::OUTPUT_LEVEL = args.output_level.clone().into() };
+    debug(&format!("{:#?}", args));
+
+    let snippet_path = args.snippet;
+    let main_path = args.within.first().unwrap();
+
+    verbose(&"preparing data");
+    let sr;
+    let s_samples;
+    let m_samples;
+    {
+        let (s_sr, m_sr);
+        (s_sr, s_samples) = crate::mp3_reader::read_mp3(open_file_or_exit(&snippet_path))
+            .expect("invalid snippet mp3");
+
+        let main_data = open_file_or_exit(&main_path);
+        (m_sr, m_samples) = crate::mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
+
+        if s_sr != m_sr {
+            panic!("sample rate dosn't match")
+        }
+        sr = s_sr;
+    }
+    verbose(&"prepared data");
 
     let n = mp3_reader::mp3_duration(main_path).expect("couln't refind main data file");
-    println!("got duration");
+    verbose(&"got duration");
     let peaks = audio_matcher::calc_chunks(
         sr,
         m_samples,
         s_samples,
-        Duration::from_secs(2 * 60),
-        mp3_reader::mp3_duration(snippet_path).expect("couln't refind snippet data file") / 2,
+        Duration::from_secs(args.chunk_size as u64),
+        mp3_reader::mp3_duration(&snippet_path).expect("couln't refind snippet data file") / 2,
         n,
-        Duration::from_secs(5 * 60),
-        250.,
+        Duration::from_secs(args.distance as u64),
+        args.prominence,
     );
 
     print_offsets(&peaks, sr);
 
-    println!("found peaks {:#?}", &peaks);
+    debug(&format!("found peaks {:#?}", &peaks));
 }
 
 mod mp3_reader {
     use itertools::Itertools;
     use minimp3::{Decoder, Frame};
     use std::{fs::File, time::Duration};
+
+    use crate::verbose;
 
     // because all samples are 16 bit usage of a single factor is adequat
     const PCM_FACTOR: f64 = 1.0 / (1 << 16 - 1) as f64;
@@ -332,11 +469,15 @@ mod mp3_reader {
         ))
     }
 
-    pub fn mp3_duration(path: &str) -> std::io::Result<Duration> {
+    pub fn mp3_duration<P>(path: &P) -> std::io::Result<Duration>
+    where
+        P: AsRef<std::path::Path>,
+    {
         // first try external bibliothek
         if let Ok(duration) = mp3_duration::from_path(path) {
             return Ok(duration);
         }
+        verbose(&"fallback to own implementation for mp3_duration");
         let file = File::open(path)?;
 
         let decoder = Decoder::new(file);
@@ -356,13 +497,13 @@ mod mp3_reader {
 
         #[test]
         fn short_mp3_duration() {
-            assert_eq!(mp3_duration("res/Interlude.mp3").unwrap().as_secs(), 7);
+            assert_eq!(mp3_duration(&"res/Interlude.mp3").unwrap().as_secs(), 7);
         }
         #[test]
         #[ignore = "slow"]
         fn long_mp3_duration() {
             assert_eq!(
-                mp3_duration("res/big_test.mp3").unwrap().as_secs(),
+                mp3_duration(&"res/big_test.mp3").unwrap().as_secs(),
                 (3 * 60 + 20) * 60 + 55
             );
         }
@@ -420,7 +561,7 @@ mod audio_matcher {
         let overlap_length = (overlap_length.as_secs_f64() * sr as f64).round() as u64;
         let chunk_size = (chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
-        println!("collecting snippet");
+        crate::verbose(&"collecting snippet");
         let s_samples: Arc<Array1<f64>> = Arc::new(Array1::from_iter(s_samples));
         let progress_bar = Arc::new(ProgressBar {
             bar_length: chunks.min(80),
@@ -497,6 +638,8 @@ mod audio_matcher {
 
     #[cfg(test)]
     mod tests {
+        use std::path::PathBuf;
+
         use itertools::Itertools;
 
         use super::*;
@@ -504,33 +647,39 @@ mod audio_matcher {
         #[test]
         #[ignore = "slow"]
         fn short_calc_peaks() {
-            let snippet_path = "res/Interlude.mp3";
-            let main_path = "res/small_test.mp3";
+            let snippet_path = PathBuf::from("res/Interlude.mp3");
+            let main_path = PathBuf::from("res/small_test.mp3");
 
             println!("preparing data");
-            let snippet = std::fs::File::open(snippet_path).unwrap();
-            let (s_header, s_samples) =
-                crate::mp3_reader::read_mp3(snippet).expect("invalid snippet mp3");
+            let sr;
+            let s_samples;
+            let m_samples;
+            {
+                let (s_sr, m_sr);
+                let snippet = std::fs::File::open(&snippet_path).unwrap();
+                (s_sr, s_samples) =
+                    crate::mp3_reader::read_mp3(snippet).expect("invalid snippet mp3");
 
-            let main_data = std::fs::File::open(main_path).unwrap();
-            let (m_header, m_samples) =
-                crate::mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
+                let main_data = std::fs::File::open(&main_path).unwrap();
+                (m_sr, m_samples) =
+                    crate::mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
+
+                if s_sr != m_sr {
+                    panic!("sample rate dosn't match")
+                }
+                sr = s_sr;
+            }
             println!("prepared data");
 
-            if s_header != m_header {
-                panic!("sample rate dosn't match")
-            }
-            let sr = s_header;
-
             let n =
-                crate::mp3_reader::mp3_duration(main_path).expect("couln't refind main data file");
+                crate::mp3_reader::mp3_duration(&main_path).expect("couln't refind main data file");
             println!("got duration");
             let peaks = calc_chunks(
                 sr,
                 m_samples,
                 s_samples,
                 Duration::from_secs(2 * 60),
-                crate::mp3_reader::mp3_duration(snippet_path)
+                crate::mp3_reader::mp3_duration(&snippet_path)
                     .expect("couln't refind snippet data file")
                     / 2,
                 n,
