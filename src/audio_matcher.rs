@@ -8,16 +8,18 @@ use itertools::Itertools;
 
 use std::time::{Duration, Instant};
 
+use crate::mp3_reader::SampleType;
+
 pub fn calc_chunks(
     sr: u16,
-    m_samples: impl Iterator<Item = f64> + 'static,
-    s_samples: impl Iterator<Item = f64>,
+    m_samples: impl Iterator<Item = SampleType> + 'static,
+    s_samples: impl Iterator<Item = SampleType>,
     chunk_size: Duration,
     overlap_length: Duration,
     m_duration: Duration,
     distance: Duration,
-    prominence: f64,
-) -> Vec<find_peaks::Peak<f64>> {
+    prominence: SampleType,
+) -> Vec<find_peaks::Peak<SampleType>> {
     use ndarray::Array1;
 
     use std::sync::{Arc, Mutex};
@@ -29,21 +31,24 @@ pub fn calc_chunks(
     let chunk_size = (chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
     verbose(&"collecting snippet");
-    let s_samples: Arc<Array1<f64>> = Arc::new(Array1::from_iter(s_samples));
+    let s_samples: Arc<Array1<SampleType>> = Arc::new(Array1::from_iter(s_samples));
     verbose(&"collected snippet");
 
     let progress_state = Arc::new(Mutex::new((0, 0)));
-    let progress_bar = Arc::new(ProgressBar {
-        bar_length: chunks.min(80),
-        ..ProgressBar::default()
-    }.prepare_output());
+    let progress_bar = Arc::new(
+        ProgressBar {
+            bar_length: chunks.min(80),
+            ..ProgressBar::default()
+        }
+        .prepare_output(),
+    );
 
     // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
     // should use less, cause RAM fills up
     let n_workers = 6;
     let pool = ThreadPool::new(n_workers);
 
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<f64>>>();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<SampleType>>>();
     let start = Instant::now();
 
     for (i, chunk) in chunked(
@@ -92,8 +97,15 @@ pub fn calc_chunks(
         });
     }
 
-    let ret = rx.iter().take(chunks).flatten().collect_vec();
-    Arc::into_inner(progress_bar).expect("reference to Arc<ProgressBar> remaining").finish_output();
+    let ret = rx
+        .iter()
+        .take(chunks)
+        .flatten()
+        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
+        .collect_vec();
+    Arc::into_inner(progress_bar)
+        .expect("reference to Arc<ProgressBar> remaining")
+        .finish_output();
     ret
 }
 
@@ -108,11 +120,11 @@ impl ProgressBar<'_, 2, crate::progress_bar::Open> {
 }
 
 fn find_peaks(
-    _match: &Vec<f64>,
+    _match: &Vec<SampleType>,
     sr: u16,
     distance: Duration,
-    prominence: f64,
-) -> Vec<find_peaks::Peak<f64>> {
+    prominence: SampleType,
+) -> Vec<find_peaks::Peak<SampleType>> {
     let mut fp = find_peaks::PeakFinder::new(&_match);
     fp.with_min_prominence(prominence);
     fp.with_min_distance(distance.as_secs() as usize * sr as usize);

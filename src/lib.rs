@@ -1,14 +1,17 @@
-mod progress_bar;
-mod mp3_reader;
+pub mod args;
 mod audio_matcher;
 mod errors;
-pub mod args;
 pub mod leveled_output;
+mod mp3_reader;
+mod progress_bar;
 
-use std::time::Duration;
+use std::{error::Error, time::Duration, usize};
 
-use leveled_output::{info, debug, verbose};
+use find_peaks::Peak;
 use itertools::Itertools;
+use leveled_output::{debug, error, info, verbose};
+use mp3_reader::SampleType;
+use text_io::read;
 
 fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
     (range.start + offset)..(range.end + offset)
@@ -37,34 +40,14 @@ fn chunked<T: Clone>(
     })
 }
 
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-    #[test]
-    fn chunked_test() {
-        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
-        let expected = vec![0..6, 4..10, 8..14, 12..15]
-            .into_iter()
-            .map(|r| r.collect_vec())
-            .collect_vec();
-        assert!(
-            &is.eq(&expected),
-            "expected {:?} but was {:?}",
-            expected,
-            is
-        );
-    }
-}
-
-fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
+fn print_offsets(peaks: &Vec<find_peaks::Peak<SampleType>>, sr: u16) {
     for (i, peak) in peaks
         .iter()
         .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
         .enumerate()
     {
         let pos = peak.position.start / sr as usize;
-		let (hours, minutes, seconds) = crate::split_duration(&Duration::from_secs(pos as u64));
+        let (hours, minutes, seconds) = crate::split_duration(&Duration::from_secs(pos as u64));
         info(&format!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
             i + 1,
@@ -83,7 +66,6 @@ pub fn split_duration(duration: &Duration) -> (usize, usize, usize) {
     let hours = elapsed / 3600;
     (hours, minutes, seconds)
 }
-
 
 pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
     unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.clone().into() };
@@ -123,8 +105,111 @@ pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     print_offsets(&peaks, sr);
-
     debug(&format!("found peaks {:#?}", &peaks));
+
+    if let Some(out_path) = args
+        .out_file
+        .out_file
+        .or_else(|| {
+            if args.out_file.no_out {
+                None
+            } else {
+                let mut path = main_path.clone();
+                path.set_extension("txt");
+                Some(path)
+            }
+        })
+        .filter(|path| {
+            let out = !std::path::Path::new(path).exists()
+                || ask_consent(
+                    &format!("file '{}' already exists, overwrite", path.display()),
+                    &args.always_answer,
+                );
+            if !out {
+                error(&format!("won't overwrite '{}'", path.display()));
+            }
+            out
+        })
+    {
+		verbose(&format!("\nwriting result to '{}'", out_path.display()));
+        write_text_marks(
+            &peaks,
+            sr as SampleType,
+            &out_path,
+            Duration::from_secs(7),
+            args.dry_run,
+        )?;
+    }
+
     Ok(())
 }
 
+fn ask_consent(msg: &str, args: &args::Inputs) -> bool {
+    if args.yes || args.no {
+        return args.yes;
+    }
+    print!("{msg} [y/n]: ");
+	for _ in std::iter::repeat(args.trys-1) {
+		let rin: String = read!("{}\n");
+		if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
+			return true;
+		} else if ["n", "no", "nein"].contains(&rin.as_str()) {
+			return false;
+		}
+		print!("couldn't parse that, please try again [y/n]: ");
+	}
+	println!("probably not");
+	return false;
+}
+
+fn write_text_marks(
+    peaks: &[Peak<SampleType>],
+    sr: SampleType,
+    path: &std::path::PathBuf,
+    in_between: Duration,
+    dry_run: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut out = String::new();
+    for (i, (start, end)) in peaks
+        .iter()
+        .map(|p| p.position.start as SampleType / sr)
+        .tuple_windows()
+        .enumerate()
+    {
+        out += (start as f64 + in_between.as_secs_f64())
+            .to_string()
+            .as_str();
+        out.push_str("\t");
+        out += (end).to_string().as_str();
+        out.push_str("\tSegment ");
+        out += (i + 1).to_string().as_str();
+        out.push('\n')
+    }
+
+    if dry_run {
+        info(&format!("writing \"\"\"\n{out}\"\"\" > {}", path.display()));
+    } else {
+        std::fs::write(path, out).map_err(|_| errors::CantCreateFile::new(path))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunked_test() {
+        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
+        let expected = vec![0..6, 4..10, 8..14, 12..15]
+            .into_iter()
+            .map(|r| r.collect_vec())
+            .collect_vec();
+        assert!(
+            &is.eq(&expected),
+            "expected {:?} but was {:?}",
+            expected,
+            is
+        );
+    }
+}

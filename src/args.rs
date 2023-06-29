@@ -16,11 +16,14 @@ pub struct Arguments {
         default_value_t = 250.0,
         help = "minimum prominence of the peaks"
     )]
-    pub prominence: f64,
+    pub prominence: crate::mp3_reader::SampleType,
     #[clap(long, default_value_t = 5*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
     pub distance: usize,
     #[clap(long, default_value_t = 2*60, value_name = "SECONDS", help="length in seconds of chunks to be processed")]
     pub chunk_size: usize,
+
+    #[clap(long)]
+    pub dry_run:bool,
 
     #[command(flatten)]
     pub always_answer: Inputs,
@@ -51,6 +54,8 @@ pub struct Inputs {
     pub yes: bool,
     #[clap(short, help = "always answer no")]
     pub no: bool,
+    #[clap(long, default_value_t=3, help = "number of retrys")]
+    pub trys: u8
 }
 
 #[derive(Args, Debug, Clone, Copy)]

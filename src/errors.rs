@@ -52,6 +52,12 @@ impl NoFile {
         FileError::new(path, "couldn't open file at path")
     }
 }
+pub struct CantCreateFile;
+impl CantCreateFile {
+    pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
+        FileError::new(path, "couldn't create file at path")
+    }
+}
 
 pub struct NoMp3;
 impl NoMp3 {

@@ -5,11 +5,13 @@ use std::{error::Error, fs::File, time::Duration};
 use crate::errors::{NoFile, NoMp3};
 use crate::leveled_output::verbose;
 
+pub type SampleType = f32;
+
 // because all samples are 16 bit usage of a single factor is adequat
-const PCM_FACTOR: f64 = 1.0 / (1 << 16 - 1) as f64;
+const PCM_FACTOR: SampleType = 1.0 / (1 << 16 - 1) as SampleType;
 pub fn read_mp3<'a, P>(
     path: &'a P,
-) -> Result<(u16, impl Iterator<Item = f64> + 'static), Box<dyn Error + 'static>>
+) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), Box<dyn Error + 'static>>
 where
     P: AsRef<std::path::Path>,
 {
@@ -31,7 +33,7 @@ where
             .into_iter()
             .map(|c| {
                 let (l, r) = c.collect_tuple().unwrap();
-                (*l as f64 + *r as f64) * 0.5 * PCM_FACTOR
+                (*l as SampleType + *r as SampleType) * 0.5 * PCM_FACTOR
             })
             .collect::<Vec<_>>()
     });
