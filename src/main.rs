@@ -1,9 +1,9 @@
+use errors::SampleRateMismatch;
 use itertools::Itertools;
 use std::time::Duration;
-use std::fs::File;
 
 use crate::args::Arguments;
-use crate::leveled_output::{info, error, verbose, debug};
+use crate::leveled_output::{debug, info, verbose};
 use clap::Parser;
 
 mod progress_bar {
@@ -237,19 +237,6 @@ fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
     }
 }
 
-fn open_file_or_exit<P>(path: &P) -> File
-where
-    P: AsRef<std::path::Path>,
-{
-    match File::open(path) {
-        Ok(file) => file,
-        Err(_) => {
-            error(&format!("couldn't find file '{}'", path.as_ref().display()));
-            std::process::exit(1);
-        }
-    }
-}
-
 mod args {
     use clap::{Args, Parser};
     use std::path::PathBuf;
@@ -323,7 +310,7 @@ mod args {
                 super::leveled_output::OutputLevel::Error
             } else if self.verbose {
                 super::leveled_output::OutputLevel::Verbose
-            } else  if self.debug {
+            } else if self.debug {
                 super::leveled_output::OutputLevel::Debug
             } else {
                 super::leveled_output::OutputLevel::Info
@@ -343,23 +330,35 @@ mod leveled_output {
     pub(super) static mut OUTPUT_LEVEL: OutputLevel = OutputLevel::Info;
     pub(crate) fn println(level: OutputLevel, msg: &dyn AsRef<str>) {
         if unsafe { &OUTPUT_LEVEL <= &level } {
-            println!("{}", msg.as_ref())
+            if level == OutputLevel::Error {
+                eprintln!("{}", msg.as_ref())
+            } else {
+                println!("{}", msg.as_ref())
+            }
         }
     }
     pub(crate) fn print(level: OutputLevel, msg: &dyn AsRef<str>) {
         if unsafe { &OUTPUT_LEVEL <= &level } {
-            print!("{}", msg.as_ref())
+            if level == OutputLevel::Error {
+                eprint!("{}", msg.as_ref())
+            } else {
+                print!("{}", msg.as_ref())
+            }
         }
     }
+    #[inline]
     pub(crate) fn error(msg: &dyn AsRef<str>) {
         println(OutputLevel::Error, msg);
     }
+    #[inline]
     pub(crate) fn info(msg: &dyn AsRef<str>) {
         println(OutputLevel::Info, msg);
     }
+    #[inline]
     pub(crate) fn verbose(msg: &dyn AsRef<str>) {
         println(OutputLevel::Verbose, msg);
     }
+    #[inline]
     pub(crate) fn debug(msg: &dyn AsRef<str>) {
         println(OutputLevel::Debug, msg);
     }
@@ -367,6 +366,77 @@ mod leveled_output {
 
 fn main() {
     let args = Arguments::parse();
+    run(args).unwrap_or_else(|error| {
+        crate::leveled_output::error(&format!("Program error :'{}'", error));
+        std::process::exit(1);
+    });
+}
+
+mod errors {
+    use itertools::Itertools;
+    use std::{
+        fmt::Display,
+        path::{Path, PathBuf},
+    };
+
+    #[derive(Debug)]
+    pub struct SampleRateMismatch(pub Box<[u16]>);
+
+    impl std::error::Error for SampleRateMismatch {}
+    impl Display for SampleRateMismatch {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "Files have the different samplerates ({}), and resampling isn't implementet jet",
+                self.0.iter().join(", ")
+            )
+        }
+    }
+
+    struct PathWrap(Box<dyn AsRef<std::path::Path>>);
+
+    impl core::fmt::Debug for PathWrap {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:?}", &self.0.as_ref().as_ref())
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct FileError<'a> {
+        path: PathBuf,
+        msg: &'a str,
+    }
+    impl<'a> FileError<'a> {
+        pub fn new<A: AsRef<Path>>(path: A, msg: &'a str) -> Self {
+            Self {
+                path: path.as_ref().to_path_buf(),
+                msg,
+            }
+        }
+    }
+    impl Display for FileError<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} '{}'", self.msg, self.path.display())
+        }
+    }
+    impl std::error::Error for FileError<'_> {}
+
+    pub struct NoFile;
+    impl NoFile {
+        pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
+            FileError::new(path, "couldn't open file at path")
+        }
+    }
+
+    pub struct NoMp3;
+    impl NoMp3 {
+        pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
+            FileError::new(path, "no valid mp3 data in")
+        }
+    }
+}
+
+fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     unsafe { leveled_output::OUTPUT_LEVEL = args.output_level.clone().into() };
     debug(&format!("{:#?}", args));
 
@@ -379,28 +449,26 @@ fn main() {
     let m_samples;
     {
         let (s_sr, m_sr);
-        (s_sr, s_samples) = crate::mp3_reader::read_mp3(open_file_or_exit(&snippet_path))
-            .expect("invalid snippet mp3");
-
-        let main_data = open_file_or_exit(&main_path);
-        (m_sr, m_samples) = crate::mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
+        (s_sr, s_samples) = crate::mp3_reader::read_mp3(&snippet_path)?;
+        (m_sr, m_samples) = crate::mp3_reader::read_mp3(&main_path)?;
 
         if s_sr != m_sr {
-            panic!("sample rate dosn't match")
+            return Err(Box::new(SampleRateMismatch(Box::new([s_sr, m_sr]))));
         }
         sr = s_sr;
     }
     verbose(&"prepared data");
 
-    let n = mp3_reader::mp3_duration(main_path).expect("couln't refind main data file");
+    let m_duration = mp3_reader::mp3_duration(&main_path)?;
+    let s_duration = mp3_reader::mp3_duration(&snippet_path)?;
     verbose(&"got duration");
     let peaks = audio_matcher::calc_chunks(
         sr,
         m_samples,
         s_samples,
         Duration::from_secs(args.chunk_size as u64),
-        mp3_reader::mp3_duration(&snippet_path).expect("couln't refind snippet data file") / 2,
-        n,
+        s_duration / 2,
+        m_duration,
         Duration::from_secs(args.distance as u64),
         args.prominence,
     );
@@ -408,19 +476,30 @@ fn main() {
     print_offsets(&peaks, sr);
 
     debug(&format!("found peaks {:#?}", &peaks));
+    Ok(())
 }
 
 mod mp3_reader {
     use itertools::Itertools;
     use minimp3::{Decoder, Frame};
-    use std::{fs::File, time::Duration};
+    use std::{error::Error, fs::File, time::Duration};
 
-    use crate::verbose;
+    use crate::{
+        errors::{NoFile, NoMp3},
+        verbose,
+    };
 
     // because all samples are 16 bit usage of a single factor is adequat
     const PCM_FACTOR: f64 = 1.0 / (1 << 16 - 1) as f64;
-    pub fn read_mp3(file: File) -> Result<(u16, impl Iterator<Item = f64>), minimp3::Error> {
-        let (sample_rate, iter) = frame_iterator(Decoder::new(file))?;
+    pub fn read_mp3<'a, P>(
+        path: &'a P,
+    ) -> Result<(u16, impl Iterator<Item = f64> + 'static), Box<dyn Error + 'static>>
+    where
+        P: AsRef<std::path::Path>,
+    {
+        let file = File::open(&path).map_err(|_| NoFile::new(path))?;
+        let (sample_rate, iter) =
+            frame_iterator(Decoder::new(file)).map_err(|_| NoMp3::new(path))?;
 
         let iter = iter.flat_map(move |frame| {
             if frame.sample_rate as u16 != sample_rate {
@@ -469,7 +548,7 @@ mod mp3_reader {
         ))
     }
 
-    pub fn mp3_duration<P>(path: &P) -> std::io::Result<Duration>
+    pub fn mp3_duration<P>(path: &P) -> Result<Duration, Box<dyn Error>>
     where
         P: AsRef<std::path::Path>,
     {
@@ -478,10 +557,10 @@ mod mp3_reader {
             return Ok(duration);
         }
         verbose(&"fallback to own implementation for mp3_duration");
-        let file = File::open(path)?;
+        let file = File::open(path).map_err(|_| NoFile::new(path))?;
 
         let decoder = Decoder::new(file);
-        let (_, frames) = frame_iterator(decoder).unwrap();
+        let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3::new(path))?;
         let seconds: f64 = frames
             // .par_bridge() // parrallel, but seems half as fast
             .map(|frame| {
@@ -510,25 +589,13 @@ mod mp3_reader {
 
         #[test]
         fn short_mp3_samples() {
-            assert_eq!(
-                read_mp3(File::open("res/Interlude.mp3").unwrap())
-                    .unwrap()
-                    .1
-                    .count(),
-                323712
-            )
+            assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323712)
         }
 
         #[test]
         #[ignore = "slow"]
         fn long_mp3_samples() {
-            assert_eq!(
-                read_mp3(File::open("res/big_test.mp3").unwrap())
-                    .unwrap()
-                    .1
-                    .count(),
-                531668736
-            )
+            assert_eq!(read_mp3(&"res/big_test.mp3").unwrap().1.count(), 531668736)
         }
     }
 }
@@ -656,13 +723,11 @@ mod audio_matcher {
             let m_samples;
             {
                 let (s_sr, m_sr);
-                let snippet = std::fs::File::open(&snippet_path).unwrap();
                 (s_sr, s_samples) =
-                    crate::mp3_reader::read_mp3(snippet).expect("invalid snippet mp3");
+                    crate::mp3_reader::read_mp3(&snippet_path).expect("invalid snippet mp3");
 
-                let main_data = std::fs::File::open(&main_path).unwrap();
                 (m_sr, m_samples) =
-                    crate::mp3_reader::read_mp3(main_data).expect("invalid main data mp3");
+                    crate::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
 
                 if s_sr != m_sr {
                     panic!("sample rate dosn't match")
