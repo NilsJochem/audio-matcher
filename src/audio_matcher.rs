@@ -1,16 +1,12 @@
+use crate::chunked;
 use crate::leveled_output::verbose;
+use crate::offset_range;
 use crate::progress_bar::ProgressBar;
-use crate::{chunked, offset_range};
 
-use fftconvolve::fftcorrelate;
-use find_peaks::{Peak, PeakFinder};
+use find_peaks::Peak;
 use itertools::Itertools;
-use ndarray::Array1;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use std::sync::mpsc::channel;
-use threadpool::ThreadPool;
+use std::time::{Duration, Instant};
 
 pub fn calc_chunks(
     sr: u16,
@@ -22,6 +18,11 @@ pub fn calc_chunks(
     distance: Duration,
     prominence: f64,
 ) -> Vec<find_peaks::Peak<f64>> {
+    use ndarray::Array1;
+
+    use std::sync::{Arc, Mutex};
+    use threadpool::ThreadPool;
+
     // normalize inputs
     let chunks = ((m_duration).as_secs_f64() / chunk_size.as_secs_f64()).ceil() as usize;
     let overlap_length = (overlap_length.as_secs_f64() * sr as f64).round() as u64;
@@ -29,18 +30,21 @@ pub fn calc_chunks(
 
     verbose(&"collecting snippet");
     let s_samples: Arc<Array1<f64>> = Arc::new(Array1::from_iter(s_samples));
+    verbose(&"collected snippet");
+
+    let progress_state = Arc::new(Mutex::new((0, 0)));
     let progress_bar = Arc::new(ProgressBar {
         bar_length: chunks.min(80),
         ..ProgressBar::default()
-    });
-    let progress_state = Arc::new(Mutex::new((0, 0)));
+    }.prepare_output());
 
     // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
     // should use less, cause RAM fills up
     let n_workers = 6;
     let pool = ThreadPool::new(n_workers);
 
-    let (tx, rx) = channel::<Vec<Peak<f64>>>();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<f64>>>();
+    let start = Instant::now();
 
     for (i, chunk) in chunked(
         m_samples,
@@ -59,14 +63,15 @@ pub fn calc_chunks(
         pool.execute(move || {
             let mut lock = progress_state.lock().unwrap();
             lock.1 += 1; // incrementing started counter
-            progress_bar.print_bar([lock.0, lock.1], chunks, "");
+            progress_bar.print_progress(&lock, chunks, &start);
             drop(lock);
 
             let offset = chunk_size as usize * i;
             let m_samples = Array1::from_iter(chunk.into_iter());
-            let _matches = fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
-                .unwrap()
-                .to_vec();
+            let _matches =
+                fftconvolve::fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
+                    .unwrap()
+                    .to_vec();
             let peaks = find_peaks(&_matches, sr, distance, prominence)
                 .iter()
                 .map(|p| {
@@ -78,15 +83,28 @@ pub fn calc_chunks(
 
             let mut lock = progress_state.lock().unwrap();
             lock.0 += 1; // incrementing finished counter
-            progress_bar.print_bar([lock.0, lock.1], chunks, "");
+            progress_bar.print_progress(&lock, chunks, &start);
             drop(lock);
+            drop(progress_bar);
 
             tx.send(peaks)
                 .expect("channel will be there waiting for the pool");
         });
     }
 
-    rx.iter().take(chunks).flatten().collect_vec()
+    let ret = rx.iter().take(chunks).flatten().collect_vec();
+    Arc::into_inner(progress_bar).expect("reference to Arc<ProgressBar> remaining").finish_output();
+    ret
+}
+
+impl ProgressBar<'_, 2, crate::progress_bar::Open> {
+    fn print_progress(self: &Self, data: &(usize, usize), chunks: usize, start: &Instant) {
+        let elapsed = Instant::now().duration_since(*start);
+        let (_, minutes, seconds) = crate::split_duration(&elapsed);
+        let fmt_elapsed = &format!(" {:0>2}:{:0>2}", minutes, seconds);
+
+        self.print_bar([data.0, data.1], chunks, fmt_elapsed);
+    }
 }
 
 fn find_peaks(
@@ -95,7 +113,7 @@ fn find_peaks(
     distance: Duration,
     prominence: f64,
 ) -> Vec<find_peaks::Peak<f64>> {
-    let mut fp = PeakFinder::new(&_match);
+    let mut fp = find_peaks::PeakFinder::new(&_match);
     fp.with_min_prominence(prominence);
     fp.with_min_distance(distance.as_secs() as usize * sr as usize);
     let peaks = fp.find_peaks();
@@ -135,8 +153,7 @@ mod tests {
         }
         println!("prepared data");
 
-        let n =
-            crate::mp3_reader::mp3_duration(&main_path).expect("couln't refind main data file");
+        let n = crate::mp3_reader::mp3_duration(&main_path).expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(
             sr,

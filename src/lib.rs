@@ -64,9 +64,7 @@ fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
         .enumerate()
     {
         let pos = peak.position.start / sr as usize;
-        let seconds = pos % 60;
-        let minutes = (pos / 60) % 60;
-        let hours = pos / 3600;
+		let (hours, minutes, seconds) = crate::split_duration(&Duration::from_secs(pos as u64));
         info(&format!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
             i + 1,
@@ -76,6 +74,14 @@ fn print_offsets(peaks: &Vec<find_peaks::Peak<f64>>, sr: u16) {
             &peak.prominence.unwrap()
         ));
     }
+}
+
+pub fn split_duration(duration: &Duration) -> (usize, usize, usize) {
+    let elapsed = duration.as_secs() as usize;
+    let seconds = elapsed % 60;
+    let minutes = (elapsed / 60) % 60;
+    let hours = elapsed / 3600;
+    (hours, minutes, seconds)
 }
 
 

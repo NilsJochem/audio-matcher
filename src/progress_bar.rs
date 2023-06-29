@@ -56,32 +56,62 @@ impl<const N: usize> Arrow<'_, N> {
     }
 }
 
-pub struct ProgressBar<'a, const N: usize> {
+pub struct Open;
+pub struct Closed;
+
+pub struct ProgressBar<'a, const N: usize, State = Closed> {
     pub bar_length: usize,
     pub pre_msg: &'a str,
     pub arrow: Arrow<'a, N>,
+    pub _state: std::marker::PhantomData<State>,
 }
 
-impl Default for ProgressBar<'_, 1> {
+impl Default for ProgressBar<'_, 1, Closed> {
     fn default() -> Self {
         Self {
             bar_length: 20,
             pre_msg: "Progress: ",
             arrow: Arrow::default(),
+            _state: Default::default(),
         }
     }
 }
-impl Default for ProgressBar<'_, 2> {
+impl Default for ProgressBar<'_, 2, Closed> {
     fn default() -> Self {
         Self {
             bar_length: 20,
             pre_msg: "Progress: ",
             arrow: Arrow::default(),
+            _state: Default::default(),
         }
     }
 }
 
-impl<const N: usize> ProgressBar<'_, N> {
+impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
+    pub fn prepare_output(self) -> ProgressBar<'a, N, Open> {
+        println!();
+        ProgressBar {
+            bar_length: self.bar_length,
+            pre_msg: self.pre_msg,
+            arrow: self.arrow,
+            _state: std::marker::PhantomData::<Open>,
+        }
+    }
+}
+#[must_use="need to finalize Progressbar"]
+trait Critical {}
+impl<const N: usize> Critical for ProgressBar<'_, N, Open> {}
+
+impl<'a, const N: usize> ProgressBar<'a, N, Open> {
+    pub fn finish_output(self) -> ProgressBar<'a, N, Closed> {
+        println!();
+        ProgressBar {
+            bar_length: self.bar_length,
+            pre_msg: self.pre_msg,
+            arrow: self.arrow,
+            _state: std::marker::PhantomData::<Closed>,
+        }
+    }
     pub fn print_bar(&self, mut current: [usize; N], total: usize, post_msg: &str) {
         current[N - 1] = current[N - 1].max(0);
         for i in N - 1..0 {
@@ -101,13 +131,11 @@ impl<const N: usize> ProgressBar<'_, N> {
                 )
             })
             .join("+");
-        let start = if current[N - 1] == 0 { "" } else { "\r" };
-        let ending = if current[0] == total { "\n" } else { "" };
 
         crate::leveled_output::print(
             crate::leveled_output::OutputLevel::Info,
             &format!(
-                "{start}{}{} {current_fmt}/{}{}{ending}",
+                "\r{}{} {current_fmt}/{}{}",
                 self.pre_msg,
                 self.arrow.build(fractions, self.bar_length),
                 total,
