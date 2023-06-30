@@ -170,12 +170,12 @@ mod tests {
             sr,
             m_samples,
             s_samples,
-            Duration::from_secs(2 * 60),
+            n,
             Config {
-                chunk_size: crate::mp3_reader::mp3_duration(&snippet_path)
+                chunk_size: Duration::from_secs(2 * 60),
+                overlap_length: crate::mp3_reader::mp3_duration(&snippet_path)
                     .expect("couln't refind snippet data file")
                     / 2,
-                overlap_length: n,
                 distance: Duration::from_secs(5 * 60),
                 prominence: 250.,
             },

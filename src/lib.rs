@@ -98,10 +98,10 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         sr,
         m_samples,
         s_samples,
-        Duration::from_secs(args.chunk_size as u64),
+        m_duration,
         audio_matcher::Config {
-            chunk_size: s_duration / 2,
-            overlap_length: m_duration,
+            chunk_size: Duration::from_secs(args.chunk_size as u64),
+            overlap_length: s_duration / 2,
             distance: Duration::from_secs(args.distance as u64),
             prominence: args.prominence,
         },
@@ -110,7 +110,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     print_offsets(&peaks, sr);
     debug(&format!("found peaks {:#?}", &peaks));
 
-	println!();
+    println!();
     if let Some(out_path) = args
         .out_file
         .out_file
@@ -135,7 +135,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
             out
         })
     {
-		verbose(&format!("writing result to '{}'", out_path.display()));
+        verbose(&format!("writing result to '{}'", out_path.display()));
         write_text_marks(
             &peaks,
             sr as SampleType,
@@ -153,17 +153,17 @@ fn ask_consent(msg: &str, args: &args::Inputs) -> bool {
         return args.yes;
     }
     print!("{msg} [y/n]: ");
-	for _ in std::iter::repeat(args.trys-1) {
-		let rin: String = read!("{}\n");
-		if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
-			return true;
-		} else if ["n", "no", "nein"].contains(&rin.as_str()) {
-			return false;
-		}
-		print!("couldn't parse that, please try again [y/n]: ");
-	}
-	println!("probably not");
-	false
+    for _ in std::iter::repeat(args.trys - 1) {
+        let rin: String = read!("{}\n");
+        if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
+            return true;
+        } else if ["n", "no", "nein"].contains(&rin.as_str()) {
+            return false;
+        }
+        print!("couldn't parse that, please try again [y/n]: ");
+    }
+    println!("probably not");
+    false
 }
 
 fn write_text_marks(
