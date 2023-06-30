@@ -32,7 +32,7 @@ impl Default for Arrow<'_, 2> {
 
 impl<const N: usize> Arrow<'_, N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
-        let mut arrow = String::new();
+        let mut arrow = String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
         arrow.push_str(self.arrow_prefix);
 
         for (i, fraction) in fractions.iter().enumerate() {
@@ -86,6 +86,10 @@ impl Default for ProgressBar<'_, 2, Closed> {
     }
 }
 
+#[must_use = "need to finalize Progressbar"]
+trait Critical {}
+impl<const N: usize> Critical for ProgressBar<'_, N, Open> {}
+
 impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
     pub fn prepare_output(self) -> ProgressBar<'a, N, Open> {
         println!();
@@ -97,9 +101,6 @@ impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
         }
     }
 }
-#[must_use = "need to finalize Progressbar"]
-trait Critical {}
-impl<const N: usize> Critical for ProgressBar<'_, N, Open> {}
 
 impl<'a, const N: usize> ProgressBar<'a, N, Open> {
     pub fn finish_output(self) -> ProgressBar<'a, N, Closed> {
