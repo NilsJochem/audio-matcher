@@ -115,7 +115,7 @@ pub fn calc_chunks(
         .collect_vec()
 }
 
-impl ProgressBar<'_, 2, crate::progress_bar::Open> {
+impl ProgressBar<2, crate::progress_bar::Open> {
     fn print_progress(&self, data: &(usize, usize), chunks: usize, start: &Instant) {
         let elapsed = Instant::now().duration_since(*start);
         let (_, minutes, seconds) = crate::split_duration(&elapsed);

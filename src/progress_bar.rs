@@ -2,45 +2,50 @@ use itertools::Itertools;
 use pad::PadStr;
 use std::io::{stdout, Write};
 
-pub struct Arrow<'a, const N: usize> {
-    pub arrow_prefix: &'a str,
-    pub arrow_suffix: &'a str,
-    pub arrow_chars: [char; N],
-    pub arrow_tip: char,
+#[derive(PartialEq, Eq, Clone)]
+pub struct Arrow<const N: usize> {
+    arrow_prefix: String,
+    arrow_suffix: String,
+    arrow_chars: [char; N],
+    arrow_tip: char,
 }
 
-impl Default for Arrow<'_, 1> {
+impl Default for Arrow<1> {
     fn default() -> Self {
         Self {
-            arrow_prefix: "[",
-            arrow_suffix: "]",
+            arrow_prefix: "[".to_owned(),
+            arrow_suffix: "]".to_owned(),
             arrow_chars: ['='],
             arrow_tip: '>',
         }
     }
 }
-impl Default for Arrow<'_, 2> {
+impl Default for Arrow<2> {
     fn default() -> Self {
         Self {
             arrow_chars: ['=', '-'],
-            arrow_prefix: Arrow::<'_, 1>::default().arrow_prefix,
-            arrow_suffix: Arrow::<'_, 1>::default().arrow_suffix,
-            arrow_tip: Arrow::<'_, 1>::default().arrow_tip,
+            arrow_prefix: Arrow::<1>::default().arrow_prefix,
+            arrow_suffix: Arrow::<1>::default().arrow_suffix,
+            arrow_tip: Arrow::<1>::default().arrow_tip,
         }
     }
 }
 
-impl<const N: usize> Arrow<'_, N> {
+impl<const N: usize> Arrow<N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
-        let mut arrow = String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
-        arrow.push_str(self.arrow_prefix);
+        let mut arrow =
+            String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
+        arrow.push_str(&self.arrow_prefix);
 
-        for (i, fraction) in fractions.iter().enumerate() {
+        let mut last_fraction = 0.0;
+        for (i, fraction) in fractions.into_iter().enumerate() {
             let char = self.arrow_chars[i];
-            arrow.push_str(&char.to_string().repeat(
-                (fraction * bar_length as f64).round() as usize
-                    - (arrow.len() - self.arrow_prefix.len()),
-            ));
+            arrow.push_str(
+                &char
+                    .to_string()
+                    .repeat(((fraction - last_fraction) * bar_length as f64).round() as usize),
+            );
+            last_fraction = fraction
         }
 
         if bar_length - (arrow.len() - self.arrow_prefix.len()) > 0 {
@@ -50,7 +55,7 @@ impl<const N: usize> Arrow<'_, N> {
             " ".repeat(bar_length - (arrow.len() - self.arrow_prefix.len()))
                 .as_str(),
         );
-        arrow.push_str(self.arrow_suffix);
+        arrow.push_str(&self.arrow_suffix);
         arrow
     }
 }
@@ -58,28 +63,29 @@ impl<const N: usize> Arrow<'_, N> {
 pub struct Open;
 pub struct Closed;
 
-pub struct ProgressBar<'a, const N: usize, State = Closed> {
+#[derive(PartialEq, Eq, Clone)]
+pub struct ProgressBar<const N: usize, State = Closed> {
     pub bar_length: usize,
-    pub pre_msg: &'a str,
-    pub arrow: Arrow<'a, N>,
+    pub pre_msg: String,
+    pub arrow: Arrow<N>,
     pub _state: std::marker::PhantomData<State>,
 }
 
-impl Default for ProgressBar<'_, 1, Closed> {
+impl Default for ProgressBar<1, Closed> {
     fn default() -> Self {
         Self {
             bar_length: 20,
-            pre_msg: "Progress: ",
+            pre_msg: "Progress: ".to_owned(),
             arrow: Arrow::default(),
             _state: Default::default(),
         }
     }
 }
-impl Default for ProgressBar<'_, 2, Closed> {
+impl Default for ProgressBar<2, Closed> {
     fn default() -> Self {
         Self {
             bar_length: 20,
-            pre_msg: "Progress: ",
+            pre_msg: "Progress: ".to_owned(),
             arrow: Arrow::default(),
             _state: Default::default(),
         }
@@ -88,10 +94,10 @@ impl Default for ProgressBar<'_, 2, Closed> {
 
 #[must_use = "need to finalize Progressbar"]
 trait Critical {}
-impl<const N: usize> Critical for ProgressBar<'_, N, Open> {}
+impl<const N: usize> Critical for ProgressBar<N, Open> {}
 
-impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
-    pub fn prepare_output(self) -> ProgressBar<'a, N, Open> {
+impl<'a, const N: usize> ProgressBar<N, Closed> {
+    pub fn prepare_output(self) -> ProgressBar<N, Open> {
         println!();
         ProgressBar {
             bar_length: self.bar_length,
@@ -102,8 +108,8 @@ impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
     }
 }
 
-impl<'a, const N: usize> ProgressBar<'a, N, Open> {
-    pub fn finish_output(self) -> ProgressBar<'a, N, Closed> {
+impl<'a, const N: usize> ProgressBar<N, Open> {
+    pub fn finish_output(self) -> ProgressBar<N, Closed> {
         println!();
         ProgressBar {
             bar_length: self.bar_length,
