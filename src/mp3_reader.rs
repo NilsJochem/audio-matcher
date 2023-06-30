@@ -1,23 +1,23 @@
 use itertools::Itertools;
 use minimp3::{Decoder, Frame};
-use std::{error::Error, fs::File, time::Duration};
+use std::{fs::File, time::Duration};
 
-use crate::errors::{NoFile, NoMp3};
+use crate::errors::CliError::{NoFile, NoMp3, self};
 use crate::leveled_output::verbose;
 
 pub type SampleType = f32;
 
 // because all samples are 16 bit usage of a single factor is adequat
-const PCM_FACTOR: SampleType = 1.0 / (1 << 16 - 1) as SampleType;
-pub fn read_mp3<'a, P>(
-    path: &'a P,
-) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), Box<dyn Error + 'static>>
+const PCM_FACTOR: SampleType = 1.0 / ((1 << 16) - 1) as SampleType;
+pub fn read_mp3<P>(
+    path: &P,
+) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), CliError>
 where
     P: AsRef<std::path::Path>,
 {
-    let file = File::open(&path).map_err(|_| NoFile::new(path))?;
+    let file = File::open(path).map_err(|_| NoFile(path.into()))?;
     let (sample_rate, iter) =
-        frame_iterator(Decoder::new(file)).map_err(|_| NoMp3::new(path))?;
+        frame_iterator(Decoder::new(file)).map_err(|_| NoMp3(path.into()))?;
 
     let iter = iter.flat_map(move |frame| {
         if frame.sample_rate as u16 != sample_rate {
@@ -66,7 +66,7 @@ fn frame_iterator(
     ))
 }
 
-pub fn mp3_duration<P>(path: &P) -> Result<Duration, Box<dyn Error>>
+pub fn mp3_duration<P>(path: &P) -> Result<Duration, CliError>
 where
     P: AsRef<std::path::Path>,
 {
@@ -75,10 +75,10 @@ where
         return Ok(duration);
     }
     verbose(&"fallback to own implementation for mp3_duration");
-    let file = File::open(path).map_err(|_| NoFile::new(path))?;
+    let file = File::open(path).map_err(|_| NoFile(path.into()))?;
 
     let decoder = Decoder::new(file);
-    let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3::new(path))?;
+    let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3(path.into()))?;
     let seconds: f64 = frames
         // .par_bridge() // parrallel, but seems half as fast
         .map(|frame| {

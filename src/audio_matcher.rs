@@ -110,7 +110,7 @@ pub fn calc_chunks(
 }
 
 impl ProgressBar<'_, 2, crate::progress_bar::Open> {
-    fn print_progress(self: &Self, data: &(usize, usize), chunks: usize, start: &Instant) {
+    fn print_progress(&self, data: &(usize, usize), chunks: usize, start: &Instant) {
         let elapsed = Instant::now().duration_since(*start);
         let (_, minutes, seconds) = crate::split_duration(&elapsed);
         let fmt_elapsed = &format!(" {:0>2}:{:0>2}", minutes, seconds);
@@ -120,16 +120,15 @@ impl ProgressBar<'_, 2, crate::progress_bar::Open> {
 }
 
 fn find_peaks(
-    _match: &Vec<SampleType>,
+    _match: &[SampleType],
     sr: u16,
     distance: Duration,
     prominence: SampleType,
 ) -> Vec<find_peaks::Peak<SampleType>> {
-    let mut fp = find_peaks::PeakFinder::new(&_match);
+    let mut fp = find_peaks::PeakFinder::new(_match);
     fp.with_min_prominence(prominence);
     fp.with_min_distance(distance.as_secs() as usize * sr as usize);
-    let peaks = fp.find_peaks();
-    peaks
+    fp.find_peaks()
 }
 
 #[cfg(test)]

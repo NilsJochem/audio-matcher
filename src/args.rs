@@ -23,7 +23,7 @@ pub struct Arguments {
     pub chunk_size: usize,
 
     #[clap(long)]
-    pub dry_run:bool,
+    pub dry_run: bool,
 
     #[command(flatten)]
     pub always_answer: Inputs,
@@ -54,8 +54,8 @@ pub struct Inputs {
     pub yes: bool,
     #[clap(short, help = "always answer no")]
     pub no: bool,
-    #[clap(long, default_value_t=3, help = "number of retrys")]
-    pub trys: u8
+    #[clap(long, default_value_t = 3, help = "number of retrys")]
+    pub trys: u8,
 }
 
 #[derive(Args, Debug, Clone, Copy)]
@@ -69,16 +69,16 @@ pub struct OutputLevel {
     silent: bool,
 }
 
-impl Into<super::leveled_output::OutputLevel> for OutputLevel {
-    fn into(self) -> super::leveled_output::OutputLevel {
-        return if self.silent {
+impl From<OutputLevel> for super::leveled_output::OutputLevel {
+    fn from(val: OutputLevel) -> Self {
+        if val.silent {
             super::leveled_output::OutputLevel::Error
-        } else if self.verbose {
+        } else if val.verbose {
             super::leveled_output::OutputLevel::Verbose
-        } else if self.debug {
+        } else if val.debug {
             super::leveled_output::OutputLevel::Debug
         } else {
             super::leveled_output::OutputLevel::Info
-        };
+        }
     }
 }

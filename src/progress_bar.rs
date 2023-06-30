@@ -35,8 +35,7 @@ impl<const N: usize> Arrow<'_, N> {
         let mut arrow = String::new();
         arrow.push_str(self.arrow_prefix);
 
-        for i in 0..N {
-            let fraction = fractions[i];
+        for (i, fraction) in fractions.iter().enumerate() {
             let char = self.arrow_chars[i];
             arrow.push_str(&char.to_string().repeat(
                 (fraction * bar_length as f64).round() as usize
@@ -98,7 +97,7 @@ impl<'a, const N: usize> ProgressBar<'a, N, Closed> {
         }
     }
 }
-#[must_use="need to finalize Progressbar"]
+#[must_use = "need to finalize Progressbar"]
 trait Critical {}
 impl<const N: usize> Critical for ProgressBar<'_, N, Open> {}
 
@@ -133,7 +132,7 @@ impl<'a, const N: usize> ProgressBar<'a, N, Open> {
             .join("+");
 
         crate::leveled_output::print(
-            crate::leveled_output::OutputLevel::Info,
+            &crate::leveled_output::OutputLevel::Info,
             &format!(
                 "\r{}{} {current_fmt}/{}{}",
                 self.pre_msg,

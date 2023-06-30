@@ -1,67 +1,46 @@
-use itertools::Itertools;
-use std::{
-    fmt::Display,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
+use thiserror::Error;
 
-#[derive(Debug)]
-pub struct SampleRateMismatch(pub Box<[u16]>);
+#[derive(Error, Debug)]
+pub enum CliError {
+    #[error(
+        "Files have the different samplerates ({0}, {1}), and resampling isn't implementet jet"
+    )]
+    SampleRateMismatch(u16, u16),
 
-impl std::error::Error for SampleRateMismatch {}
-impl Display for SampleRateMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Files have the different samplerates ({}), and resampling isn't implementet jet",
-            self.0.iter().join(", ")
-        )
-    }
+    #[error("couldn't open file at path {0}")]
+    NoFile(PathWrap),
+
+    #[error("couldn't create file at path {0}")]
+    CantCreateFile(PathWrap),
+
+    #[error("no valid mp3 data in {0}")]
+    NoMp3(PathWrap),
+    // #[error("data store disconnected")]
+    // Disconnect(#[from] io::Error),
+    // #[error("invalid header (expected {expected:?}, found {found:?})")]
+    // InvalidHeader {
+    //     expected: String,
+    //     found: String,
+    // },
 }
 
-struct PathWrap(Box<dyn AsRef<std::path::Path>>);
+// a wrapper for paths, that has display
+pub struct PathWrap(Box<dyn AsRef<std::path::Path>>);
+
+impl<A: AsRef<Path>> From<A> for PathWrap {
+    fn from(value: A) -> Self {
+        value.as_ref().to_path_buf().into()
+    }
+}
 
 impl core::fmt::Debug for PathWrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", &self.0.as_ref().as_ref())
     }
 }
-
-#[derive(Debug)]
-pub struct FileError<'a> {
-    path: PathBuf,
-    msg: &'a str,
-}
-impl<'a> FileError<'a> {
-    pub fn new<A: AsRef<Path>>(path: A, msg: &'a str) -> Self {
-        Self {
-            path: path.as_ref().to_path_buf(),
-            msg,
-        }
-    }
-}
-impl Display for FileError<'_> {
+impl core::fmt::Display for PathWrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} '{}'", self.msg, self.path.display())
-    }
-}
-impl std::error::Error for FileError<'_> {}
-
-pub struct NoFile;
-impl NoFile {
-    pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
-        FileError::new(path, "couldn't open file at path")
-    }
-}
-pub struct CantCreateFile;
-impl CantCreateFile {
-    pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
-        FileError::new(path, "couldn't create file at path")
-    }
-}
-
-pub struct NoMp3;
-impl NoMp3 {
-    pub fn new<A: AsRef<Path>>(path: A) -> FileError<'static> {
-        FileError::new(path, "no valid mp3 data in")
+        write!(f, "{}", &self.0.as_ref().as_ref().display())
     }
 }

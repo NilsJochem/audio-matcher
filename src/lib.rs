@@ -5,8 +5,9 @@ pub mod leveled_output;
 mod mp3_reader;
 mod progress_bar;
 
-use std::{error::Error, time::Duration, usize};
+use std::{time::Duration, usize};
 
+use errors::CliError;
 use find_peaks::Peak;
 use itertools::Itertools;
 use leveled_output::{debug, error, info, verbose};
@@ -40,7 +41,7 @@ fn chunked<T: Clone>(
     })
 }
 
-fn print_offsets(peaks: &Vec<find_peaks::Peak<SampleType>>, sr: u16) {
+fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     for (i, peak) in peaks
         .iter()
         .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
@@ -67,8 +68,8 @@ pub fn split_duration(duration: &Duration) -> (usize, usize, usize) {
     (hours, minutes, seconds)
 }
 
-pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
-    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.clone().into() };
+pub fn run(args: args::Arguments) -> Result<(), CliError> {
+    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into() };
     debug(&format!("{:#?}", args));
 
     let snippet_path = args.snippet;
@@ -84,7 +85,7 @@ pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
         (m_sr, m_samples) = mp3_reader::read_mp3(&main_path)?;
 
         if s_sr != m_sr {
-            return Err(Box::new(errors::SampleRateMismatch(Box::new([s_sr, m_sr]))));
+            return Err(errors::CliError::SampleRateMismatch(s_sr, m_sr));
         }
         sr = s_sr;
     }
@@ -107,6 +108,7 @@ pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
     print_offsets(&peaks, sr);
     debug(&format!("found peaks {:#?}", &peaks));
 
+	println!();
     if let Some(out_path) = args
         .out_file
         .out_file
@@ -131,7 +133,7 @@ pub fn run(args: args::Arguments) -> Result<(), Box<dyn std::error::Error>> {
             out
         })
     {
-		verbose(&format!("\nwriting result to '{}'", out_path.display()));
+		verbose(&format!("writing result to '{}'", out_path.display()));
         write_text_marks(
             &peaks,
             sr as SampleType,
@@ -159,7 +161,7 @@ fn ask_consent(msg: &str, args: &args::Inputs) -> bool {
 		print!("couldn't parse that, please try again [y/n]: ");
 	}
 	println!("probably not");
-	return false;
+	false
 }
 
 fn write_text_marks(
@@ -168,7 +170,7 @@ fn write_text_marks(
     path: &std::path::PathBuf,
     in_between: Duration,
     dry_run: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), CliError> {
     let mut out = String::new();
     for (i, (start, end)) in peaks
         .iter()
@@ -179,7 +181,7 @@ fn write_text_marks(
         out += (start as f64 + in_between.as_secs_f64())
             .to_string()
             .as_str();
-        out.push_str("\t");
+        out.push('\t');
         out += (end).to_string().as_str();
         out.push_str("\tSegment ");
         out += (i + 1).to_string().as_str();
@@ -189,7 +191,7 @@ fn write_text_marks(
     if dry_run {
         info(&format!("writing \"\"\"\n{out}\"\"\" > {}", path.display()));
     } else {
-        std::fs::write(path, out).map_err(|_| errors::CantCreateFile::new(path))?;
+        std::fs::write(path, out).map_err(|_| errors::CliError::CantCreateFile(path.into()))?;
     }
     Ok(())
 }
