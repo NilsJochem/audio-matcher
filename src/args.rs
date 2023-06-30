@@ -13,7 +13,7 @@ pub struct Arguments {
     #[clap(
         short,
         long,
-        default_value_t = 250.0,
+        default_value_t = 250.0 as crate::mp3_reader::SampleType,
         help = "minimum prominence of the peaks"
     )]
     pub prominence: crate::mp3_reader::SampleType,

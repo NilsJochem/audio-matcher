@@ -101,17 +101,18 @@ pub fn calc_chunks(
                 .expect("channel will be there waiting for the pool");
         });
     }
-
-    let ret = rx
-        .iter()
-        .take(chunks)
-        .flatten()
-        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
-        .collect_vec();
+    pool.join();
     Arc::into_inner(progress_bar)
         .expect("reference to Arc<ProgressBar> remaining")
         .finish_output();
-    ret
+    if pool.panic_count() > 0 {
+        panic!("some worker threads paniced");
+    }
+    rx.iter()
+        .take(chunks)
+        .flatten()
+        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
+        .collect_vec()
 }
 
 impl ProgressBar<'_, 2, crate::progress_bar::Open> {
@@ -177,7 +178,7 @@ mod tests {
                     .expect("couln't refind snippet data file")
                     / 2,
                 distance: Duration::from_secs(5 * 60),
-                prominence: 250.,
+                prominence: 250. as SampleType,
             },
         );
         assert!(peaks
