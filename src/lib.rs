@@ -99,10 +99,12 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         m_samples,
         s_samples,
         Duration::from_secs(args.chunk_size as u64),
-        s_duration / 2,
-        m_duration,
-        Duration::from_secs(args.distance as u64),
-        args.prominence,
+        audio_matcher::Config {
+            chunk_size: s_duration / 2,
+            overlap_length: m_duration,
+            distance: Duration::from_secs(args.distance as u64),
+            prominence: args.prominence,
+        },
     );
 
     print_offsets(&peaks, sr);

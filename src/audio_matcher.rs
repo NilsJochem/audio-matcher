@@ -10,15 +10,20 @@ use std::time::{Duration, Instant};
 
 use crate::mp3_reader::SampleType;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub chunk_size: Duration,
+    pub overlap_length: Duration,
+    pub distance: Duration,
+    pub prominence: SampleType,
+}
+
 pub fn calc_chunks(
     sr: u16,
     m_samples: impl Iterator<Item = SampleType> + 'static,
     s_samples: impl Iterator<Item = SampleType>,
-    chunk_size: Duration,
-    overlap_length: Duration,
     m_duration: Duration,
-    distance: Duration,
-    prominence: SampleType,
+    config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
     use ndarray::Array1;
 
@@ -26,9 +31,9 @@ pub fn calc_chunks(
     use threadpool::ThreadPool;
 
     // normalize inputs
-    let chunks = ((m_duration).as_secs_f64() / chunk_size.as_secs_f64()).ceil() as usize;
-    let overlap_length = (overlap_length.as_secs_f64() * sr as f64).round() as u64;
-    let chunk_size = (chunk_size.as_secs_f64() * sr as f64).round() as u64;
+    let chunks = ((m_duration).as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
+    let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
+    let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
     verbose(&"collecting snippet");
     let s_samples: Arc<Array1<SampleType>> = Arc::new(Array1::from_iter(s_samples));
@@ -77,7 +82,7 @@ pub fn calc_chunks(
                 fftconvolve::fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
                     .unwrap()
                     .to_vec();
-            let peaks = find_peaks(&_matches, sr, distance, prominence)
+            let peaks = find_peaks(&_matches, sr, config)
                 .iter()
                 .map(|p| {
                     let mut p = p.clone();
@@ -119,15 +124,10 @@ impl ProgressBar<'_, 2, crate::progress_bar::Open> {
     }
 }
 
-fn find_peaks(
-    _match: &[SampleType],
-    sr: u16,
-    distance: Duration,
-    prominence: SampleType,
-) -> Vec<find_peaks::Peak<SampleType>> {
+fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks::Peak<SampleType>> {
     let mut fp = find_peaks::PeakFinder::new(_match);
-    fp.with_min_prominence(prominence);
-    fp.with_min_distance(distance.as_secs() as usize * sr as usize);
+    fp.with_min_prominence(config.prominence);
+    fp.with_min_distance(config.distance.as_secs() as usize * sr as usize);
     fp.find_peaks()
 }
 
@@ -171,12 +171,14 @@ mod tests {
             m_samples,
             s_samples,
             Duration::from_secs(2 * 60),
-            crate::mp3_reader::mp3_duration(&snippet_path)
-                .expect("couln't refind snippet data file")
-                / 2,
-            n,
-            Duration::from_secs(5 * 60),
-            250.,
+            Config {
+                chunk_size: crate::mp3_reader::mp3_duration(&snippet_path)
+                    .expect("couln't refind snippet data file")
+                    / 2,
+                overlap_length: n,
+                distance: Duration::from_secs(5 * 60),
+                prominence: 250.,
+            },
         );
         assert!(peaks
             .into_iter()
