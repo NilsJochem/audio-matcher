@@ -7,12 +7,13 @@ use find_peaks::Peak;
 use itertools::Itertools;
 use ndarray::Array1;
 use realfft::{
-    num_complex::Complex,
-    num_traits::Zero,
-    ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
+    num_complex::Complex, num_traits::Zero, ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
 
 use std::{
+    cell::RefCell,
+    default,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
     vec,
@@ -173,25 +174,51 @@ impl<R: FftNum> MyR2C2C<R> {
     }
 }
 
-fn pad<R: FftNum>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
-    let zeros = vec![<R as Zero>::zero(); len - a.len()];
+fn pad<R: Zero + Clone>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
+    let zeros = vec![R::zero(); len - a.len()];
     if pad_back { [a, &zeros] } else { [&zeros, a] }.concat()
 }
 
-fn scale_slice<R: FftNum, B: std::ops::Mul<R, Output = B> + Copy>(a: &mut [B], scale: R) {
+fn map_in_place<T, F>(a: &mut [T], map: F)
+where
+    T: Copy,
+    F: Fn(T) -> T,
+{
     for i in 0..a.len() {
-        a[i] = a[i] * scale
+        a[i] = map(a[i])
+    }
+}
+fn scale_slice<S, T>(a: &mut [T], scale: S)
+where
+    S: Copy,
+    T: std::ops::Mul<S, Output = T> + Copy,
+{
+    map_in_place(a, |f| f * scale);
+}
+
+fn pairwise_map_in_place<T1, T2, F>(a: &mut [T1], b: &[T2], map: F)
+where
+    T1: Copy,
+    T2: Copy,
+    F: Fn(T1, T2) -> T1,
+{
+    for i in 0..b.len() {
+        a[i] = map(a[i], b[i])
     }
 }
 
-fn pairwise_mult_in_place<R: FftNum, F: Fn(Complex<R>) -> Complex<R>>(
-    a: &mut [Complex<R>],
-    b: &[Complex<R>],
-    map: F,
-) {
-    for i in 0..a.len() {
-        a[i] = a[i] * map(b[i])
-    }
+fn pairwise_mult_in_place<R, F>(a: &mut [R], b: &[R], map: F)
+where
+    R: std::ops::Mul<Output = R> + Copy,
+    F: Fn(R) -> R,
+{
+    pairwise_map_in_place(a, b, |x, y| x * map(y));
+}
+fn pairwise_add_in_place<R>(a: &mut [R], b: &[R])
+where
+    R: std::ops::Add<Output = R> + Copy,
+{
+    pairwise_map_in_place(a, b, |x, y| x + y);
 }
 
 fn centered<R: FftNum>(out: &[R], len: usize) -> Box<[R]> {
@@ -237,6 +264,7 @@ where
     });
 
     let mut out = r2c2r.ifft(&mut fft_a)?;
+    // out = pad(&out , pad_len, true).into();
 
     let mut scalar: R = (1.0 / out.len() as f32).into();
     if let Some(scale) = scale {
