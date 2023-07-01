@@ -9,6 +9,7 @@ itertools = "0.11"
 minimp3 = "0.5"
 mp3-duration = "0.1"
 fftconvolve = "0.1"
+realfft = "3.3"
 ndarray = "0.15"
 find_peaks = "0.1"
 pad = "0.1"
@@ -16,6 +17,7 @@ threadpool = "1.8"
 clap = { version="4.3", features=["derive"]}
 text_io = "0.1"
 thiserror = "1.0"
+derive_builder = "0.12"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

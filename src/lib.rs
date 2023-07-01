@@ -1,5 +1,5 @@
 pub mod args;
-mod audio_matcher;
+pub mod audio_matcher;
 mod errors;
 pub mod leveled_output;
 mod mp3_reader;

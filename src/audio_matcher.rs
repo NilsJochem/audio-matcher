@@ -5,8 +5,17 @@ use crate::progress_bar::ProgressBar;
 
 use find_peaks::Peak;
 use itertools::Itertools;
+use ndarray::Array1;
+use realfft::{
+    num_complex::{Complex, Complex32, ComplexFloat},
+    num_traits::Zero,
+    FftNum, RealFftPlanner,
+};
 
-use std::time::{Duration, Instant};
+use std::{
+    time::{Duration, Instant},
+    vec,
+};
 
 use crate::mp3_reader::SampleType;
 
@@ -130,6 +139,202 @@ fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks:
     fp.with_min_prominence(config.prominence);
     fp.with_min_distance(config.distance.as_secs() as usize * sr as usize);
     fp.find_peaks()
+}
+
+fn fft<R: FftNum>(
+    planner: &mut RealFftPlanner<R>,
+    a: &mut [R],
+) -> Result<Box<[Complex<R>]>, realfft::FftError> {
+    let len = a.len();
+    let r2c = planner.plan_fft_forward(len);
+
+    // make a vector for storing the spectrum
+    let mut spectrum = r2c.make_output_vec();
+
+    // Are they the length we expect?
+    // assert_eq!(spectrum.len(), len / 2 + 1);
+    // assert_eq!(r2c.make_input_vec().len(), len);
+
+    r2c.process(a, &mut spectrum)?;
+    Ok(spectrum.into())
+}
+fn ifft<R: FftNum>(
+    planner: &mut RealFftPlanner<R>,
+    spectrum: &mut [Complex<R>],
+    len: usize,
+) -> Result<Box<[R]>, realfft::FftError> {
+    let c2r = planner.plan_fft_inverse(len);
+
+    // create a vector for storing the output
+    let mut outdata = c2r.make_output_vec();
+
+    // Are they the length we expect?
+    // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
+    // assert_eq!(outdata.len(), len);
+
+    // inverse transform the spectrum back to a real-valued signal
+    c2r.process(spectrum, &mut outdata)?;
+    Ok(outdata.into())
+}
+
+fn pad<R: FftNum>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
+    let zeros = vec![<R as Zero>::zero(); len - a.len()];
+    if pad_back { [a, &zeros] } else { [&zeros, a] }.concat()
+}
+
+fn scale_slice<R: FftNum, B: std::ops::Mul<R, Output = B> + Copy>(a: &mut [B], scale: R) {
+    for i in 0..a.len() {
+        a[i] = a[i] * scale
+    }
+}
+fn pairwise_mult<R: FftNum>(a: &mut [Complex<R>], b: &[Complex<R>]) {
+    for i in 0..a.len() {
+        a[i] = a[i] * b[i]
+    }
+}
+fn pairwise_mult_w_conj<R: FftNum>(a: &mut [Complex<R>], b: &[Complex<R>]) {
+    for i in 0..a.len() {
+        a[i] = a[i] * b[i].conj()
+    }
+}
+
+fn centered<R: FftNum>(out: &[R], len: usize) -> Box<[R]> {
+    let start = (out.len() - len) / 2;
+    let end = start + len;
+    out[start..end].into()
+}
+
+pub fn correlate<R: FftNum>(
+    a: &[R],
+    b: &[R],
+    mode: &Mode,
+    scale_once: Option<bool>,
+    conjugate: bool,
+) -> Result<Box<[R]>, realfft::FftError>
+where
+    R: From<f32>,
+{
+    let scale: Option<R> = scale_once.map(|scale_once| {
+        (1.0 / if scale_once {
+            a.len() as f32
+        } else {
+            (a.len() as f32).sqrt()
+        })
+        .into()
+    });
+
+    let pad_len = a.len() + b.len() - 1;
+    let mut a_and_zeros = pad(a, pad_len, !conjugate);
+    let mut b_and_zeros = pad(b, pad_len, conjugate);
+    if !conjugate {
+        b_and_zeros.reverse();
+    }
+
+    let mut planner = realfft::RealFftPlanner::<R>::new();
+    let mut fft_a = fft(&mut planner, &mut a_and_zeros)?;
+    let fft_b = fft(&mut planner, &mut b_and_zeros)?;
+    if conjugate {
+        pairwise_mult_w_conj(&mut fft_a, &fft_b);
+    } else {
+        pairwise_mult(&mut fft_a, &fft_b);
+    }
+    if !scale_once.unwrap_or(true) {
+        scale_slice(&mut fft_a, scale.unwrap());
+    }
+    let mut out = ifft(&mut planner, &mut fft_a, a_and_zeros.len())?;
+    // out.rotate_right(pad_len - a.len());
+
+    let mut scalar: R = (1.0 / out.len() as f32).into();
+    if let Some(scale) = scale {
+        let auto_correlation = *correlate(b, b, &Mode::Valid, None, conjugate)
+            .expect("autocorrelation failed")
+            .first()
+            .expect("autocorrelation empty");
+
+        scalar = scalar * scale / auto_correlation;
+    }
+    scale_slice(&mut out, scalar);
+    Ok(match mode {
+        Mode::Full => out.into(),
+        Mode::Same => centered(&out, a.len()),
+        Mode::Valid => centered(&out, a.len().saturating_sub(b.len()) + 1),
+    })
+}
+pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
+    from.map(|i| i as f32).collect_vec()
+}
+
+#[cfg(test)]
+mod correlate_tests {
+    use super::*;
+
+    #[test]
+    fn correlate_compare_scaling() {
+        let mode = Mode::Valid;
+        let data1: Vec<f32> = test_data(-10..10);
+        let data2: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let scaled_once = correlate(&data1, &data2, &mode, Some(true), true)
+            .as_ref()
+            .unwrap()
+            .to_vec();
+        let scaled_twice = correlate(&data1, &data2, &mode, Some(false), true)
+            .as_ref()
+            .unwrap()
+            .to_vec();
+        assert_float_slice_eq(&scaled_once, &scaled_twice);
+        println!("scaled vector is {:?}", &scaled_once)
+    }
+
+    #[test]
+    fn my_correlate_same_fftcorrelate() {
+        let mode = Mode::Valid;
+        let data1: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let data2: Vec<f32> = vec![4.0, 5.0];
+        let my_conj = correlate(&data1, &data2, &mode, None, true)
+            .as_ref()
+            .unwrap()
+            .to_vec();
+        let my = correlate(&data1, &data2, &mode, None, false)
+            .as_ref()
+            .unwrap()
+            .to_vec();
+        let expect = fftconvolve::fftcorrelate(
+            &Array1::from_iter(data1.into_iter()),
+            &Array1::from_iter(data2.into_iter()),
+            mode.into(),
+        )
+        .unwrap()
+        .to_vec();
+        assert_float_slice_eq(&my, &expect);
+        assert_float_slice_eq(&my_conj, &expect);
+    }
+
+    fn assert_float_slice_eq(my: &[f32], expect: &[f32]) {
+        let mut diff = my.iter().zip(expect).map(|(a, b)| (a - b).abs());
+        assert!(
+            diff.all(|d| d < 1e-5),
+            "expecting {:?} but got {:?}",
+            &expect,
+            &my
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Mode {
+    Full,
+    Same,
+    Valid,
+}
+
+impl From<Mode> for fftconvolve::Mode {
+    fn from(value: Mode) -> Self {
+        match value {
+            Mode::Full => fftconvolve::Mode::Full,
+            Mode::Same => fftconvolve::Mode::Same,
+            Mode::Valid => fftconvolve::Mode::Valid,
+        }
+    }
 }
 
 #[cfg(test)]
