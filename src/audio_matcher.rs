@@ -9,7 +9,7 @@ use ndarray::Array1;
 use realfft::{
     num_complex::{Complex, Complex32, ComplexFloat},
     num_traits::Zero,
-    FftNum, RealFftPlanner,
+    ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
 
 use std::{
@@ -142,11 +142,10 @@ fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks:
 }
 
 fn fft<R: FftNum>(
-    planner: &mut RealFftPlanner<R>,
+    r2c: &dyn RealToComplex<R>,
     a: &mut [R],
 ) -> Result<Box<[Complex<R>]>, realfft::FftError> {
     let len = a.len();
-    let r2c = planner.plan_fft_forward(len);
 
     // make a vector for storing the spectrum
     let mut spectrum = r2c.make_output_vec();
@@ -159,12 +158,10 @@ fn fft<R: FftNum>(
     Ok(spectrum.into())
 }
 fn ifft<R: FftNum>(
-    planner: &mut RealFftPlanner<R>,
+    c2r: &dyn ComplexToReal<R>,
     spectrum: &mut [Complex<R>],
     len: usize,
 ) -> Result<Box<[R]>, realfft::FftError> {
-    let c2r = planner.plan_fft_inverse(len);
-
     // create a vector for storing the output
     let mut outdata = c2r.make_output_vec();
 
@@ -205,6 +202,7 @@ fn centered<R: FftNum>(out: &[R], len: usize) -> Box<[R]> {
 }
 
 pub fn correlate<R: FftNum>(
+    planner: &mut RealFftPlanner<R>,
     a: &[R],
     b: &[R],
     mode: &Mode,
@@ -230,9 +228,11 @@ where
         b_and_zeros.reverse();
     }
 
-    let mut planner = realfft::RealFftPlanner::<R>::new();
-    let mut fft_a = fft(&mut planner, &mut a_and_zeros)?;
-    let fft_b = fft(&mut planner, &mut b_and_zeros)?;
+    let r2c = planner.plan_fft_forward(a_and_zeros.len());
+    let c2r = planner.plan_fft_inverse(a_and_zeros.len());
+
+    let mut fft_a = fft(r2c.as_ref(), &mut a_and_zeros)?;
+    let fft_b = fft(r2c.as_ref(), &mut b_and_zeros)?;
     if conjugate {
         pairwise_mult_w_conj(&mut fft_a, &fft_b);
     } else {
@@ -241,12 +241,12 @@ where
     if !scale_once.unwrap_or(true) {
         scale_slice(&mut fft_a, scale.unwrap());
     }
-    let mut out = ifft(&mut planner, &mut fft_a, a_and_zeros.len())?;
+    let mut out = ifft(c2r.as_ref(), &mut fft_a, a_and_zeros.len())?;
     // out.rotate_right(pad_len - a.len());
 
     let mut scalar: R = (1.0 / out.len() as f32).into();
     if let Some(scale) = scale {
-        let auto_correlation = *correlate(b, b, &Mode::Valid, None, conjugate)
+        let auto_correlation = *correlate(planner, b, b, &Mode::Valid, None, conjugate)
             .expect("autocorrelation failed")
             .first()
             .expect("autocorrelation empty");
@@ -270,14 +270,15 @@ mod correlate_tests {
 
     #[test]
     fn correlate_compare_scaling() {
+        let mut planner = realfft::RealFftPlanner::new();
         let mode = Mode::Valid;
         let data1: Vec<f32> = test_data(-10..10);
         let data2: Vec<f32> = vec![1.0, 2.0, 3.0];
-        let scaled_once = correlate(&data1, &data2, &mode, Some(true), true)
+        let scaled_once = correlate(&mut planner, &data1, &data2, &mode, Some(true), true)
             .as_ref()
             .unwrap()
             .to_vec();
-        let scaled_twice = correlate(&data1, &data2, &mode, Some(false), true)
+        let scaled_twice = correlate(&mut planner, &data1, &data2, &mode, Some(false), true)
             .as_ref()
             .unwrap()
             .to_vec();
@@ -287,14 +288,15 @@ mod correlate_tests {
 
     #[test]
     fn my_correlate_same_fftcorrelate() {
+        let mut planner = realfft::RealFftPlanner::new();
         let mode = Mode::Valid;
         let data1: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let data2: Vec<f32> = vec![4.0, 5.0];
-        let my_conj = correlate(&data1, &data2, &mode, None, true)
+        let my_conj = correlate(&mut planner, &data1, &data2, &mode, None, true)
             .as_ref()
             .unwrap()
             .to_vec();
-        let my = correlate(&data1, &data2, &mode, None, false)
+        let my = correlate(&mut planner, &data1, &data2, &mode, None, false)
             .as_ref()
             .unwrap()
             .to_vec();
