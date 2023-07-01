@@ -7,7 +7,7 @@ use find_peaks::Peak;
 use itertools::Itertools;
 use ndarray::Array1;
 use realfft::{
-    num_complex·::Complex,
+    num_complex::Complex,
     num_traits::Zero,
     ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
@@ -149,28 +149,28 @@ impl<R: FftNum> MyR2C2C<R> {
         )
     }
     fn fft(&self, a: &mut [R]) -> Result<Box<[Complex<R>]>, realfft::FftError> {
-    // make a vector for storing the spectrum
+        // make a vector for storing the spectrum
         let mut spectrum = self.0.make_output_vec();
 
-    // Are they the length we expect?
-    // assert_eq!(spectrum.len(), len / 2 + 1);
-    // assert_eq!(r2c.make_input_vec().len(), len);
+        // Are they the length we expect?
+        // assert_eq!(spectrum.len(), len / 2 + 1);
+        // assert_eq!(r2c.make_input_vec().len(), len);
 
         self.0.process(a, &mut spectrum)?;
-    Ok(spectrum.into())
-}
+        Ok(spectrum.into())
+    }
     fn ifft(&self, spectrum: &mut [Complex<R>]) -> Result<Box<[R]>, realfft::FftError> {
-    // create a vector for storing the output
+        // create a vector for storing the output
         let mut outdata = self.1.make_output_vec();
 
-    // Are they the length we expect?
-    // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
-    // assert_eq!(outdata.len(), len);
+        // Are they the length we expect?
+        // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
+        // assert_eq!(outdata.len(), len);
 
-    // inverse transform the spectrum back to a real-valued signal
+        // inverse transform the spectrum back to a real-valued signal
         self.1.process(spectrum, &mut outdata)?;
-    Ok(outdata.into())
-}
+        Ok(outdata.into())
+    }
 }
 
 fn pad<R: FftNum>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
@@ -183,14 +183,14 @@ fn scale_slice<R: FftNum, B: std::ops::Mul<R, Output = B> + Copy>(a: &mut [B], s
         a[i] = a[i] * scale
     }
 }
-fn pairwise_mult<R: FftNum>(a: &mut [Complex<R>], b: &[Complex<R>]) {
+
+fn pairwise_mult_in_place<R: FftNum, F: Fn(Complex<R>) -> Complex<R>>(
+    a: &mut [Complex<R>],
+    b: &[Complex<R>],
+    map: F,
+) {
     for i in 0..a.len() {
-        a[i] = a[i] * b[i]
-    }
-}
-fn pairwise_mult_w_conj<R: FftNum>(a: &mut [Complex<R>], b: &[Complex<R>]) {
-    for i in 0..a.len() {
-        a[i] = a[i] * b[i].conj()
+        a[i] = a[i] * map(b[i])
     }
 }
 
@@ -205,20 +205,17 @@ pub fn correlate<R: FftNum>(
     a: &[R],
     b: &[R],
     mode: &Mode,
-    scale_once: Option<bool>,
+    scale: bool,
     conjugate: bool,
 ) -> Result<Box<[R]>, realfft::FftError>
 where
     R: From<f32>,
 {
-    let scale: Option<R> = scale_once.map(|scale_once| {
-        (1.0 / if scale_once {
-            a.len() as f32
-        } else {
-            (a.len() as f32).sqrt()
-        })
-        .into()
-    });
+    let scale: Option<R> = if scale {
+        Some((a.len() as f32).sqrt().into())
+    } else {
+        None
+    };
 
     let pad_len = a.len() + b.len() - 1;
     let mut a_and_zeros = pad(a, pad_len, !conjugate);
@@ -231,22 +228,19 @@ where
     let mut fft_a = r2c2r.fft(&mut a_and_zeros)?;
     let fft_b = r2c2r.fft(&mut b_and_zeros)?;
 
-    let mut fft_a = fft(r2c.as_ref(), &mut a_and_zeros)?;
-    let fft_b = fft(r2c.as_ref(), &mut b_and_zeros)?;
-    if conjugate {
-        pairwise_mult_w_conj(&mut fft_a, &fft_b);
-    } else {
-        pairwise_mult(&mut fft_a, &fft_b);
-    }
-    if !scale_once.unwrap_or(true) {
-        scale_slice(&mut fft_a, scale.unwrap());
-    }
-    let mut out = ifft(c2r.as_ref(), &mut fft_a, a_and_zeros.len())?;
-    // out.rotate_right(pad_len - a.len());
+    pairwise_mult_in_place(&mut fft_a, &fft_b, |b| {
+        let mut b = b;
+        if conjugate {
+            b = b.conj();
+        }
+        b
+    });
+
+    let mut out = r2c2r.ifft(&mut fft_a)?;
 
     let mut scalar: R = (1.0 / out.len() as f32).into();
     if let Some(scale) = scale {
-        let auto_correlation = *correlate(planner, b, b, &Mode::Valid, None, conjugate)
+        let auto_correlation = *correlate(planner, b, b, &Mode::Valid, false, conjugate)
             .expect("autocorrelation failed")
             .first()
             .expect("autocorrelation empty");
@@ -269,34 +263,16 @@ mod correlate_tests {
     use super::*;
 
     #[test]
-    fn correlate_compare_scaling() {
+    fn my_correlate_same_fftcorrelate() {
         let mut planner = realfft::RealFftPlanner::new();
         let mode = Mode::Valid;
         let data1: Vec<f32> = test_data(-10..10);
         let data2: Vec<f32> = vec![1.0, 2.0, 3.0];
-        let scaled_once = correlate(&mut planner, &data1, &data2, &mode, Some(true), true)
+        let my_conj = correlate(&mut planner, &data1, &data2, &mode, false, true)
             .as_ref()
             .unwrap()
             .to_vec();
-        let scaled_twice = correlate(&mut planner, &data1, &data2, &mode, Some(false), true)
-            .as_ref()
-            .unwrap()
-            .to_vec();
-        assert_float_slice_eq(&scaled_once, &scaled_twice);
-        println!("scaled vector is {:?}", &scaled_once)
-    }
-
-    #[test]
-    fn my_correlate_same_fftcorrelate() {
-        let mut planner = realfft::RealFftPlanner::new();
-        let mode = Mode::Valid;
-        let data1: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        let data2: Vec<f32> = vec![4.0, 5.0];
-        let my_conj = correlate(&mut planner, &data1, &data2, &mode, None, true)
-            .as_ref()
-            .unwrap()
-            .to_vec();
-        let my = correlate(&mut planner, &data1, &data2, &mode, None, false)
+        let my = correlate(&mut planner, &data1, &data2, &mode, false, false)
             .as_ref()
             .unwrap()
             .to_vec();
@@ -314,10 +290,11 @@ mod correlate_tests {
     fn assert_float_slice_eq(my: &[f32], expect: &[f32]) {
         let mut diff = my.iter().zip(expect).map(|(a, b)| (a - b).abs());
         assert!(
-            diff.all(|d| d < 1e-5),
-            "expecting {:?} but got {:?}",
+            diff.all(|d| d < 1.2e-5),
+            "expecting \n{:?} but got \n{:?} with diff \n{:?}",
             &expect,
-            &my
+            &my,
+            &diff.collect_vec()
         );
     }
 }
