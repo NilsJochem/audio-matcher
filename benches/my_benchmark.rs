@@ -20,7 +20,7 @@ fn correlate_vs_bib(c: &mut Criterion) {
 
     group.bench_function("correlate my func", |b| {
         b.iter(|| {
-            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), None, true)
+            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), false, true)
                 .unwrap()
 				.as_ref()
                 .to_vec()
@@ -40,33 +40,6 @@ fn correlate_vs_bib(c: &mut Criterion) {
 	group.finish();
 }
 
-fn correlate_vs_scaling(c: &mut Criterion) {
-	let mut planner = realfft::RealFftPlanner::new();
-
-    let mode = audio_matcher::audio_matcher::Mode::Valid;
-    let data1: Vec<f32> = audio_matcher::audio_matcher::test_data(100..150);
-    let data2: Vec<f32> = audio_matcher::audio_matcher::test_data(-2000..2000);
-
-    let mut group = c.benchmark_group("correlate_vs_scaling");
-
-    group.bench_function("correlate my func + scale once", |b| {
-        b.iter(|| {
-            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), Some(true), true)
-                .unwrap()
-				.as_ref()
-                .to_vec()
-        })
-    });
-    group.bench_function("correlate my func + scale twice", |b| {
-        b.iter(|| {
-            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), Some(false), true)
-                .unwrap()
-				.as_ref()
-                .to_vec()
-        })
-    });
-	group.finish();
-}
 fn correlate_vs_conj(c: &mut Criterion) {
 	let mut planner = realfft::RealFftPlanner::new();
 
@@ -78,7 +51,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
 
     group.bench_function("correlate my func + conjugate", |b| {
         b.iter(|| {
-            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), None, true)
+            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), false, true)
                 .unwrap()
 				.as_ref()
                 .to_vec()
@@ -86,7 +59,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
     });
     group.bench_function("correlate my func + reverse mult", |b| {
         b.iter(|| {
-            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), None, false)
+            audio_matcher::audio_matcher::correlate(&mut planner, black_box(&data2), black_box(&data1), black_box(&mode), false, false)
                 .unwrap()
 				.as_ref()
                 .to_vec()
@@ -95,5 +68,5 @@ fn correlate_vs_conj(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(benches, full_match, correlate_vs_bib, correlate_vs_scaling, correlate_vs_conj);
+criterion_group!(benches, full_match, correlate_vs_bib, correlate_vs_conj);
 criterion_main!(benches);

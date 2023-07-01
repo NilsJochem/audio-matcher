@@ -7,12 +7,13 @@ use find_peaks::Peak;
 use itertools::Itertools;
 use ndarray::Array1;
 use realfft::{
-    num_complex::{Complex, Complex32, ComplexFloat},
+    num_complex·::Complex,
     num_traits::Zero,
     ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
 
 use std::{
+    sync::Arc,
     time::{Duration, Instant},
     vec,
 };
@@ -34,9 +35,7 @@ pub fn calc_chunks(
     m_duration: Duration,
     config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
-    use ndarray::Array1;
-
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use threadpool::ThreadPool;
 
     // normalize inputs
@@ -141,37 +140,37 @@ fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks:
     fp.find_peaks()
 }
 
-fn fft<R: FftNum>(
-    r2c: &dyn RealToComplex<R>,
-    a: &mut [R],
-) -> Result<Box<[Complex<R>]>, realfft::FftError> {
-    let len = a.len();
-
+struct MyR2C2C<R: FftNum>(Arc<dyn RealToComplex<R>>, Arc<dyn ComplexToReal<R>>);
+impl<R: FftNum> MyR2C2C<R> {
+    fn new(planner: &mut RealFftPlanner<R>, len: usize) -> Self {
+        Self(
+            Arc::clone(&planner.plan_fft_forward(len)),
+            Arc::clone(&planner.plan_fft_inverse(len)),
+        )
+    }
+    fn fft(&self, a: &mut [R]) -> Result<Box<[Complex<R>]>, realfft::FftError> {
     // make a vector for storing the spectrum
-    let mut spectrum = r2c.make_output_vec();
+        let mut spectrum = self.0.make_output_vec();
 
     // Are they the length we expect?
     // assert_eq!(spectrum.len(), len / 2 + 1);
     // assert_eq!(r2c.make_input_vec().len(), len);
 
-    r2c.process(a, &mut spectrum)?;
+        self.0.process(a, &mut spectrum)?;
     Ok(spectrum.into())
 }
-fn ifft<R: FftNum>(
-    c2r: &dyn ComplexToReal<R>,
-    spectrum: &mut [Complex<R>],
-    len: usize,
-) -> Result<Box<[R]>, realfft::FftError> {
+    fn ifft(&self, spectrum: &mut [Complex<R>]) -> Result<Box<[R]>, realfft::FftError> {
     // create a vector for storing the output
-    let mut outdata = c2r.make_output_vec();
+        let mut outdata = self.1.make_output_vec();
 
     // Are they the length we expect?
     // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
     // assert_eq!(outdata.len(), len);
 
     // inverse transform the spectrum back to a real-valued signal
-    c2r.process(spectrum, &mut outdata)?;
+        self.1.process(spectrum, &mut outdata)?;
     Ok(outdata.into())
+}
 }
 
 fn pad<R: FftNum>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
@@ -227,9 +226,10 @@ where
     if !conjugate {
         b_and_zeros.reverse();
     }
+    let r2c2r = MyR2C2C::new(planner, a_and_zeros.len());
 
-    let r2c = planner.plan_fft_forward(a_and_zeros.len());
-    let c2r = planner.plan_fft_inverse(a_and_zeros.len());
+    let mut fft_a = r2c2r.fft(&mut a_and_zeros)?;
+    let fft_b = r2c2r.fft(&mut b_and_zeros)?;
 
     let mut fft_a = fft(r2c.as_ref(), &mut a_and_zeros)?;
     let fft_b = fft(r2c.as_ref(), &mut b_and_zeros)?;
