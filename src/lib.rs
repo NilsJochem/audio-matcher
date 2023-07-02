@@ -42,6 +42,9 @@ fn chunked<T: Clone>(
 }
 
 fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
+    if peaks.len() == 0 {
+        info(&"no offsets found");
+    }
     for (i, peak) in peaks
         .iter()
         .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
@@ -99,11 +102,13 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         m_samples,
         s_samples,
         m_duration,
+        true,
         audio_matcher::Config {
             chunk_size: Duration::from_secs(args.chunk_size as u64),
             overlap_length: s_duration / 2,
             distance: Duration::from_secs(args.distance as u64),
-            prominence: args.prominence,
+            prominence: args.prominence / 100.0,
+            threads: args.threads,
         },
     );
 

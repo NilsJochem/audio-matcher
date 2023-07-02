@@ -13,14 +13,17 @@ pub struct Arguments {
     #[clap(
         short,
         long,
-        default_value_t = 250.0 as crate::mp3_reader::SampleType,
+        default_value_t = 13.0 as crate::mp3_reader::SampleType,
         help = "minimum prominence of the peaks"
     )]
     pub prominence: crate::mp3_reader::SampleType,
-    #[clap(long, default_value_t = 5*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
+    #[clap(long, default_value_t = 8*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
     pub distance: usize,
-    #[clap(long, default_value_t = 2*60, value_name = "SECONDS", help="length in seconds of chunks to be processed")]
+    #[clap(long, default_value_t = 60, value_name = "SECONDS", help="length in seconds of chunks to be processed")]
     pub chunk_size: usize,
+    #[clap(long, default_value_t = 3, value_name = "THREADS", help="number of Threads")]
+    pub threads: usize,
+
 
     #[clap(long)]
     pub dry_run: bool,

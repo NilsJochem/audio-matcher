@@ -11,9 +11,6 @@ use realfft::{
 };
 
 use std::{
-    cell::RefCell,
-    default,
-    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
     vec,
@@ -27,6 +24,7 @@ pub struct Config {
     pub overlap_length: Duration,
     pub distance: Duration,
     pub prominence: SampleType,
+    pub threads: usize,
 }
 
 pub fn calc_chunks(
@@ -34,6 +32,7 @@ pub fn calc_chunks(
     m_samples: impl Iterator<Item = SampleType> + 'static,
     s_samples: impl Iterator<Item = SampleType>,
     m_duration: Duration,
+    scale: bool,
     config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
     use std::sync::Mutex;
@@ -57,9 +56,15 @@ pub fn calc_chunks(
         .prepare_output(),
     );
 
+    let auto_correlation =
+        *fftconvolve::fftcorrelate(&s_samples, &s_samples, fftconvolve::Mode::Valid)
+            .expect("autocorrelation failed")
+            .first()
+            .expect("autocorrelation empty");
+
     // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
     // should use less, cause RAM fills up
-    let n_workers = 6;
+    let n_workers = config.threads;
     let pool = ThreadPool::new(n_workers);
 
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<SampleType>>>();
@@ -87,11 +92,15 @@ pub fn calc_chunks(
 
             let offset = chunk_size as usize * i;
             let m_samples = Array1::from_iter(chunk.into_iter());
-            let _matches =
+            let mut matches =
                 fftconvolve::fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
                     .unwrap()
                     .to_vec();
-            let peaks = find_peaks(&_matches, sr, config)
+
+            if scale {
+                scale_slice(&mut matches, 1.0/(auto_correlation));
+            }
+            let peaks = find_peaks(&matches, sr, config)
                 .iter()
                 .map(|p| {
                     let mut p = p.clone();
@@ -214,6 +223,7 @@ where
 {
     pairwise_map_in_place(a, b, |x, y| x * map(y));
 }
+#[allow(dead_code)]
 fn pairwise_add_in_place<R>(a: &mut [R], b: &[R])
 where
     R: std::ops::Add<Output = R> + Copy,
@@ -238,12 +248,6 @@ pub fn correlate<R: FftNum>(
 where
     R: From<f32>,
 {
-    let scale: Option<R> = if scale {
-        Some((a.len() as f32).sqrt().into())
-    } else {
-        None
-    };
-
     let pad_len = a.len() + b.len() - 1;
     let mut a_and_zeros = pad(a, pad_len, !conjugate);
     let mut b_and_zeros = pad(b, pad_len, conjugate);
@@ -267,13 +271,14 @@ where
     // out = pad(&out , pad_len, true).into();
 
     let mut scalar: R = (1.0 / out.len() as f32).into();
-    if let Some(scale) = scale {
+    if scale {
+        let scale: R = (a.len() as f32).into();
         let auto_correlation = *correlate(planner, b, b, &Mode::Valid, false, conjugate)
             .expect("autocorrelation failed")
             .first()
             .expect("autocorrelation empty");
 
-        scalar = scalar * scale / auto_correlation;
+        scalar = scalar / (scale * auto_correlation);
     }
     scale_slice(&mut out, scalar);
     Ok(match mode {
@@ -384,6 +389,7 @@ mod tests {
             m_samples,
             s_samples,
             n,
+            false,
             Config {
                 chunk_size: Duration::from_secs(2 * 60),
                 overlap_length: crate::mp3_reader::mp3_duration(&snippet_path)
@@ -391,6 +397,7 @@ mod tests {
                     / 2,
                 distance: Duration::from_secs(5 * 60),
                 prominence: 250. as SampleType,
+                threads: 6
             },
         );
         assert!(peaks
