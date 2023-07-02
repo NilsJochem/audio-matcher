@@ -96,7 +96,7 @@ impl Default for ProgressBar<2, Closed> {
 trait Critical {}
 impl<const N: usize> Critical for ProgressBar<N, Open> {}
 
-impl<'a, const N: usize> ProgressBar<N, Closed> {
+impl<const N: usize> ProgressBar<N, Closed> {
     pub fn prepare_output(self) -> ProgressBar<N, Open> {
         println!();
         ProgressBar {
@@ -108,7 +108,7 @@ impl<'a, const N: usize> ProgressBar<N, Closed> {
     }
 }
 
-impl<'a, const N: usize> ProgressBar<N, Open> {
+impl<const N: usize> ProgressBar<N, Open> {
     pub fn finish_output(self) -> ProgressBar<N, Closed> {
         println!();
         ProgressBar {

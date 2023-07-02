@@ -1,5 +1,4 @@
 use crate::chunked;
-use crate::leveled_output::verbose;
 use crate::offset_range;
 use crate::progress_bar::ProgressBar;
 
@@ -9,7 +8,6 @@ use ndarray::Array1;
 use realfft::{
     num_complex::Complex, num_traits::Zero, ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
-
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -27,10 +25,47 @@ pub struct Config {
     pub threads: usize,
 }
 
-pub fn calc_chunks(
+#[derive(Debug, Clone, Copy)]
+pub enum Mode {
+    Full,
+    Same,
+    Valid,
+}
+
+//todo split algo from sample_data
+/// represents an Algorythm that can correlate two sets of data.
+///
+/// It should know the data of the sample, and its autocorrelation to optimize multiple calls with the same sample
+pub trait CorrelateAlgo<'a, R: FftNum + From<f32>> {
+    fn inverse_sample_auto_correlation(&self) -> R;
+    fn correlate_with_sample(
+        &self,
+        within: &[R],
+        mode: &Mode,
+        scale: bool,
+    ) -> Result<Vec<R>, Box<dyn std::error::Error>>;
+    fn scale(&self, data: &mut [R]) {
+        scale_slice(data, self.inverse_sample_auto_correlation());
+    }
+}
+
+impl From<Mode> for fftconvolve::Mode {
+    fn from(value: Mode) -> Self {
+        match value {
+            Mode::Full => fftconvolve::Mode::Full,
+            Mode::Same => fftconvolve::Mode::Same,
+            Mode::Valid => fftconvolve::Mode::Valid,
+        }
+    }
+}
+
+pub fn calc_chunks<
+    'a,
+    C: CorrelateAlgo<'a, SampleType> + std::marker::Sync + std::marker::Send + 'static,
+>(
     sr: u16,
     m_samples: impl Iterator<Item = SampleType> + 'static,
-    s_samples: impl Iterator<Item = SampleType>,
+    algo_with_sample: C,
     m_duration: Duration,
     scale: bool,
     config: Config,
@@ -43,9 +78,7 @@ pub fn calc_chunks(
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
-    verbose(&"collecting snippet");
-    let s_samples: Arc<Array1<SampleType>> = Arc::new(Array1::from_iter(s_samples));
-    verbose(&"collected snippet");
+    let algo_with_sample = Arc::new(algo_with_sample);
 
     let progress_state = Arc::new(Mutex::new((0, 0)));
     let progress_bar = Arc::new(
@@ -55,12 +88,6 @@ pub fn calc_chunks(
         }
         .prepare_output(),
     );
-
-    let auto_correlation =
-        *fftconvolve::fftcorrelate(&s_samples, &s_samples, fftconvolve::Mode::Valid)
-            .expect("autocorrelation failed")
-            .first()
-            .expect("autocorrelation empty");
 
     // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
     // should use less, cause RAM fills up
@@ -80,7 +107,7 @@ pub fn calc_chunks(
         if chunks <= i {
             panic!("to many chunks")
         }
-        let s_samples = Arc::clone(&s_samples);
+        let algo_with_sample = Arc::clone(&algo_with_sample);
         let progress_state = Arc::clone(&progress_state);
         let progress_bar = Arc::clone(&progress_bar);
         let tx = tx.clone();
@@ -91,15 +118,10 @@ pub fn calc_chunks(
             drop(lock);
 
             let offset = chunk_size as usize * i;
-            let m_samples = Array1::from_iter(chunk.into_iter());
-            let mut matches =
-                fftconvolve::fftcorrelate(&m_samples, &s_samples, fftconvolve::Mode::Valid)
-                    .unwrap()
-                    .to_vec();
+            let matches = algo_with_sample
+                .correlate_with_sample(&chunk, &Mode::Valid, scale)
+                .unwrap();
 
-            if scale {
-                scale_slice(&mut matches, 1.0/(auto_correlation));
-            }
             let peaks = find_peaks(&matches, sr, config)
                 .iter()
                 .map(|p| {
@@ -150,39 +172,6 @@ fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks:
     fp.find_peaks()
 }
 
-struct MyR2C2C<R: FftNum>(Arc<dyn RealToComplex<R>>, Arc<dyn ComplexToReal<R>>);
-impl<R: FftNum> MyR2C2C<R> {
-    fn new(planner: &mut RealFftPlanner<R>, len: usize) -> Self {
-        Self(
-            Arc::clone(&planner.plan_fft_forward(len)),
-            Arc::clone(&planner.plan_fft_inverse(len)),
-        )
-    }
-    fn fft(&self, a: &mut [R]) -> Result<Box<[Complex<R>]>, realfft::FftError> {
-        // make a vector for storing the spectrum
-        let mut spectrum = self.0.make_output_vec();
-
-        // Are they the length we expect?
-        // assert_eq!(spectrum.len(), len / 2 + 1);
-        // assert_eq!(r2c.make_input_vec().len(), len);
-
-        self.0.process(a, &mut spectrum)?;
-        Ok(spectrum.into())
-    }
-    fn ifft(&self, spectrum: &mut [Complex<R>]) -> Result<Box<[R]>, realfft::FftError> {
-        // create a vector for storing the output
-        let mut outdata = self.1.make_output_vec();
-
-        // Are they the length we expect?
-        // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
-        // assert_eq!(outdata.len(), len);
-
-        // inverse transform the spectrum back to a real-valued signal
-        self.1.process(spectrum, &mut outdata)?;
-        Ok(outdata.into())
-    }
-}
-
 fn pad<R: Zero + Clone>(a: &[R], len: usize, pad_back: bool) -> Vec<R> {
     let zeros = vec![R::zero(); len - a.len()];
     if pad_back { [a, &zeros] } else { [&zeros, a] }.concat()
@@ -193,8 +182,8 @@ where
     T: Copy,
     F: Fn(T) -> T,
 {
-    for i in 0..a.len() {
-        a[i] = map(a[i])
+    for element in a {
+        *element = map(*element);
     }
 }
 fn scale_slice<S, T>(a: &mut [T], scale: S)
@@ -223,6 +212,7 @@ where
 {
     pairwise_map_in_place(a, b, |x, y| x * map(y));
 }
+
 #[allow(dead_code)]
 fn pairwise_add_in_place<R>(a: &mut [R], b: &[R])
 where
@@ -231,62 +221,206 @@ where
     pairwise_map_in_place(a, b, |x, y| x + y);
 }
 
-fn centered<R: FftNum>(out: &[R], len: usize) -> Box<[R]> {
-    let start = (out.len() - len) / 2;
-    let end = start + len;
-    out[start..end].into()
+pub struct LibConvolve {
+    sample_data: Box<[SampleType]>,
+    inv_sample_auto_corrolation: lazy_init::Lazy<SampleType>,
+    sample_array: lazy_init::Lazy<Array1<SampleType>>,
 }
-
-pub fn correlate<R: FftNum>(
-    planner: &mut RealFftPlanner<R>,
-    a: &[R],
-    b: &[R],
-    mode: &Mode,
-    scale: bool,
-    conjugate: bool,
-) -> Result<Box<[R]>, realfft::FftError>
-where
-    R: From<f32>,
-{
-    let pad_len = a.len() + b.len() - 1;
-    let mut a_and_zeros = pad(a, pad_len, !conjugate);
-    let mut b_and_zeros = pad(b, pad_len, conjugate);
-    if !conjugate {
-        b_and_zeros.reverse();
-    }
-    let r2c2r = MyR2C2C::new(planner, a_and_zeros.len());
-
-    let mut fft_a = r2c2r.fft(&mut a_and_zeros)?;
-    let fft_b = r2c2r.fft(&mut b_and_zeros)?;
-
-    pairwise_mult_in_place(&mut fft_a, &fft_b, |b| {
-        let mut b = b;
-        if conjugate {
-            b = b.conj();
+impl LibConvolve {
+    pub fn new(sample_data: Box<[SampleType]>) -> Self {
+        Self {
+            sample_data,
+            inv_sample_auto_corrolation: lazy_init::Lazy::new(),
+            sample_array: lazy_init::Lazy::new(),
         }
-        b
-    });
-
-    let mut out = r2c2r.ifft(&mut fft_a)?;
-    // out = pad(&out , pad_len, true).into();
-
-    let mut scalar: R = (1.0 / out.len() as f32).into();
-    if scale {
-        let scale: R = (a.len() as f32).into();
-        let auto_correlation = *correlate(planner, b, b, &Mode::Valid, false, conjugate)
-            .expect("autocorrelation failed")
-            .first()
-            .expect("autocorrelation empty");
-
-        scalar = scalar / (scale * auto_correlation);
     }
-    scale_slice(&mut out, scalar);
-    Ok(match mode {
-        Mode::Full => out.into(),
-        Mode::Same => centered(&out, a.len()),
-        Mode::Valid => centered(&out, a.len().saturating_sub(b.len()) + 1),
-    })
+
+    fn correlate(
+        &self,
+        within: &Array1<SampleType>,
+        sample: &Array1<SampleType>,
+        mode: &Mode,
+        scale: bool,
+    ) -> Result<Vec<SampleType>, Box<dyn std::error::Error>> {
+        let mode: fftconvolve::Mode = <Mode as Into<fftconvolve::Mode>>::into(*mode);
+        let mut res = fftconvolve::fftcorrelate(within, sample, mode)?.to_vec();
+        if scale {
+            self.scale(&mut res)
+        }
+        Ok(res)
+    }
+    fn convert_data(raw: &[SampleType]) -> Array1<SampleType> {
+        Array1::from_iter(raw.iter().cloned())
+    }
+
+    fn sample_array(&self) -> &Array1<SampleType> {
+        self.sample_array
+            .get_or_create(|| Self::convert_data(&self.sample_data))
+    }
 }
+impl<'a> CorrelateAlgo<'a, SampleType> for LibConvolve {
+    fn inverse_sample_auto_correlation(&self) -> SampleType {
+        *self.inv_sample_auto_corrolation.get_or_create(|| {
+            1.0 / self
+                .correlate(
+                    self.sample_array(),
+                    self.sample_array(),
+                    &Mode::Valid,
+                    false,
+                )
+                .expect("autocorrelation failed")
+                .first()
+                .expect("auto correlation empty")
+        })
+    }
+
+    fn correlate_with_sample(
+        &self,
+        within: &[SampleType],
+        mode: &Mode,
+        scale: bool,
+    ) -> Result<Vec<SampleType>, Box<dyn std::error::Error>> {
+        self.correlate(
+            &Self::convert_data(within),
+            self.sample_array(),
+            mode,
+            scale,
+        )
+    }
+}
+
+struct MyR2C2C<R: FftNum>(Arc<dyn RealToComplex<R>>, Arc<dyn ComplexToReal<R>>);
+impl<R: FftNum> MyR2C2C<R> {
+    fn new(planner: &mut RealFftPlanner<R>, len: usize) -> Self {
+        Self(
+            Arc::clone(&planner.plan_fft_forward(len)),
+            Arc::clone(&planner.plan_fft_inverse(len)),
+        )
+    }
+    fn fft(&self, a: &mut [R]) -> Result<Vec<Complex<R>>, realfft::FftError> {
+        // make a vector for storing the spectrum
+        let mut spectrum = self.0.make_output_vec();
+
+        // Are they the length we expect?
+        // assert_eq!(spectrum.len(), len / 2 + 1);
+        // assert_eq!(r2c.make_input_vec().len(), len);
+
+        self.0.process(a, &mut spectrum)?;
+        Ok(spectrum)
+    }
+    fn ifft(&self, spectrum: &mut [Complex<R>]) -> Result<Vec<R>, realfft::FftError> {
+        // create a vector for storing the output
+        let mut outdata = self.1.make_output_vec();
+
+        // Are they the length we expect?
+        // assert_eq!(c2r.make_input_vec().len(), spectrum.len());
+        // assert_eq!(outdata.len(), len);
+
+        // inverse transform the spectrum back to a real-valued signal
+        self.1.process(spectrum, &mut outdata)?;
+        Ok(outdata)
+    }
+}
+
+pub struct MyConvolve<R: FftNum> {
+    planner: std::sync::Mutex<RealFftPlanner<R>>,
+    sample_data: Box<[R]>,
+    inv_sample_auto_corrolation: lazy_init::Lazy<R>,
+    pub use_conjugation: bool,
+}
+impl<R: FftNum + From<f32>> MyConvolve<R> {
+    pub fn new_with_planner(planner: RealFftPlanner<R>, sample_data: Box<[R]>) -> Self {
+        Self {
+            planner: std::sync::Mutex::new(planner),
+            sample_data,
+            inv_sample_auto_corrolation: lazy_init::Lazy::new(),
+            use_conjugation: true,
+        }
+    }
+    pub fn new(sample_data: Box<[R]>) -> Self {
+        Self {
+            planner: std::sync::Mutex::new(RealFftPlanner::<R>::new()),
+            sample_data,
+            inv_sample_auto_corrolation: lazy_init::Lazy::new(),
+            use_conjugation: true,
+        }
+    }
+    fn _inverse_sample_auto_correlation(&self) -> R {
+        *self.inv_sample_auto_corrolation.get_or_create(|| {
+            R::from(1.0) / *self
+                .correlate_with_sample(&self.sample_data, &Mode::Valid, false)
+                .expect("autocorrelation failed")
+                .first()
+                .expect("autocorrelation yeildet wrong no output")
+        })
+    }
+    pub fn correlate(
+        &self,
+        within: &[R],
+        sample: &[R],
+        mode: &Mode,
+        scale: bool,
+    ) -> Result<Vec<R>, realfft::FftError> {
+        let pad_len = within.len() + sample.len() - 1;
+        let mut within_and_zeros = pad(within, pad_len, !self.use_conjugation);
+        let mut sample_and_zeros = pad(sample, pad_len, self.use_conjugation);
+        if !self.use_conjugation {
+            sample_and_zeros.reverse();
+        }
+        let r2c2r = MyR2C2C::new(&mut self.planner.lock().unwrap(), pad_len);
+
+        let mut fft_a = r2c2r.fft(&mut within_and_zeros)?;
+        let fft_b = r2c2r.fft(&mut sample_and_zeros)?;
+
+        pairwise_mult_in_place(&mut fft_a, &fft_b, |b| {
+            if self.use_conjugation {
+                b.conj()
+            } else {
+                b
+            }
+        });
+
+        let mut out = r2c2r.ifft(&mut fft_a)?;
+
+        let mut scalar: R = (1.0 / out.len() as f32).into(); // needed scaling
+        if scale {
+            let scale: R = (within.len() as f32).into(); // removes fft induced factor
+            let auto_correlation = self._inverse_sample_auto_correlation(); // scales from [-1,1]
+
+            scalar = scalar * auto_correlation / scale;
+        }
+        scale_slice(&mut out, scalar);
+        Ok(match mode {
+            Mode::Full => out,
+            Mode::Same => Self::centered(&out, within.len()).into(),
+            Mode::Valid => {
+                Self::centered(&out, within.len().saturating_sub(sample.len()) + 1).into()
+            }
+        })
+    }
+
+    /// returns a slice with a length `len` centered in the middle of `out`
+    fn centered<'a>(arr: &'a [R], len: usize) -> &'a [R] {
+        let start = (arr.len() - len) / 2;
+        let end = start + len;
+        arr[start..end].into()
+    }
+}
+impl<'a, R: FftNum + From<f32>> CorrelateAlgo<'a, R> for MyConvolve<R> {
+    fn inverse_sample_auto_correlation(&self) -> R {
+        self._inverse_sample_auto_correlation()
+    }
+
+    fn correlate_with_sample(
+        &self,
+        within: &[R],
+        mode: &Mode,
+        scale: bool,
+    ) -> Result<Vec<R>, Box<dyn std::error::Error>> {
+        Ok(self.correlate(within, &self.sample_data, mode, scale)?)
+    }
+}
+
 pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
     from.map(|i| i as f32).collect_vec()
 }
@@ -297,25 +431,21 @@ mod correlate_tests {
 
     #[test]
     fn my_correlate_same_fftcorrelate() {
-        let mut planner = realfft::RealFftPlanner::new();
+        let scale = false;
         let mode = Mode::Valid;
         let data1: Vec<f32> = test_data(-10..10);
         let data2: Vec<f32> = vec![1.0, 2.0, 3.0];
-        let my_conj = correlate(&mut planner, &data1, &data2, &mode, false, true)
-            .as_ref()
-            .unwrap()
-            .to_vec();
-        let my = correlate(&mut planner, &data1, &data2, &mode, false, false)
-            .as_ref()
-            .unwrap()
-            .to_vec();
-        let expect = fftconvolve::fftcorrelate(
-            &Array1::from_iter(data1.into_iter()),
-            &Array1::from_iter(data2.into_iter()),
-            mode.into(),
-        )
-        .unwrap()
-        .to_vec();
+
+        let mut my_algo = MyConvolve::new(data2.clone().into());
+        let lib_algo = LibConvolve::new(data2.into());
+
+        let my_conj = my_algo.correlate_with_sample(&data1, &mode, scale).unwrap();
+
+        my_algo.use_conjugation = false;
+        let my = my_algo.correlate_with_sample(&data1, &mode, scale).unwrap();
+        let expect = lib_algo
+            .correlate_with_sample(&data1, &mode, scale)
+            .unwrap();
         assert_float_slice_eq(&my, &expect);
         assert_float_slice_eq(&my_conj, &expect);
     }
@@ -332,36 +462,17 @@ mod correlate_tests {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Mode {
-    Full,
-    Same,
-    Valid,
-}
-
-impl From<Mode> for fftconvolve::Mode {
-    fn from(value: Mode) -> Self {
-        match value {
-            Mode::Full => fftconvolve::Mode::Full,
-            Mode::Same => fftconvolve::Mode::Same,
-            Mode::Valid => fftconvolve::Mode::Valid,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use itertools::Itertools;
-
     use super::*;
+    use itertools::Itertools;
+    use std::path::PathBuf;
 
     #[test]
     #[ignore = "slow"]
     fn short_calc_peaks() {
-        let snippet_path = PathBuf::from("res/Interlude.mp3");
-        let main_path = PathBuf::from("res/small_test.mp3");
+        let snippet_path = PathBuf::from("res/local/Interlude.mp3");
+        let main_path = PathBuf::from("res/local/small_test.mp3");
 
         println!("preparing data");
         let sr;
@@ -380,6 +491,7 @@ mod tests {
             }
             sr = s_sr;
         }
+        let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
         let n = crate::mp3_reader::mp3_duration(&main_path).expect("couln't refind main data file");
@@ -387,17 +499,17 @@ mod tests {
         let peaks = calc_chunks(
             sr,
             m_samples,
-            s_samples,
+            algo,
             n,
             false,
             Config {
-                chunk_size: Duration::from_secs(2 * 60),
+                chunk_size: Duration::from_secs(60),
                 overlap_length: crate::mp3_reader::mp3_duration(&snippet_path)
                     .expect("couln't refind snippet data file")
                     / 2,
-                distance: Duration::from_secs(5 * 60),
-                prominence: 250. as SampleType,
-                threads: 6
+                distance: Duration::from_secs(8 * 60),
+                prominence: 15. as SampleType,
+                threads: 6,
             },
         );
         assert!(peaks

@@ -30,7 +30,7 @@ pub struct PathWrap(Box<dyn AsRef<std::path::Path>>);
 
 impl<A: AsRef<Path>> From<A> for PathWrap {
     fn from(value: A) -> Self {
-        value.as_ref().to_path_buf().into()
+        Self(Box::new(value.as_ref().to_path_buf()))
     }
 }
 

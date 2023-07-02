@@ -42,7 +42,7 @@ fn chunked<T: Clone>(
 }
 
 fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
-    if peaks.len() == 0 {
+    if peaks.is_empty() {
         info(&"no offsets found");
     }
     for (i, peak) in peaks
@@ -93,6 +93,9 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         sr = s_sr;
     }
     verbose(&"prepared data");
+    verbose(&"collecting snippet");
+    let algo = audio_matcher::LibConvolve::new(s_samples.collect::<Box<[_]>>());
+    verbose(&"collecting snippet");
 
     let m_duration = mp3_reader::mp3_duration(&main_path)?;
     let s_duration = mp3_reader::mp3_duration(&snippet_path)?;
@@ -100,7 +103,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     let peaks = audio_matcher::calc_chunks(
         sr,
         m_samples,
-        s_samples,
+        algo,
         m_duration,
         true,
         audio_matcher::Config {
