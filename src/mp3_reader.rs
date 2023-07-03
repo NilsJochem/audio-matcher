@@ -1,23 +1,21 @@
 use itertools::Itertools;
 use minimp3::{Decoder, Frame};
+use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::errors::CliError::{NoFile, NoMp3, self};
+use crate::errors::CliError::{self, NoFile, NoMp3};
 use crate::leveled_output::verbose;
 
 pub type SampleType = f32;
 
 // because all samples are 16 bit usage of a single factor is adequat
 const PCM_FACTOR: SampleType = 1.0 / ((1 << 16) - 1) as SampleType;
-pub fn read_mp3<P>(
-    path: &P,
-) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), CliError>
+pub fn read_mp3<P>(path: &P) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), CliError>
 where
     P: AsRef<std::path::Path>,
 {
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
-    let (sample_rate, iter) =
-        frame_iterator(Decoder::new(file)).map_err(|_| NoMp3(path.into()))?;
+    let (sample_rate, iter) = frame_iterator(Decoder::new(file)).map_err(|_| NoMp3(path.into()))?;
 
     let iter = iter.flat_map(move |frame| {
         if frame.sample_rate as u16 != sample_rate {
@@ -66,7 +64,7 @@ fn frame_iterator(
     ))
 }
 
-pub fn mp3_duration<P>(path: &P) -> Result<Duration, CliError>
+pub fn mp3_duration<P>(path: &P, use_parallel: bool) -> Result<Duration, CliError>
 where
     P: AsRef<std::path::Path>,
 {
@@ -79,12 +77,16 @@ where
 
     let decoder = Decoder::new(file);
     let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3(path.into()))?;
-    let seconds: f64 = frames
-        // .par_bridge() // parrallel, but seems half as fast
-        .map(|frame| {
-            frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64)
-        })
-        .sum();
+    let seconds: f64 = if use_parallel {
+        frames
+        .par_bridge() // parrallel, but seems half as fast
+        .map(|frame| frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64))
+        .sum()
+    } else {
+        frames
+        .map(|frame| frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64))
+        .sum()
+    };
     Ok(Duration::from_secs_f64(seconds))
 }
 
@@ -94,13 +96,13 @@ mod tests {
 
     #[test]
     fn short_mp3_duration() {
-        assert_eq!(mp3_duration(&"res/Interlude.mp3").unwrap().as_secs(), 7);
+        assert_eq!(mp3_duration(&"res/Interlude.mp3", false).unwrap().as_secs(), 7);
     }
     #[test]
     #[ignore = "slow"]
     fn long_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/big_test.mp3").unwrap().as_secs(),
+            mp3_duration(&"res/big_test.mp3", false).unwrap().as_secs(),
             (3 * 60 + 20) * 60 + 55
         );
     }

@@ -2,7 +2,7 @@ pub mod args;
 pub mod audio_matcher;
 mod errors;
 pub mod leveled_output;
-mod mp3_reader;
+pub mod mp3_reader;
 mod progress_bar;
 
 use std::{time::Duration, usize};
@@ -97,8 +97,8 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     let algo = audio_matcher::LibConvolve::new(s_samples.collect::<Box<[_]>>());
     verbose(&"collecting snippet");
 
-    let m_duration = mp3_reader::mp3_duration(&main_path)?;
-    let s_duration = mp3_reader::mp3_duration(&snippet_path)?;
+    let m_duration = mp3_reader::mp3_duration(&main_path, false)?;
+    let s_duration = mp3_reader::mp3_duration(&snippet_path, false)?;
     verbose(&"got duration");
     let peaks = audio_matcher::calc_chunks(
         sr,

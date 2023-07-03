@@ -100,11 +100,44 @@ fn full_match_duration_vs(c: &mut Criterion) {
     group.finish();
 }
 
+fn mp3_duration_vs_parallel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("get_duration_vs_parallel");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(200));
+    let input = "res/local/big_test.mp3";
+    for parallel in [true, false] {
+        group.bench_with_input(
+            BenchmarkId::new("get_mp3_duration", parallel),
+            &parallel,
+            |b, args| b.iter(|| audio_matcher::mp3_reader::mp3_duration(black_box(&input), black_box(*args)).unwrap()),
+        );
+    }
+
+    group.finish();
+
+}
+
+fn read_mp3(c: &mut Criterion) {
+    let mut group = c.benchmark_group("read_mp3");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(240));
+    let input = "res/local/small_test.mp3";
+    group.bench_function(
+        "read_mp3",
+        |b| b.iter(|| audio_matcher::mp3_reader::read_mp3(black_box(&input)).unwrap().1.collect::<Vec<_>>()),
+    );
+
+    group.finish();
+
+}
+
 criterion_group!(
     benches,
     full_match,
     correlate_vs_bib,
     correlate_vs_conj,
-    full_match_duration_vs
+    full_match_duration_vs,
+    mp3_duration_vs_parallel,
+    read_mp3
 );
 criterion_main!(benches);

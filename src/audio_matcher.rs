@@ -494,7 +494,7 @@ mod tests {
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
-        let n = crate::mp3_reader::mp3_duration(&main_path).expect("couln't refind main data file");
+        let n = crate::mp3_reader::mp3_duration(&main_path, false).expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(
             sr,
@@ -504,7 +504,7 @@ mod tests {
             false,
             Config {
                 chunk_size: Duration::from_secs(60),
-                overlap_length: crate::mp3_reader::mp3_duration(&snippet_path)
+                overlap_length: crate::mp3_reader::mp3_duration(&snippet_path, false)
                     .expect("couln't refind snippet data file")
                     / 2,
                 distance: Duration::from_secs(8 * 60),
