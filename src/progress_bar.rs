@@ -1,16 +1,29 @@
 use itertools::Itertools;
 use pad::PadStr;
-use std::io::{stdout, Write};
+use std::{io::{stdout, Write}, sync::Arc};
+
+pub trait Arrow<const N: usize> {
+    fn build(&self, fractions: [f64; N], bar_length: usize) -> String;
+}
+// // workaround to clone a Box<dyn Arrow>
+// trait ArrowClone<const N: usize> {
+//     fn clone_box(&self) -> Box<dyn Arrow<N>>;
+// }
+// impl <T, const N: usize> ArrowClone<N> for T where T: 'static + Arrow<N> + Clone {
+//     fn clone_box(&self) -> Box<dyn Arrow<N>> {
+//         Box::new(self.clone())
+//     }
+// }
 
 #[derive(PartialEq, Eq, Clone)]
-pub struct Arrow<const N: usize> {
+pub struct SimpleArrow<const N: usize> {
     arrow_prefix: String,
     arrow_suffix: String,
     arrow_chars: [char; N],
     arrow_tip: char,
 }
 
-impl Default for Arrow<1> {
+impl Default for SimpleArrow<1> {
     fn default() -> Self {
         Self {
             arrow_prefix: "[".to_owned(),
@@ -20,18 +33,17 @@ impl Default for Arrow<1> {
         }
     }
 }
-impl Default for Arrow<2> {
+impl Default for SimpleArrow<2> {
     fn default() -> Self {
         Self {
             arrow_chars: ['=', '-'],
-            arrow_prefix: Arrow::<1>::default().arrow_prefix,
-            arrow_suffix: Arrow::<1>::default().arrow_suffix,
-            arrow_tip: Arrow::<1>::default().arrow_tip,
+            arrow_prefix: SimpleArrow::<1>::default().arrow_prefix,
+            arrow_suffix: SimpleArrow::<1>::default().arrow_suffix,
+            arrow_tip: SimpleArrow::<1>::default().arrow_tip,
         }
     }
 }
-
-impl<const N: usize> Arrow<N> {
+impl<const N: usize> Arrow<N> for SimpleArrow<N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
         let mut arrow =
             String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
@@ -63,12 +75,22 @@ impl<const N: usize> Arrow<N> {
 pub struct Open;
 pub struct Closed;
 
-#[derive(PartialEq, Eq, Clone)]
 pub struct ProgressBar<const N: usize, State = Closed> {
     pub bar_length: usize,
     pub pre_msg: String,
-    pub arrow: Arrow<N>,
+    pub arrow: Arc<dyn Arrow<N> + Send + Sync>,
     pub _state: std::marker::PhantomData<State>,
+}
+
+impl<const N: usize, State> Clone for ProgressBar<N, State> {
+    fn clone(&self) -> Self {
+        Self {
+            bar_length: self.bar_length.clone(),
+            pre_msg: self.pre_msg.clone(),
+            arrow: self.arrow.clone(),
+            _state: self._state.clone(),
+        }
+    }
 }
 
 impl Default for ProgressBar<1, Closed> {
@@ -76,7 +98,7 @@ impl Default for ProgressBar<1, Closed> {
         Self {
             bar_length: 20,
             pre_msg: "Progress: ".to_owned(),
-            arrow: Arrow::default(),
+            arrow: Arc::new(SimpleArrow::default()),
             _state: Default::default(),
         }
     }
@@ -86,7 +108,7 @@ impl Default for ProgressBar<2, Closed> {
         Self {
             bar_length: 20,
             pre_msg: "Progress: ".to_owned(),
-            arrow: Arrow::default(),
+            arrow: Arc::new(SimpleArrow::default()),
             _state: Default::default(),
         }
     }
@@ -160,28 +182,28 @@ mod tests {
     #[test]
     fn empty_arrow() {
         assert_eq!(
-            Arrow::default().build([0.0], 10),
+            SimpleArrow::default().build([0.0], 10),
             String::from("[>         ]")
         )
     }
     #[test]
     fn short_arrow() {
         assert_eq!(
-            Arrow::default().build([0.2], 10),
+            SimpleArrow::default().build([0.2], 10),
             String::from("[==>       ]")
         )
     }
     #[test]
     fn long_arrow() {
         assert_eq!(
-            Arrow::default().build([0.9], 10),
+            SimpleArrow::default().build([0.9], 10),
             String::from("[=========>]")
         )
     }
     #[test]
     fn full_arrow() {
         assert_eq!(
-            Arrow::default().build([1.0], 10),
+            SimpleArrow::default().build([1.0], 10),
             String::from("[==========]")
         )
     }
@@ -189,7 +211,7 @@ mod tests {
     #[test]
     fn double_arrow() {
         assert_eq!(
-            Arrow::default().build([0.3, 0.5], 10),
+            SimpleArrow::default().build([0.3, 0.5], 10),
             String::from("[===-->    ]")
         );
     }
