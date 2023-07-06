@@ -23,6 +23,10 @@ pub struct Arguments {
     pub chunk_size: usize,
     #[clap(long, default_value_t = 3, value_name = "THREADS", help="number of Threads")]
     pub threads: usize,
+    #[clap(long, help="use fancy bar, needs fira ttf to work")]
+    pub fancy_bar: bool,
+    // #[clap(long, help="use new implementation for fftcorrelate")]
+    // pub new_correlate: bool,
 
 
     #[clap(long)]

@@ -75,7 +75,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into() };
     debug(&format!("{:#?}", args));
 
-    let snippet_path = args.snippet;
+    let snippet_path = &args.snippet;
     let main_path = args.within.first().unwrap();
 
     verbose(&"preparing data");
@@ -93,12 +93,12 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         sr = s_sr;
     }
     verbose(&"prepared data");
-    verbose(&"collecting snippet");
-    let algo = audio_matcher::LibConvolve::new(s_samples.collect::<Box<[_]>>());
-    verbose(&"collecting snippet");
+    let sample_data = s_samples.collect::<Box<[_]>>();
+    verbose(&"collected snippet");
+    let algo = audio_matcher::LibConvolve::new(sample_data);
 
-    let m_duration = mp3_reader::mp3_duration(&main_path, false)?;
     let s_duration = mp3_reader::mp3_duration(&snippet_path, false)?;
+    let m_duration = mp3_reader::mp3_duration(&main_path, false)?;
     verbose(&"got duration");
     let peaks = audio_matcher::calc_chunks(
         sr,
@@ -106,13 +106,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         algo,
         m_duration,
         true,
-        audio_matcher::Config {
-            chunk_size: Duration::from_secs(args.chunk_size as u64),
-            overlap_length: s_duration / 2,
-            distance: Duration::from_secs(args.distance as u64),
-            prominence: args.prominence / 100.0,
-            threads: args.threads,
-        },
+        audio_matcher::Config::from_args(&args, s_duration),
     );
 
     print_offsets(&peaks, sr);
@@ -123,13 +117,11 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         .out_file
         .out_file
         .or_else(|| {
-            if args.out_file.no_out {
-                None
-            } else {
+            (!args.out_file.no_out).then(|| {
                 let mut path = main_path.clone();
                 path.set_extension("txt");
-                Some(path)
-            }
+                path
+            })
         })
         .filter(|path| {
             let out = !std::path::Path::new(path).exists()
@@ -174,10 +166,10 @@ fn ask_consent(msg: &str, args: &args::Inputs) -> bool {
     false
 }
 
-fn write_text_marks(
+fn write_text_marks<P: AsRef<std::path::Path>>(
     peaks: &[Peak<SampleType>],
     sr: SampleType,
-    path: &std::path::PathBuf,
+    path: P,
     in_between: Duration,
     dry_run: bool,
 ) -> Result<(), CliError> {
@@ -199,9 +191,12 @@ fn write_text_marks(
     }
 
     if dry_run {
-        info(&format!("writing \"\"\"\n{out}\"\"\" > {}", path.display()));
+        info(&format!(
+            "writing \"\"\"\n{out}\"\"\" > {}",
+            path.as_ref().display()
+        ));
     } else {
-        std::fs::write(path, out).map_err(|_| errors::CliError::CantCreateFile(path.into()))?;
+        std::fs::write(&path, out).map_err(|_| errors::CliError::CantCreateFile(path.into()))?;
     }
     Ok(())
 }

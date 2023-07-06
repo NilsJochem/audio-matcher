@@ -1,6 +1,9 @@
 use itertools::Itertools;
 use pad::PadStr;
-use std::{io::{stdout, Write}, sync::Arc};
+use std::{
+    io::{stdout, Write},
+    sync::Arc,
+};
 
 pub trait Arrow<const N: usize> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String;
@@ -45,6 +48,8 @@ impl Default for SimpleArrow<2> {
 }
 impl<const N: usize> Arrow<N> for SimpleArrow<N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
+        let bar_length = bar_length - (self.arrow_prefix.len() + self.arrow_suffix.len()); //remove surrounding
+
         let mut arrow =
             String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
         arrow.push_str(&self.arrow_prefix);
@@ -72,6 +77,41 @@ impl<const N: usize> Arrow<N> for SimpleArrow<N> {
     }
 }
 
+pub struct FancyArrow {
+    empty_bar: [char; 3],
+    full_bar: [char; 3]
+}
+impl Default for FancyArrow {
+    fn default() -> Self { // unicode progress bars
+        Self { empty_bar: ['\u{ee00}', '\u{ee01}', '\u{ee02}'], full_bar: ['\u{ee03}', '\u{ee04}', '\u{ee05}'] }
+    }
+}
+// just use the last bar
+impl <const N: usize> Arrow<N> for FancyArrow {
+    fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
+        let mut arrow = String::with_capacity(bar_length);
+
+        let arrow_len = (bar_length as f64 * fractions[0]).round() as usize;
+        let full_len = (arrow_len.saturating_sub(1)).min(bar_length - 2);
+        let empty_len = bar_length - (full_len + 2);
+        arrow.push(if arrow_len == 0 { self.empty_bar } else { self.full_bar }[0]);
+        for _ in 0..full_len {
+            arrow.push(self.full_bar[1]);
+        }
+        for _ in 0..empty_len {
+            arrow.push(self.empty_bar[1]);
+        }
+        arrow.push(
+            if arrow_len != bar_length {
+                self.empty_bar
+            } else {
+                self.full_bar
+            }[2]
+        );
+        arrow
+    }
+}
+
 pub struct Open;
 pub struct Closed;
 
@@ -85,10 +125,10 @@ pub struct ProgressBar<const N: usize, State = Closed> {
 impl<const N: usize, State> Clone for ProgressBar<N, State> {
     fn clone(&self) -> Self {
         Self {
-            bar_length: self.bar_length.clone(),
+            bar_length: self.bar_length,
             pre_msg: self.pre_msg.clone(),
             arrow: self.arrow.clone(),
-            _state: self._state.clone(),
+            _state: self._state,
         }
     }
 }
@@ -179,40 +219,80 @@ impl<const N: usize> ProgressBar<N, Open> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn empty_arrow() {
-        assert_eq!(
-            SimpleArrow::default().build([0.0], 10),
-            String::from("[>         ]")
-        )
-    }
-    #[test]
-    fn short_arrow() {
-        assert_eq!(
-            SimpleArrow::default().build([0.2], 10),
-            String::from("[==>       ]")
-        )
-    }
-    #[test]
-    fn long_arrow() {
-        assert_eq!(
-            SimpleArrow::default().build([0.9], 10),
-            String::from("[=========>]")
-        )
-    }
-    #[test]
-    fn full_arrow() {
-        assert_eq!(
-            SimpleArrow::default().build([1.0], 10),
-            String::from("[==========]")
-        )
-    }
+    mod simple_arrow {
+        use super::*;
 
-    #[test]
-    fn double_arrow() {
-        assert_eq!(
-            SimpleArrow::default().build([0.3, 0.5], 10),
-            String::from("[===-->    ]")
-        );
+        #[test]
+        fn empty_arrow() {
+            assert_eq!(
+                SimpleArrow::default().build([0.0], 12),
+                String::from("[>         ]")
+            )
+        }
+        #[test]
+        fn short_arrow() {
+            assert_eq!(
+                SimpleArrow::default().build([0.2], 12),
+                String::from("[==>       ]")
+            )
+        }
+        #[test]
+        fn long_arrow() {
+            assert_eq!(
+                SimpleArrow::default().build([0.9], 12),
+                String::from("[=========>]")
+            )
+        }
+        #[test]
+        fn full_arrow() {
+            assert_eq!(
+                SimpleArrow::default().build([1.0], 12),
+                String::from("[==========]")
+            )
+        }
+
+        #[test]
+        fn double_arrow() {
+            assert_eq!(
+                SimpleArrow::default().build([0.3, 0.5], 12),
+                String::from("[===-->    ]")
+            );
+        }
+    }
+    mod fancy_arrow {
+        use super::*;
+
+        fn ascci_arrow() -> FancyArrow {
+            FancyArrow { empty_bar: ['(', ' ', ')'], full_bar: ['{', '-', '}'] }
+        }
+
+        #[test]
+        fn empty_arrow() {
+            assert_eq!(
+                ascci_arrow().build([0.0], 10),
+                String::from("(        )")
+            )
+        }
+        #[test]
+        fn short_arrow() {
+            assert_eq!(
+                ascci_arrow().build([0.2], 10),
+                String::from("{-       )")
+            )
+        }
+        #[test]
+        fn long_arrow() {
+            assert_eq!(
+                ascci_arrow().build([0.9], 10),
+                String::from("{--------)")
+            )
+        }
+        #[test]
+        fn full_arrow() {
+            assert_eq!(
+                ascci_arrow().build([1.0], 10),
+                String::from("{--------}")
+            )
+        }
     }
 }

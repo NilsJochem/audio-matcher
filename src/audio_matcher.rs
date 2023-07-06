@@ -1,6 +1,9 @@
+use crate::args::Arguments;
 use crate::chunked;
 use crate::offset_range;
+use crate::progress_bar::FancyArrow;
 use crate::progress_bar::ProgressBar;
+use crate::progress_bar::SimpleArrow;
 
 use find_peaks::Peak;
 use itertools::Itertools;
@@ -23,8 +26,20 @@ pub struct Config {
     pub distance: Duration,
     pub prominence: SampleType,
     pub threads: usize,
+    pub fancy_arrow: bool,
 }
-
+impl Config {
+    pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
+        Self {
+            chunk_size: Duration::from_secs(args.chunk_size as u64),
+            overlap_length: s_duration / 2,
+            distance: Duration::from_secs(args.distance as u64),
+            prominence: args.prominence / 100.0,
+            threads: args.threads,
+            fancy_arrow: args.fancy_bar,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy)]
 pub enum Mode {
     Full,
@@ -74,16 +89,20 @@ pub fn calc_chunks<
     use threadpool::ThreadPool;
 
     // normalize inputs
-    let chunks = ((m_duration).as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
+    let chunks = (m_duration.as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
     let algo_with_sample = Arc::new(algo_with_sample);
-
     let progress_state = Arc::new(Mutex::new((0, 0)));
     let progress_bar = Arc::new(
         ProgressBar {
-            bar_length: chunks.min(80),
+            bar_length: chunks.min(term_size::dimensions().map(|(w, _)| w - 29).unwrap_or(100)),
+            arrow: if config.fancy_arrow {
+                Arc::new(FancyArrow::default())
+            } else {
+                Arc::new(SimpleArrow::default())
+            },
             ..ProgressBar::default()
         }
         .prepare_output(),
@@ -347,11 +366,12 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
     }
     fn _inverse_sample_auto_correlation(&self) -> R {
         *self.inv_sample_auto_corrolation.get_or_create(|| {
-            R::from(1.0) / *self
-                .correlate_with_sample(&self.sample_data, &Mode::Valid, false)
-                .expect("autocorrelation failed")
-                .first()
-                .expect("autocorrelation yeildet wrong no output")
+            R::from(1.0)
+                / *self
+                    .correlate_with_sample(&self.sample_data, &Mode::Valid, false)
+                    .expect("autocorrelation failed")
+                    .first()
+                    .expect("autocorrelation yeildet wrong no output")
         })
     }
     pub fn correlate(
@@ -400,7 +420,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
     }
 
     /// returns a slice with a length `len` centered in the middle of `out`
-    fn centered<'a>(arr: &'a [R], len: usize) -> &'a [R] {
+    fn centered(arr: &[R], len: usize) -> &[R] {
         let start = (arr.len() - len) / 2;
         let end = start + len;
         arr[start..end].into()
@@ -494,7 +514,8 @@ mod tests {
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
-        let n = crate::mp3_reader::mp3_duration(&main_path, false).expect("couln't refind main data file");
+        let n = crate::mp3_reader::mp3_duration(&main_path, false)
+            .expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(
             sr,
@@ -510,6 +531,7 @@ mod tests {
                 distance: Duration::from_secs(8 * 60),
                 prominence: 15. as SampleType,
                 threads: 6,
+                fancy_arrow: false,
             },
         );
         assert!(peaks
