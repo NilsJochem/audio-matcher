@@ -1,5 +1,5 @@
 pub static mut OUTPUT_LEVEL: OutputLevel = OutputLevel::Info;
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, Eq, Ord, PartialOrd)]
 pub enum OutputLevel {
     Debug,
     Verbose,
@@ -10,18 +10,18 @@ pub enum OutputLevel {
 pub(crate) fn println(level: &OutputLevel, msg: &dyn AsRef<str>) {
     if unsafe { OUTPUT_LEVEL <= *level } {
         if *level == OutputLevel::Error {
-            eprintln!("{}", msg.as_ref())
+            eprintln!("{}", msg.as_ref());
         } else {
-            println!("{}", msg.as_ref())
+            println!("{}", msg.as_ref());
         }
     }
 }
 pub(crate) fn print(level: &OutputLevel, msg: &dyn AsRef<str>) {
     if unsafe { OUTPUT_LEVEL <= *level } {
         if *level == OutputLevel::Error {
-            eprint!("{}", msg.as_ref())
+            eprint!("{}", msg.as_ref());
         } else {
-            print!("{}", msg.as_ref())
+            print!("{}", msg.as_ref());
         }
     }
 }

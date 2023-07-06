@@ -34,14 +34,14 @@ fn correlate_vs_bib(c: &mut Criterion) {
     group.bench_function("correlate my func", |b| {
         b.iter(|| {
             my_algo
-                .correlate_with_sample(black_box(&data2), &mode, false)
+                .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
         })
     });
     group.bench_function("correlate old func", |b| {
         b.iter(|| {
             lib_algo
-                .correlate_with_sample(black_box(&data2), &mode, false)
+                .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
         })
     });
@@ -59,7 +59,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
     group.bench_function("correlate my func + conjugate", |b| {
         b.iter(|| {
             my_algo
-                .correlate_with_sample(black_box(&data2), &mode, false)
+                .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
         })
     });
@@ -67,7 +67,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
     group.bench_function("correlate my func + reverse mult", |b| {
         b.iter(|| {
             my_algo
-                .correlate_with_sample(black_box(&data2), &mode, false)
+                .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
         })
     });

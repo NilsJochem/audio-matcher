@@ -14,7 +14,7 @@ use leveled_output::{debug, error, info, verbose};
 use mp3_reader::SampleType;
 use text_io::read;
 
-fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
+const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
     (range.start + offset)..(range.end + offset)
 }
 
@@ -63,7 +63,8 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     }
 }
 
-pub fn split_duration(duration: &Duration) -> (usize, usize, usize) {
+#[inline]
+pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
     let elapsed = duration.as_secs() as usize;
     let seconds = elapsed % 60;
     let minutes = (elapsed / 60) % 60;
@@ -72,8 +73,8 @@ pub fn split_duration(duration: &Duration) -> (usize, usize, usize) {
 }
 
 pub fn run(args: args::Arguments) -> Result<(), CliError> {
-    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into() };
-    debug(&format!("{:#?}", args));
+    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into(); }
+    debug(&format!("{args:#?}"));
 
     let snippet_path = &args.snippet;
     let main_path = args.within.first().unwrap();
@@ -112,7 +113,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     print_offsets(&peaks, sr);
     debug(&format!("found peaks {:#?}", &peaks));
 
-    println!();
+    info(&"");
     if let Some(out_path) = args
         .out_file
         .out_file
@@ -127,7 +128,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
             let out = !std::path::Path::new(path).exists()
                 || ask_consent(
                     &format!("file '{}' already exists, overwrite", path.display()),
-                    &args.always_answer,
+                    args.always_answer,
                 );
             if !out {
                 error(&format!("won't overwrite '{}'", path.display()));
@@ -148,7 +149,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     Ok(())
 }
 
-fn ask_consent(msg: &str, args: &args::Inputs) -> bool {
+fn ask_consent(msg: &str, args: args::Inputs) -> bool {
     if args.yes || args.no {
         return args.yes;
     }

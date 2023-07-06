@@ -79,13 +79,13 @@ pub struct OutputLevel {
 impl From<OutputLevel> for super::leveled_output::OutputLevel {
     fn from(val: OutputLevel) -> Self {
         if val.silent {
-            super::leveled_output::OutputLevel::Error
+            Self::Error
         } else if val.verbose {
-            super::leveled_output::OutputLevel::Verbose
+            Self::Verbose
         } else if val.debug {
-            super::leveled_output::OutputLevel::Debug
+            Self::Debug
         } else {
-            super::leveled_output::OutputLevel::Info
+            Self::Info
         }
     }
 }

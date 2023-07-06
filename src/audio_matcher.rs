@@ -56,7 +56,7 @@ pub trait CorrelateAlgo<'a, R: FftNum + From<f32>> {
     fn correlate_with_sample(
         &self,
         within: &[R],
-        mode: &Mode,
+        mode: Mode,
         scale: bool,
     ) -> Result<Vec<R>, Box<dyn std::error::Error>>;
     fn scale(&self, data: &mut [R]) {
@@ -67,9 +67,9 @@ pub trait CorrelateAlgo<'a, R: FftNum + From<f32>> {
 impl From<Mode> for fftconvolve::Mode {
     fn from(value: Mode) -> Self {
         match value {
-            Mode::Full => fftconvolve::Mode::Full,
-            Mode::Same => fftconvolve::Mode::Same,
-            Mode::Valid => fftconvolve::Mode::Valid,
+            Mode::Full => Self::Full,
+            Mode::Same => Self::Same,
+            Mode::Valid => Self::Valid,
         }
     }
 }
@@ -97,7 +97,7 @@ pub fn calc_chunks<
     let progress_state = Arc::new(Mutex::new((0, 0)));
     let progress_bar = Arc::new(
         ProgressBar {
-            bar_length: chunks.min(term_size::dimensions().map(|(w, _)| w - 29).unwrap_or(100)),
+            bar_length: chunks.min(term_size::dimensions().map_or(100, |(w, _)| w - 29)),
             arrow: if config.fancy_arrow {
                 Arc::new(FancyArrow::default())
             } else {
@@ -123,9 +123,7 @@ pub fn calc_chunks<
     )
     .enumerate()
     {
-        if chunks <= i {
-            panic!("to many chunks")
-        }
+        assert!(chunks <= i, "to many chunks");
         let algo_with_sample = Arc::clone(&algo_with_sample);
         let progress_state = Arc::clone(&progress_state);
         let progress_bar = Arc::clone(&progress_bar);
@@ -138,7 +136,7 @@ pub fn calc_chunks<
 
             let offset = chunk_size as usize * i;
             let matches = algo_with_sample
-                .correlate_with_sample(&chunk, &Mode::Valid, scale)
+                .correlate_with_sample(&chunk, Mode::Valid, scale)
                 .unwrap();
 
             let peaks = find_peaks(&matches, sr, config)
@@ -164,9 +162,7 @@ pub fn calc_chunks<
     Arc::into_inner(progress_bar)
         .expect("reference to Arc<ProgressBar> remaining")
         .finish_output();
-    if pool.panic_count() > 0 {
-        panic!("some worker threads paniced");
-    }
+    assert!(pool.panic_count() > 0, "some worker threads paniced");
     rx.iter()
         .take(chunks)
         .flatten()
@@ -178,14 +174,14 @@ impl ProgressBar<2, crate::progress_bar::Open> {
     fn print_progress(&self, data: &(usize, usize), chunks: usize, start: &Instant) {
         let elapsed = Instant::now().duration_since(*start);
         let (_, minutes, seconds) = crate::split_duration(&elapsed);
-        let fmt_elapsed = &format!(" {:0>2}:{:0>2}", minutes, seconds);
+        let fmt_elapsed = &format!(" {minutes:0>2}:{seconds:0>2}");
 
         self.print_bar([data.0, data.1], chunks, fmt_elapsed);
     }
 }
 
-fn find_peaks(_match: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks::Peak<SampleType>> {
-    let mut fp = find_peaks::PeakFinder::new(_match);
+fn find_peaks(y_data: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks::Peak<SampleType>> {
+    let mut fp = find_peaks::PeakFinder::new(y_data);
     fp.with_min_prominence(config.prominence);
     fp.with_min_distance(config.distance.as_secs() as usize * sr as usize);
     fp.find_peaks()
@@ -220,7 +216,7 @@ where
     F: Fn(T1, T2) -> T1,
 {
     for i in 0..b.len() {
-        a[i] = map(a[i], b[i])
+        a[i] = map(a[i], b[i]);
     }
 }
 
@@ -258,18 +254,18 @@ impl LibConvolve {
         &self,
         within: &Array1<SampleType>,
         sample: &Array1<SampleType>,
-        mode: &Mode,
+        mode: Mode,
         scale: bool,
     ) -> Result<Vec<SampleType>, Box<dyn std::error::Error>> {
-        let mode: fftconvolve::Mode = <Mode as Into<fftconvolve::Mode>>::into(*mode);
+        let mode: fftconvolve::Mode = <Mode as Into<fftconvolve::Mode>>::into(mode);
         let mut res = fftconvolve::fftcorrelate(within, sample, mode)?.to_vec();
         if scale {
-            self.scale(&mut res)
+            self.scale(&mut res);
         }
         Ok(res)
     }
     fn convert_data(raw: &[SampleType]) -> Array1<SampleType> {
-        Array1::from_iter(raw.iter().cloned())
+        Array1::from_iter(raw.iter().copied())
     }
 
     fn sample_array(&self) -> &Array1<SampleType> {
@@ -284,7 +280,7 @@ impl<'a> CorrelateAlgo<'a, SampleType> for LibConvolve {
                 .correlate(
                     self.sample_array(),
                     self.sample_array(),
-                    &Mode::Valid,
+                    Mode::Valid,
                     false,
                 )
                 .expect("autocorrelation failed")
@@ -296,7 +292,7 @@ impl<'a> CorrelateAlgo<'a, SampleType> for LibConvolve {
     fn correlate_with_sample(
         &self,
         within: &[SampleType],
-        mode: &Mode,
+        mode: Mode,
         scale: bool,
     ) -> Result<Vec<SampleType>, Box<dyn std::error::Error>> {
         self.correlate(
@@ -368,7 +364,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
         *self.inv_sample_auto_corrolation.get_or_create(|| {
             R::from(1.0)
                 / *self
-                    .correlate_with_sample(&self.sample_data, &Mode::Valid, false)
+                    .correlate_with_sample(&self.sample_data, Mode::Valid, false)
                     .expect("autocorrelation failed")
                     .first()
                     .expect("autocorrelation yeildet wrong no output")
@@ -378,7 +374,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
         &self,
         within: &[R],
         sample: &[R],
-        mode: &Mode,
+        mode: Mode,
         scale: bool,
     ) -> Result<Vec<R>, realfft::FftError> {
         let pad_len = within.len() + sample.len() - 1;
@@ -434,7 +430,7 @@ impl<'a, R: FftNum + From<f32>> CorrelateAlgo<'a, R> for MyConvolve<R> {
     fn correlate_with_sample(
         &self,
         within: &[R],
-        mode: &Mode,
+        mode: Mode,
         scale: bool,
     ) -> Result<Vec<R>, Box<dyn std::error::Error>> {
         Ok(self.correlate(within, &self.sample_data, mode, scale)?)
@@ -459,12 +455,12 @@ mod correlate_tests {
         let mut my_algo = MyConvolve::new(data2.clone().into());
         let lib_algo = LibConvolve::new(data2.into());
 
-        let my_conj = my_algo.correlate_with_sample(&data1, &mode, scale).unwrap();
+        let my_conj = my_algo.correlate_with_sample(&data1, mode, scale).unwrap();
 
         my_algo.use_conjugation = false;
-        let my = my_algo.correlate_with_sample(&data1, &mode, scale).unwrap();
+        let my = my_algo.correlate_with_sample(&data1, mode, scale).unwrap();
         let expect = lib_algo
-            .correlate_with_sample(&data1, &mode, scale)
+            .correlate_with_sample(&data1, mode, scale)
             .unwrap();
         assert_float_slice_eq(&my, &expect);
         assert_float_slice_eq(&my_conj, &expect);

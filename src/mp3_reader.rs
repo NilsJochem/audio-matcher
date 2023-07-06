@@ -18,12 +18,12 @@ where
     let (sample_rate, iter) = frame_iterator(Decoder::new(file)).map_err(|_| NoMp3(path.into()))?;
 
     let iter = iter.flat_map(move |frame| {
-        if frame.sample_rate as u16 != sample_rate {
-            panic!("sample rate changed")
-        }
-        if frame.channels != 2 {
-            panic!("can only handle stereo")
-        }
+        assert!(
+            frame.sample_rate as u16 != sample_rate,
+            "sample rate changed"
+        );
+        assert!(frame.channels != 2, "can only handle stereo");
+
         frame
             .data
             .iter()
@@ -47,7 +47,7 @@ impl Iterator for Wrapper {
         match self.0.next_frame() {
             Ok(frame) => Some(frame),
             Err(minimp3::Error::Eof) => None,
-            Err(e) => panic!("{:?}", e),
+            Err(e) => panic!("{e:?}"),
         }
     }
 }
@@ -60,7 +60,7 @@ fn frame_iterator(
 
     Ok((
         sample_rate,
-        [first_frame].into_iter().chain(Wrapper(decoder)),
+        std::iter::once(first_frame).chain(Wrapper(decoder)),
     ))
 }
 
@@ -79,13 +79,17 @@ where
     let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3(path.into()))?;
     let seconds: f64 = if use_parallel {
         frames
-        .par_bridge() // parrallel, but seems half as fast
-        .map(|frame| frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64))
-        .sum()
+            .par_bridge() // parrallel, but seems half as fast
+            .map(|frame| {
+                frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64)
+            })
+            .sum()
     } else {
         frames
-        .map(|frame| frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64))
-        .sum()
+            .map(|frame| {
+                frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64)
+            })
+            .sum()
     };
     Ok(Duration::from_secs_f64(seconds))
 }
@@ -96,7 +100,10 @@ mod tests {
 
     #[test]
     fn short_mp3_duration() {
-        assert_eq!(mp3_duration(&"res/Interlude.mp3", false).unwrap().as_secs(), 7);
+        assert_eq!(
+            mp3_duration(&"res/Interlude.mp3", false).unwrap().as_secs(),
+            7
+        );
     }
     #[test]
     #[ignore = "slow"]

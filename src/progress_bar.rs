@@ -62,7 +62,7 @@ impl<const N: usize> Arrow<N> for SimpleArrow<N> {
                     .to_string()
                     .repeat(((fraction - last_fraction) * bar_length as f64).round() as usize),
             );
-            last_fraction = fraction
+            last_fraction = fraction;
         }
 
         if bar_length - (arrow.len() - self.arrow_prefix.len()) > 0 {
@@ -102,10 +102,10 @@ impl <const N: usize> Arrow<N> for FancyArrow {
             arrow.push(self.empty_bar[1]);
         }
         arrow.push(
-            if arrow_len != bar_length {
-                self.empty_bar
-            } else {
+            if arrow_len == bar_length {
                 self.full_bar
+            } else {
+                self.empty_bar
             }[2]
         );
         arrow
@@ -119,7 +119,7 @@ pub struct ProgressBar<const N: usize, State = Closed> {
     pub bar_length: usize,
     pub pre_msg: String,
     pub arrow: Arc<dyn Arrow<N> + Send + Sync>,
-    pub _state: std::marker::PhantomData<State>,
+    pub state: std::marker::PhantomData<State>,
 }
 
 impl<const N: usize, State> Clone for ProgressBar<N, State> {
@@ -128,7 +128,7 @@ impl<const N: usize, State> Clone for ProgressBar<N, State> {
             bar_length: self.bar_length,
             pre_msg: self.pre_msg.clone(),
             arrow: self.arrow.clone(),
-            _state: self._state,
+            state: self.state,
         }
     }
 }
@@ -139,7 +139,7 @@ impl Default for ProgressBar<1, Closed> {
             bar_length: 20,
             pre_msg: "Progress: ".to_owned(),
             arrow: Arc::new(SimpleArrow::default()),
-            _state: Default::default(),
+            state: std::marker::PhantomData::default(),
         }
     }
 }
@@ -149,7 +149,7 @@ impl Default for ProgressBar<2, Closed> {
             bar_length: 20,
             pre_msg: "Progress: ".to_owned(),
             arrow: Arc::new(SimpleArrow::default()),
-            _state: Default::default(),
+            state: std::marker::PhantomData::default(),
         }
     }
 }
@@ -165,7 +165,7 @@ impl<const N: usize> ProgressBar<N, Closed> {
             bar_length: self.bar_length,
             pre_msg: self.pre_msg,
             arrow: self.arrow,
-            _state: std::marker::PhantomData::<Open>,
+            state: std::marker::PhantomData::<Open>,
         }
     }
 }
@@ -177,13 +177,13 @@ impl<const N: usize> ProgressBar<N, Open> {
             bar_length: self.bar_length,
             pre_msg: self.pre_msg,
             arrow: self.arrow,
-            _state: std::marker::PhantomData::<Closed>,
+            state: std::marker::PhantomData::<Closed>,
         }
     }
     pub fn print_bar(&self, mut current: [usize; N], total: usize, post_msg: &str) {
         current[N - 1] = current[N - 1].max(0);
         for i in N - 1..0 {
-            current[i + 1] = current[i + 1].min(current[i])
+            current[i + 1] = current[i + 1].min(current[i]);
         }
         let total = total.max(current[0]);
         let fractions = current.map(|c| c as f64 / total as f64);
