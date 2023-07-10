@@ -1,5 +1,6 @@
 pub mod args;
 pub mod audio_matcher;
+mod data;
 mod errors;
 pub mod leveled_output;
 pub mod mp3_reader;
@@ -171,25 +172,18 @@ fn write_text_marks<P: AsRef<std::path::Path>>(
     peaks: &[Peak<SampleType>],
     sr: SampleType,
     path: P,
-    in_between: Duration,
+    delay_start: Duration,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let mut out = String::new();
-    for (i, (start, end)) in peaks
+    let out = peaks
         .iter()
-        .map(|p| p.position.start as SampleType / sr)
+        .map(|p| Duration::from_secs_f64(p.position.start as f64 / sr as f64))
         .tuple_windows()
         .enumerate()
-    {
-        out += (start as f64 + in_between.as_secs_f64())
-            .to_string()
-            .as_str();
-        out.push('\t');
-        out += (end).to_string().as_str();
-        out.push_str("\tSegment ");
-        out += (i + 1).to_string().as_str();
-        out.push('\n')
-    }
+        .map(|(i, (start, end))| {
+            Into::<String>::into(&data::TimeLabel::new(start + delay_start, end, i + 1))
+        })
+        .join("\n");
 
     if dry_run {
         info(&format!(
