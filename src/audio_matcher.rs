@@ -123,7 +123,7 @@ pub fn calc_chunks<
     )
     .enumerate()
     {
-        assert!(chunks <= i, "to many chunks");
+        assert!(chunks > i, "to many chunks");
         let algo_with_sample = Arc::clone(&algo_with_sample);
         let progress_state = Arc::clone(&progress_state);
         let progress_bar = Arc::clone(&progress_bar);
@@ -162,7 +162,7 @@ pub fn calc_chunks<
     Arc::into_inner(progress_bar)
         .expect("reference to Arc<ProgressBar> remaining")
         .finish_output();
-    assert!(pool.panic_count() > 0, "some worker threads paniced");
+    assert!(pool.panic_count() == 0, "some worker threads paniced");
     rx.iter()
         .take(chunks)
         .flatten()

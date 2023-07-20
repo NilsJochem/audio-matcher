@@ -19,10 +19,10 @@ where
 
     let iter = iter.flat_map(move |frame| {
         assert!(
-            frame.sample_rate as u16 != sample_rate,
-            "sample rate changed"
+            frame.sample_rate as u16 == sample_rate,
+            "sample rate changed from {sample_rate} to {}", frame.sample_rate
         );
-        assert!(frame.channels != 2, "can only handle stereo");
+        assert!(frame.channels == 2, "can only handle stereo");
 
         frame
             .data
