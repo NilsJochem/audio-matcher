@@ -2,9 +2,9 @@ use crate::args::Arguments;
 use crate::chunked;
 use crate::mp3_reader::SampleType;
 use crate::offset_range;
-use crate::progress_bar::Progress;
-use crate::progress_bar::SimpleArrow;
-use crate::progress_bar::*;
+use progress_bar::progress_bar::Progress;
+use progress_bar::progress_bar::SimpleArrow;
+use progress_bar::progress_bar::*;
 
 use find_peaks::Peak;
 use itertools::Itertools;

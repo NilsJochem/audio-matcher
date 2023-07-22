@@ -220,20 +220,17 @@ impl Bound for Bounded {
                     + self.post_msg_len)
             });
 
-        crate::leveled_output::print(
-            &crate::leveled_output::OutputLevel::Info,
-            &format!(
-                "\r{}{} {current_fmt}/{}{}",
-                progress.bar.pre_msg,
-                progress.bar.arrow.build(fractions, bar_len),
-                self.size,
-                post_msg,
-            ),
+        print!(
+            "\r{}{} {current_fmt}/{}{}",
+            progress.bar.pre_msg,
+            progress.bar.arrow.build(fractions, bar_len),
+            self.size,
+            post_msg,
         );
         stdout().flush().unwrap();
     }
     fn cleanup() {
-        crate::leveled_output::info(&"");
+        println!("");
     }
 }
 

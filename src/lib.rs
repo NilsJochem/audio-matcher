@@ -3,7 +3,6 @@ pub mod audio_matcher;
 mod errors;
 pub mod leveled_output;
 pub mod mp3_reader;
-pub mod progress_bar;
 
 use std::{time::Duration, usize};
 
