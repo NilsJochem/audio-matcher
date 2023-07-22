@@ -189,7 +189,7 @@ fn write_text_marks<P: AsRef<std::path::Path>>(
         out += (end).to_string().as_str();
         out.push_str("\tSegment ");
         out += (i + 1).to_string().as_str();
-        out.push('\n')
+        out.push('\n');
     }
 
     if dry_run {

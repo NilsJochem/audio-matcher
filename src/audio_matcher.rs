@@ -2,9 +2,9 @@ use crate::args::Arguments;
 use crate::chunked;
 use crate::mp3_reader::SampleType;
 use crate::offset_range;
-use progress_bar::progress_bar::Progress;
-use progress_bar::progress_bar::SimpleArrow;
-use progress_bar::progress_bar::*;
+use progress_bar::{Bar, Progress};
+use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
+use progress_bar::callback::OnceCallback;
 
 use find_peaks::Peak;
 use itertools::Itertools;
@@ -44,9 +44,9 @@ impl Config {
             },
             threads: args.threads,
             arrow: if args.fancy_bar {
-                Box::new(FancyArrow::default())
+                Box::<FancyArrow>::default()
             } else {
-                Box::new(SimpleArrow::default())
+                Box::<SimpleArrow<2>>::default()
             },
         }
     }
@@ -106,7 +106,7 @@ pub fn calc_chunks<C: CorrelateAlgo<SampleType> + Sync + Send + 'static>(
     let pool = ThreadPool::new(n_workers);
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<SampleType>>>();
 
-    let (iter, holder) = Progress::new_external_bound(
+    let mut progress = Progress::new_external_bound(
         chunked(
             m_samples,
             chunk_size as usize + overlap_length as usize,
@@ -116,10 +116,11 @@ pub fn calc_chunks<C: CorrelateAlgo<SampleType> + Sync + Send + 'static>(
         Bar::new("Progress: ".to_string(), true, config.arrow), // TODO maybe move Bar to config
         0,
         chunks,
-    )
-    .fit_bound()
-    .expect("no terminal bounds found")
-    .into();
+    );
+    if let Some(width) = progress_bar::terminal_width() {
+        progress.set_max_len(width);
+    }
+    let (iter, holder) = progress.into();
 
     for (i, chunk) in iter {
         assert!(chunks > i, "to many chunks");
@@ -254,7 +255,7 @@ impl LibConvolve {
             .get_or_create(|| Self::convert_data(&self.sample_data))
     }
 }
-impl<'a> CorrelateAlgo<SampleType> for LibConvolve {
+impl CorrelateAlgo<SampleType> for LibConvolve {
     fn inverse_sample_auto_correlation(&self) -> SampleType {
         *self.inv_sample_auto_corrolation.get_or_create(|| {
             1.0 / self
