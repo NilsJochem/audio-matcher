@@ -1,9 +1,34 @@
+#![warn(
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::empty_structs_with_brackets,
+    clippy::format_push_string,
+    clippy::if_then_some_else_none,
+    clippy::impl_trait_in_params,
+    clippy::missing_assert_message,
+    clippy::multiple_inherent_impl,
+    clippy::non_ascii_literal,
+    clippy::self_named_module_files,
+    clippy::semicolon_inside_block,
+    clippy::separated_literal_suffix,
+    clippy::str_to_string,
+    clippy::string_to_string
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate
+)]
+
 pub mod args;
 pub mod audio_matcher;
 mod errors;
 pub mod leveled_output;
 pub mod mp3_reader;
-mod progress_bar;
 
 use std::{time::Duration, usize};
 
@@ -18,11 +43,11 @@ const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops
     (range.start + offset)..(range.end + offset)
 }
 
-fn chunked<T: Clone>(
-    mut data: impl Iterator<Item = T> + 'static,
+fn chunked<T: Clone + Send + Sync>(
+    mut data: impl Iterator<Item = T> + Send + Sync + 'static,
     window_size: usize,
     hop_length: usize,
-) -> impl Iterator<Item = Vec<T>> {
+) -> impl Iterator<Item = Vec<T>> + Send + Sync {
     let mut buffer = Vec::with_capacity(hop_length);
     std::iter::from_fn(move || {
         while buffer.len() < window_size {
@@ -73,7 +98,9 @@ pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
 }
 
 pub fn run(args: args::Arguments) -> Result<(), CliError> {
-    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into(); }
+    unsafe {
+        crate::leveled_output::OUTPUT_LEVEL = args.output_level.into();
+    }
     debug(&format!("{args:#?}"));
 
     let snippet_path = &args.snippet;
@@ -188,7 +215,7 @@ fn write_text_marks<P: AsRef<std::path::Path>>(
         out += (end).to_string().as_str();
         out.push_str("\tSegment ");
         out += (i + 1).to_string().as_str();
-        out.push('\n')
+        out.push('\n');
     }
 
     if dry_run {
@@ -208,16 +235,14 @@ mod tests {
 
     #[test]
     fn chunked_test() {
-        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
+        let is = chunked(0..15, 6, 4).collect_vec();
         let expected = vec![0..6, 4..10, 8..14, 12..15]
             .into_iter()
-            .map(|r| r.collect_vec())
+            .map(itertools::Itertools::collect_vec)
             .collect_vec();
         assert!(
             &is.eq(&expected),
-            "expected {:?} but was {:?}",
-            expected,
-            is
+            "expected {expected:?} but was {is:?}"
         );
     }
 }

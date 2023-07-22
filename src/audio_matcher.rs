@@ -1,9 +1,10 @@
 use crate::args::Arguments;
 use crate::chunked;
+use crate::mp3_reader::SampleType;
 use crate::offset_range;
-use crate::progress_bar::FancyArrow;
-use crate::progress_bar::ProgressBar;
-use crate::progress_bar::SimpleArrow;
+use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
+use progress_bar::callback::OnceCallback;
+use progress_bar::{Bar, Progress};
 
 use find_peaks::Peak;
 use itertools::Itertools;
@@ -12,31 +13,41 @@ use realfft::{
     num_complex::Complex, num_traits::Zero, ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    marker::{Send, Sync},
+    sync::{mpsc::Sender, Arc},
+    time::Duration,
     vec,
 };
+use threadpool::ThreadPool;
 
-use crate::mp3_reader::SampleType;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Config {
-    pub chunk_size: Duration,
-    pub overlap_length: Duration,
-    pub distance: Duration,
-    pub prominence: SampleType,
-    pub threads: usize,
-    pub fancy_arrow: bool,
+    chunk_size: Duration,
+    overlap_length: Duration,
+    peak_config: PeakConfig,
+    threads: usize,
+    arrow: Box<dyn Arrow<2> + Send + Sync>,
+}
+#[derive(Debug, Clone, Copy)]
+struct PeakConfig {
+    distance: Duration,
+    prominence: SampleType,
 }
 impl Config {
     pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
         Self {
             chunk_size: Duration::from_secs(args.chunk_size as u64),
             overlap_length: s_duration / 2,
-            distance: Duration::from_secs(args.distance as u64),
-            prominence: args.prominence / 100.0,
+            peak_config: PeakConfig {
+                distance: Duration::from_secs(args.distance as u64),
+                prominence: args.prominence / 100.0,
+            },
             threads: args.threads,
-            fancy_arrow: args.fancy_bar,
+            arrow: if args.fancy_bar {
+                Box::<FancyArrow>::default()
+            } else {
+                Box::<SimpleArrow<2>>::default()
+            },
         }
     }
 }
@@ -51,7 +62,7 @@ pub enum Mode {
 /// represents an Algorythm that can correlate two sets of data.
 ///
 /// It should know the data of the sample, and its autocorrelation to optimize multiple calls with the same sample
-pub trait CorrelateAlgo<'a, R: FftNum + From<f32>> {
+pub trait CorrelateAlgo<R: FftNum + From<f32>> {
     fn inverse_sample_auto_correlation(&self) -> R;
     fn correlate_with_sample(
         &self,
@@ -75,112 +86,85 @@ impl From<Mode> for fftconvolve::Mode {
 }
 
 pub fn calc_chunks<
-    'a,
-    C: CorrelateAlgo<'a, SampleType> + std::marker::Sync + std::marker::Send + 'static,
+    C: CorrelateAlgo<SampleType> + Sync + Send + 'static,
+    Iter: Iterator<Item = SampleType> + Send + Sync + 'static,
 >(
     sr: u16,
-    m_samples: impl Iterator<Item = SampleType> + 'static,
+    m_samples: Iter,
     algo_with_sample: C,
     m_duration: Duration,
     scale: bool,
     config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
-    use std::sync::Mutex;
-    use threadpool::ThreadPool;
-
     // normalize inputs
     let chunks = (m_duration.as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
     let algo_with_sample = Arc::new(algo_with_sample);
-    let progress_state = Arc::new(Mutex::new((0, 0)));
-    let progress_bar = Arc::new(
-        ProgressBar {
-            bar_length: chunks.min(term_size::dimensions().map_or(100, |(w, _)| w - 29)),
-            arrow: if config.fancy_arrow {
-                Arc::new(FancyArrow::default())
-            } else {
-                Arc::new(SimpleArrow::default())
-            },
-            ..ProgressBar::default()
-        }
-        .prepare_output(),
-    );
 
     // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
-    // should use less, cause RAM fills up
+    // should use less, cause RAM fills up, 3 seems to be enough to saturate decoder
     let n_workers = config.threads;
     let pool = ThreadPool::new(n_workers);
-
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<SampleType>>>();
-    let start = Instant::now();
 
-    for (i, chunk) in chunked(
-        m_samples,
-        chunk_size as usize + overlap_length as usize,
-        chunk_size as usize,
-    )
-    .enumerate()
-    {
+    let mut progress = Progress::new_external_bound(
+        chunked(
+            m_samples,
+            chunk_size as usize + overlap_length as usize,
+            chunk_size as usize,
+        )
+        .enumerate(),
+        Bar::new("Progress: ".to_owned(), true, config.arrow), // TODO maybe move Bar to config
+        0,
+        chunks,
+    );
+    if let Some(width) = progress_bar::terminal_width() {
+        progress.set_max_len(width);
+    }
+    let (iter, holder) = progress.into();
+
+    for (i, chunk) in iter {
         assert!(chunks > i, "to many chunks");
+
+        let [f1, f2] = OnceCallback::new(&holder);
+
         let algo_with_sample = Arc::clone(&algo_with_sample);
-        let progress_state = Arc::clone(&progress_state);
-        let progress_bar = Arc::clone(&progress_bar);
-        let tx = tx.clone();
+        let tx = Sender::clone(&tx);
         pool.execute(move || {
-            let mut lock = progress_state.lock().unwrap();
-            lock.1 += 1; // incrementing started counter
-            progress_bar.print_progress(&lock, chunks, &start);
-            drop(lock);
+            f1.call();
 
             let offset = chunk_size as usize * i;
             let matches = algo_with_sample
                 .correlate_with_sample(&chunk, Mode::Valid, scale)
                 .unwrap();
 
-            let peaks = find_peaks(&matches, sr, config)
-                .iter()
-                .map(|p| {
-                    let mut p = p.clone();
-                    p.position = offset_range(&p.position, offset);
-                    p
-                })
+            let peaks = find_peaks(&matches, sr, config.peak_config)
+                .into_iter()
+                .update(|p| p.position = offset_range(&p.position, offset))
                 .collect::<Vec<_>>();
 
-            let mut lock = progress_state.lock().unwrap();
-            lock.0 += 1; // incrementing finished counter
-            progress_bar.print_progress(&lock, chunks, &start);
-            drop(lock);
-            drop(progress_bar);
-
-            tx.send(peaks)
-                .expect("channel will be there waiting for the pool");
+            tx.send(peaks).unwrap();
+            f2.call();
         });
     }
+
     pool.join();
-    Arc::into_inner(progress_bar)
-        .expect("reference to Arc<ProgressBar> remaining")
-        .finish_output();
+
     assert!(pool.panic_count() == 0, "some worker threads paniced");
-    rx.iter()
+    rx.into_iter()
         .take(chunks)
         .flatten()
         .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
         .collect_vec()
 }
 
-impl ProgressBar<2, crate::progress_bar::Open> {
-    fn print_progress(&self, data: &(usize, usize), chunks: usize, start: &Instant) {
-        let elapsed = Instant::now().duration_since(*start);
-        let (_, minutes, seconds) = crate::split_duration(&elapsed);
-        let fmt_elapsed = &format!(" {minutes:0>2}:{seconds:0>2}");
-
-        self.print_bar([data.0, data.1], chunks, fmt_elapsed);
-    }
-}
-
-fn find_peaks(y_data: &[SampleType], sr: u16, config: Config) -> Vec<find_peaks::Peak<SampleType>> {
+fn find_peaks(
+    y_data: &[SampleType],
+    sr: u16,
+    config: PeakConfig,
+) -> Vec<find_peaks::Peak<SampleType>> {
     let mut fp = find_peaks::PeakFinder::new(y_data);
     fp.with_min_prominence(config.prominence);
     fp.with_min_distance(config.distance.as_secs() as usize * sr as usize);
@@ -215,8 +199,9 @@ where
     T2: Copy,
     F: Fn(T1, T2) -> T1,
 {
-    for i in 0..b.len() {
-        a[i] = map(a[i], b[i]);
+    assert_eq!(a.len(), b.len(), "can only map elements of same lenght");
+    for (i, element) in a.iter_mut().enumerate() {
+        *element = map(*element, b[i]);
     }
 }
 
@@ -273,16 +258,11 @@ impl LibConvolve {
             .get_or_create(|| Self::convert_data(&self.sample_data))
     }
 }
-impl<'a> CorrelateAlgo<'a, SampleType> for LibConvolve {
+impl CorrelateAlgo<SampleType> for LibConvolve {
     fn inverse_sample_auto_correlation(&self) -> SampleType {
         *self.inv_sample_auto_corrolation.get_or_create(|| {
             1.0 / self
-                .correlate(
-                    self.sample_array(),
-                    self.sample_array(),
-                    Mode::Valid,
-                    false,
-                )
+                .correlate(self.sample_array(), self.sample_array(), Mode::Valid, false)
                 .expect("autocorrelation failed")
                 .first()
                 .expect("auto correlation empty")
@@ -422,7 +402,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
         arr[start..end].into()
     }
 }
-impl<'a, R: FftNum + From<f32>> CorrelateAlgo<'a, R> for MyConvolve<R> {
+impl<R: FftNum + From<f32>> CorrelateAlgo<R> for MyConvolve<R> {
     fn inverse_sample_auto_correlation(&self) -> R {
         self._inverse_sample_auto_correlation()
     }
@@ -437,7 +417,7 @@ impl<'a, R: FftNum + From<f32>> CorrelateAlgo<'a, R> for MyConvolve<R> {
     }
 }
 
-pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
+pub fn test_data<Iter: Iterator<Item = isize>>(from: Iter) -> Vec<f32> {
     from.map(|i| i as f32).collect_vec()
 }
 
@@ -459,9 +439,7 @@ mod correlate_tests {
 
         my_algo.use_conjugation = false;
         let my = my_algo.correlate_with_sample(&data1, mode, scale).unwrap();
-        let expect = lib_algo
-            .correlate_with_sample(&data1, mode, scale)
-            .unwrap();
+        let expect = lib_algo.correlate_with_sample(&data1, mode, scale).unwrap();
         assert_float_slice_eq(&my, &expect);
         assert_float_slice_eq(&my_conj, &expect);
     }
@@ -502,9 +480,7 @@ mod tests {
             (m_sr, m_samples) =
                 crate::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
 
-            if s_sr != m_sr {
-                panic!("sample rate dosn't match")
-            }
+            assert!(s_sr == m_sr, "sample rate dosn't match");
             sr = s_sr;
         }
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
@@ -524,10 +500,12 @@ mod tests {
                 overlap_length: crate::mp3_reader::mp3_duration(&snippet_path, false)
                     .expect("couln't refind snippet data file")
                     / 2,
-                distance: Duration::from_secs(8 * 60),
-                prominence: 15. as SampleType,
+                peak_config: PeakConfig {
+                    distance: Duration::from_secs(8 * 60),
+                    prominence: 15. as SampleType,
+                },
                 threads: 6,
-                fancy_arrow: false,
+                arrow: Box::<SimpleArrow<2>>::default(),
             },
         );
         assert!(peaks
