@@ -413,13 +413,14 @@ impl<R: FftNum + From<f32>> CorrelateAlgo<R> for MyConvolve<R> {
     }
 }
 
+pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
+    from.map(|i| i as f32).collect_vec()
+}
+
 #[cfg(test)]
 mod correlate_tests {
     use super::*;
 
-    pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
-        from.map(|i| i as f32).collect_vec()
-    }
     #[test]
     fn my_correlate_same_fftcorrelate() {
         let scale = false;
