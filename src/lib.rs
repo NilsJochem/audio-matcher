@@ -18,11 +18,11 @@ const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops
     (range.start + offset)..(range.end + offset)
 }
 
-fn chunked<T: Clone>(
-    mut data: impl Iterator<Item = T> + 'static,
+fn chunked<T: Clone + Send + Sync>(
+    mut data: impl Iterator<Item = T> + Send + Sync + 'static,
     window_size: usize,
     hop_length: usize,
-) -> impl Iterator<Item = Vec<T>> {
+) -> impl Iterator<Item = Vec<T>> + Send + Sync {
     let mut buffer = Vec::with_capacity(hop_length);
     std::iter::from_fn(move || {
         while buffer.len() < window_size {
@@ -73,7 +73,9 @@ pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
 }
 
 pub fn run(args: args::Arguments) -> Result<(), CliError> {
-    unsafe { crate::leveled_output::OUTPUT_LEVEL = args.output_level.into(); }
+    unsafe {
+        crate::leveled_output::OUTPUT_LEVEL = args.output_level.into();
+    }
     debug(&format!("{args:#?}"));
 
     let snippet_path = &args.snippet;

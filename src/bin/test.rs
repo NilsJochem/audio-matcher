@@ -1,35 +1,36 @@
-use std::cell::RefCell;
 use std::rc::Rc;
+use threadpool::ThreadPool;
 
 use std::time::Duration;
 
 use audio_matcher::progress_bar::*;
 fn main() {
     let bar = Progress::new_bound(
-        Bar::<2>::new("test: ".to_owned(), true, Box::new(SimpleArrow::default())),
-        0..100,
-        4,
+        0..10,
+        Bar::<2>::new("Progress: ".to_owned(), true, Box::new(SimpleArrow::default())),
+        0,
     )
     .fit_bound()
     .expect("no resolution found");
 
-    let handles = Rc::new(RefCell::new(Vec::new()));
-    let h_copy = Rc::clone(&handles);
+    let pool = Rc::new(ThreadPool::new(25));
+    let pool2 = Rc::clone(&pool);
 
-    bar.iter_with_finish(
-        move |finished, i| {
+    {
+        let (iter, holder) = bar.get_arc_iter();
+        for _ in iter {
+            let [f1, f2] = OnceCallback::new(&holder);
+            f1.call();
             std::thread::sleep(Duration::from_millis(100));
-            h_copy.borrow_mut().push(std::thread::spawn(move || {
+            // f2.call();
+            pool2.execute(move || {
                 std::thread::sleep(std::time::Duration::from_millis(500));
 
-                print!(" e{}", i);
-                finished();
-            }));
-        },
-    );
-    let handles = Rc::try_unwrap(handles).unwrap().into_inner();
-    for it in handles {
-        it.join().unwrap();
-    }
+                // print!(" e{}", i);
+                f2.call();
+            });
+        }
+    };
+    pool.join();
     println!("finished");
 }
