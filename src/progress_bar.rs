@@ -13,19 +13,60 @@ pub trait Arrow<const N: usize>: Debug {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleArrow<const N: usize> {
-    arrow_prefix: String,
-    arrow_suffix: String,
+    arrow_prefix: &'static str,
+    arrow_suffix: &'static str,
+    base_char: char,
     arrow_chars: [char; N],
-    arrow_tip: char,
+    arrow_tip: &'static str,
+}
+
+pub struct UnicodeBar(char, char);
+#[allow(non_snake_case, dead_code)]
+impl UnicodeBar {
+    pub fn Rising() -> Self {
+        Self('█', '▁')
+    }
+    pub fn Box() -> Self {
+        Self('■', '□')
+    }
+    pub fn Circle() -> Self {
+        Self('⬤', '◯')
+    }
+    pub fn Parallelogramm() -> Self {
+        Self('▰', '▱')
+    }
+}
+impl From<UnicodeBar> for SimpleArrow<1> {
+    fn from(value: UnicodeBar) -> Self {
+        Self {
+            arrow_prefix: "",
+            arrow_suffix: "",
+            base_char: value.1,
+            arrow_chars: [value.0],
+            arrow_tip: "",
+        }
+    }
+}
+impl SimpleArrow<2> {
+    pub fn unicode_grayscale() -> Self {
+        Self {
+            arrow_prefix: "",
+            arrow_suffix: "",
+            base_char: '▒',
+            arrow_chars: ['█', '▓'],
+            arrow_tip: "",
+        }
+    }
 }
 
 impl Default for SimpleArrow<1> {
     fn default() -> Self {
         Self {
-            arrow_prefix: "[".to_owned(),
-            arrow_suffix: "]".to_owned(),
+            arrow_prefix: "[",
+            arrow_suffix: "]",
+            base_char: ' ',
             arrow_chars: ['='],
-            arrow_tip: '>',
+            arrow_tip: ">",
         }
     }
 }
@@ -33,6 +74,7 @@ impl Default for SimpleArrow<2> {
     fn default() -> Self {
         Self {
             arrow_chars: ['=', '-'],
+            base_char: SimpleArrow::<1>::default().base_char,
             arrow_prefix: SimpleArrow::<1>::default().arrow_prefix,
             arrow_suffix: SimpleArrow::<1>::default().arrow_suffix,
             arrow_tip: SimpleArrow::<1>::default().arrow_tip,
@@ -41,30 +83,26 @@ impl Default for SimpleArrow<2> {
 }
 impl<const N: usize> Arrow<N> for SimpleArrow<N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
-        let bar_length = bar_length - (self.arrow_prefix.len() + self.arrow_suffix.len()); //remove surrounding
+        let mut arrow = String::with_capacity(bar_length);
+        let bar_length = bar_length - self.padding_needed(); //remove surrounding
 
-        let mut arrow =
-            String::with_capacity(bar_length + self.arrow_prefix.len() + self.arrow_suffix.len());
-        arrow.push_str(&self.arrow_prefix);
+        arrow.push_str(self.arrow_prefix);
 
         let mut last_fraction = 0.0;
-        for (i, fraction) in fractions.into_iter().enumerate() {
-            let char = self.arrow_chars[i];
-            arrow.push_str(
-                &char
-                    .to_string()
-                    .repeat(((fraction - last_fraction) * bar_length as f64).floor() as usize),
-            );
+        for (fraction, char) in fractions.into_iter().zip(self.arrow_chars) {
+            for _ in 0..((fraction - last_fraction) * bar_length as f64).floor() as usize {
+                arrow.push(char);
+            }
             last_fraction = fraction;
         }
-        if bar_length - (arrow.len() - self.arrow_prefix.len()) > 0 {
-            arrow.push(self.arrow_tip);
+        if bar_length - (arrow.len() - self.arrow_prefix.len()) >= self.arrow_tip.len() {
+            arrow.push_str(self.arrow_tip);
         }
-        arrow.push_str(
-            " ".repeat(bar_length.saturating_sub(arrow.len() - self.arrow_prefix.len()))
-                .as_str(),
-        );
-        arrow.push_str(&self.arrow_suffix);
+
+        for _ in 0..bar_length.saturating_sub(arrow.len() - self.arrow_prefix.len()) {
+            arrow.push(self.base_char);
+        }
+        arrow.push_str(self.arrow_suffix);
         arrow
     }
     fn padding_needed(&self) -> usize {
@@ -78,11 +116,11 @@ pub struct FancyArrow {
     full_bar: [char; 3],
 }
 impl Default for FancyArrow {
+    /// uses fira typeset to print connected progress bar
     fn default() -> Self {
-        // unicode progress bars
         Self {
-            empty_bar: ['\u{ee00}', '\u{ee01}', '\u{ee02}'],
-            full_bar: ['\u{ee03}', '\u{ee04}', '\u{ee05}'],
+            empty_bar: ['', '', ''], // '\u{ee00}', '\u{ee01}', '\u{ee02}'
+            full_bar: ['', '', ''],  // '\u{ee03}', '\u{ee04}', '\u{ee05}'
         }
     }
 }
