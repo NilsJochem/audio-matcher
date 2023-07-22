@@ -2,9 +2,9 @@ use crate::args::Arguments;
 use crate::chunked;
 use crate::mp3_reader::SampleType;
 use crate::offset_range;
-use progress_bar::{Bar, Progress};
 use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
 use progress_bar::callback::OnceCallback;
+use progress_bar::{Bar, Progress};
 
 use find_peaks::Peak;
 use itertools::Itertools;
@@ -85,9 +85,12 @@ impl From<Mode> for fftconvolve::Mode {
     }
 }
 
-pub fn calc_chunks<C: CorrelateAlgo<SampleType> + Sync + Send + 'static>(
+pub fn calc_chunks<
+    C: CorrelateAlgo<SampleType> + Sync + Send + 'static,
+    Iter: Iterator<Item = SampleType> + Send + Sync + 'static,
+>(
     sr: u16,
-    m_samples: impl Iterator<Item = SampleType> + Send + Sync + 'static,
+    m_samples: Iter,
     algo_with_sample: C,
     m_duration: Duration,
     scale: bool,
@@ -113,7 +116,7 @@ pub fn calc_chunks<C: CorrelateAlgo<SampleType> + Sync + Send + 'static>(
             chunk_size as usize,
         )
         .enumerate(),
-        Bar::new("Progress: ".to_string(), true, config.arrow), // TODO maybe move Bar to config
+        Bar::new("Progress: ".to_owned(), true, config.arrow), // TODO maybe move Bar to config
         0,
         chunks,
     );
@@ -414,7 +417,7 @@ impl<R: FftNum + From<f32>> CorrelateAlgo<R> for MyConvolve<R> {
     }
 }
 
-pub fn test_data(from: impl Iterator<Item = isize>) -> Vec<f32> {
+pub fn test_data<Iter: Iterator<Item = isize>>(from: Iter) -> Vec<f32> {
     from.map(|i| i as f32).collect_vec()
 }
 
@@ -477,9 +480,7 @@ mod tests {
             (m_sr, m_samples) =
                 crate::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
 
-            if s_sr != m_sr {
-                panic!("sample rate dosn't match")
-            }
+            assert!(s_sr == m_sr, "sample rate dosn't match");
             sr = s_sr;
         }
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
@@ -504,7 +505,7 @@ mod tests {
                     prominence: 15. as SampleType,
                 },
                 threads: 6,
-                arrow: Box::new(SimpleArrow::default()),
+                arrow: Box::<SimpleArrow<2>>::default(),
             },
         );
         assert!(peaks

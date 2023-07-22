@@ -235,16 +235,14 @@ mod tests {
 
     #[test]
     fn chunked_test() {
-        let is = chunked((0..15).into_iter(), 6, 4).collect_vec();
+        let is = chunked(0..15, 6, 4).collect_vec();
         let expected = vec![0..6, 4..10, 8..14, 12..15]
             .into_iter()
-            .map(|r| r.collect_vec())
+            .map(itertools::Itertools::collect_vec)
             .collect_vec();
         assert!(
             &is.eq(&expected),
-            "expected {:?} but was {:?}",
-            expected,
-            is
+            "expected {expected:?} but was {is:?}"
         );
     }
 }
