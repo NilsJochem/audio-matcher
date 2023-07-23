@@ -16,7 +16,7 @@ pad = "0.1"
 chrono = "0.4"
 regex = "1.8"
 lazy_static = "1.4"
-term_size = "0.3"
+progress_bar = { path = "./progress_bar" }
 
 threadpool = "1.8"
 rayon = "1.7"

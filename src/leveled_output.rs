@@ -16,6 +16,7 @@ pub(crate) fn println(level: &OutputLevel, msg: &dyn AsRef<str>) {
         }
     }
 }
+#[allow(dead_code)]
 pub(crate) fn print(level: &OutputLevel, msg: &dyn AsRef<str>) {
     if unsafe { OUTPUT_LEVEL <= *level } {
         if *level == OutputLevel::Error {

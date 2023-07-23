@@ -4,23 +4,23 @@ use audio_matcher::{args::Arguments, audio_matcher::CorrelateAlgo};
 use clap::Parser;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-fn full_match(c: &mut Criterion) {
-    // c.bench_function("fib 20", |b| b.iter(|| fibonacci(black_box(20))));
-    let input = Arguments::parse_from([
-        "",
-        "res/local/small_test.mp3",
-        "--snippet",
-        "res/local/Interlude.mp3",
-        "--no-out",
-        "--dry-run",
-        "-n",
-    ]);
-    c.bench_with_input(
-        BenchmarkId::new("peaks in small_test", ""),
-        &input,
-        |b, args| b.iter(|| audio_matcher::run(black_box(args.clone()))),
-    );
-}
+// fn full_match(c: &mut Criterion) {
+//     // c.bench_function("fib 20", |b| b.iter(|| fibonacci(black_box(20))));
+//     let input = Arguments::parse_from([
+//         "",
+//         "res/local/small_test.mp3",
+//         "--snippet",
+//         "res/local/Interlude.mp3",
+//         "--no-out",
+//         "--dry-run",
+//         "-n",
+//     ]);
+//     c.bench_with_input(
+//         BenchmarkId::new("peaks in small_test", ""),
+//         &input,
+//         |b, args| b.iter(|| audio_matcher::run(black_box(args.clone()))),
+//     );
+// }
 
 fn correlate_vs_bib(c: &mut Criterion) {
     let mode = audio_matcher::audio_matcher::Mode::Valid;
@@ -133,7 +133,7 @@ fn read_mp3(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    full_match,
+    // full_match,
     correlate_vs_bib,
     correlate_vs_conj,
     full_match_duration_vs,

@@ -19,10 +19,10 @@ where
 
     let iter = iter.flat_map(move |frame| {
         assert!(
-            frame.sample_rate as u16 != sample_rate,
-            "sample rate changed"
+            frame.sample_rate as u16 == sample_rate,
+            "sample rate changed from {sample_rate} to {}", frame.sample_rate
         );
-        assert!(frame.channels != 2, "can only handle stereo");
+        assert!(frame.channels == 2, "can only handle stereo");
 
         frame
             .data
@@ -116,12 +116,12 @@ mod tests {
 
     #[test]
     fn short_mp3_samples() {
-        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323712)
+        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323_712)
     }
 
     #[test]
     #[ignore = "slow"]
     fn long_mp3_samples() {
-        assert_eq!(read_mp3(&"res/big_test.mp3").unwrap().1.count(), 531668736)
+        assert_eq!(read_mp3(&"res/big_test.mp3").unwrap().1.count(), 531_668_736)
     }
 }
