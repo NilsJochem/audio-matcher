@@ -1,7 +1,8 @@
 use crate::args::Arguments;
-use crate::chunked;
 use crate::mp3_reader::SampleType;
 use crate::offset_range;
+use crate::{chunked, start_as_duration, FilterIterExt};
+
 use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
 use progress_bar::callback::OnceCallback;
 use progress_bar::{Bar, Progress};
@@ -35,7 +36,7 @@ impl Config {
     pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
         Self {
             chunk_size: Duration::from_secs(args.chunk_size as u64),
-            overlap_length: s_duration / 2,
+            overlap_length: s_duration,
             peak_config: PeakConfig {
                 distance: Duration::from_secs(args.distance as u64),
                 prominence: args.prominence / 100.0,
@@ -114,9 +115,8 @@ pub fn calc_chunks<
     }
     let (iter, holder) = progress.get_arc_iter();
 
-    let mut out = iter
-        .par_bridge()
-        .map(move | (i, chunk) | {
+    iter.par_bridge()
+        .map(move |(i, chunk)| {
             let [f1, f2] = OnceCallback::new(&holder);
             f1.call();
 
@@ -134,9 +134,92 @@ pub fn calc_chunks<
             peaks
         })
         .flatten()
-        .collect::<Vec<_>>();
-    out.sort_by(|a, b| Ord::cmp(&a.position.start, &b.position.start));
-    out
+        .collect::<Vec<_>>()
+        .into_iter()
+        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
+        .filter_surrounding(|before, element, after| {
+            !(is_overshadowed(element, before, sr, config.peak_config.distance)
+                || is_overshadowed(element, after, sr, config.peak_config.distance))
+        })
+        .collect_vec()
+}
+
+fn is_overshadowed(
+    element: &find_peaks::Peak<f32>,
+    other: &Option<find_peaks::Peak<f32>>,
+    sr: u16,
+    max_distance: Duration,
+) -> bool {
+    if let Some(other) = other {
+        let mut start_e = start_as_duration(&element, sr);
+        let mut start_b = start_as_duration(&other, sr);
+        if start_e < start_b {
+            (start_e, start_b) = (start_b, start_e);
+        }
+        if ((start_e - start_b) < max_distance) && other.prominence > element.prominence {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod overshadow_tests {
+    use super::*;
+    use find_peaks::Peak;
+
+    fn test_data() -> (Peak<f32>, Peak<f32>, Peak<f32>) {
+        let mut peaks = find_peaks::PeakFinder::new(&[0_f32, 0.7, 0.5, 1.0, 0.5, 0.8, 0.0])
+            .with_min_prominence(0.0)
+            .find_peaks();
+        // println!("{peaks:?}");
+        let p3 = peaks.pop().unwrap(); // start=1, prominence=.199
+        assert_eq!(p3.position.start, 1);
+        assert!((p3.prominence.unwrap() - 0.2).abs() < 1e-6);
+
+        let p2 = peaks.pop().unwrap(); // start=5, prominence=.3
+        assert_eq!(p2.position.start, 5);
+        assert!((p2.prominence.unwrap() - 0.3).abs() < 1e-6);
+
+        let p1 = peaks.pop().unwrap(); // start=3, prominence=1
+        assert_eq!(p1.position.start, 3);
+        assert!((p1.prominence.unwrap() - 1.0).abs() < 1e-6);
+
+        (p1, p2, p3)
+    }
+
+    #[test]
+    fn distance_dropoff() {
+        let (p1, p2, p3) = test_data();
+        let sp1 = Some(p1.clone());
+
+        //overshadowning only at correct distance
+        assert!(is_overshadowed(&p3, &sp1, 1, Duration::from_secs(3)));
+        assert!(!is_overshadowed(&p3, &sp1, 1, Duration::from_secs(2)));
+        assert!(is_overshadowed(&p2, &sp1, 1, Duration::from_secs(3)));
+        assert!(!is_overshadowed(&p2, &sp1, 1, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn not_overshadowed_by_none() {
+        let (p1, p2, p3) = test_data();
+
+        // nothing is overshadowed by None
+        assert!(!is_overshadowed(&p1, &None, 1, Duration::from_secs(6)));
+        assert!(!is_overshadowed(&p2, &None, 1, Duration::from_secs(6)));
+        assert!(!is_overshadowed(&p3, &None, 1, Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn true_peak_not_overshadowed() {
+        let (p1, p2, p3) = test_data();
+        let sp2 = Some(p2.clone());
+        let sp3 = Some(p3.clone());
+
+        //nothing overshadows p1
+        assert!(!is_overshadowed(&p1, &sp2, 1, Duration::from_secs(6)));
+        assert!(!is_overshadowed(&p1, &sp3, 1, Duration::from_secs(6)));
+    }
 }
 
 fn find_peaks(

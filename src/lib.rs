@@ -30,7 +30,7 @@ mod errors;
 pub mod leveled_output;
 pub mod mp3_reader;
 
-use std::{time::Duration, usize};
+use std::{time::Duration, usize, mem::swap};
 
 use errors::CliError;
 use find_peaks::Peak;
@@ -65,6 +65,51 @@ fn chunked<T: Clone + Send + Sync>(
         Some(ret)
     })
 }
+trait FilterIterExt<T, F: FnMut(&Option<T>, &T, &Option<T>) -> bool>: Iterator<Item = T> + Sized {
+    fn filter_surrounding(self, predicate: F) -> SurroundingFilterIter<T, Self, F>;
+}
+impl<T, F: FnMut(&Option<T>, &T, &Option<T>) -> bool, Iter: Iterator<Item = T>> FilterIterExt<T, F> for Iter {
+    fn filter_surrounding(self, predicate: F) -> SurroundingFilterIter<T, Self, F> {
+        SurroundingFilterIter::new(self, predicate)
+    }
+}
+
+pub struct SurroundingFilterIter<T, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> {
+    iter: Iter,
+    predicate: F,
+    last: Option<T>,
+    element: Option<T>,
+    next: Option<T>,
+}
+
+impl<T, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> SurroundingFilterIter<T, Iter, F> {
+    pub fn new(mut iter: Iter, predicate: F) -> Self {
+        Self {
+            predicate,
+            last: None,
+            element: iter.next(),
+            next: iter.next(),
+            iter,
+        }
+    }
+}
+
+impl <T: Clone, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> Iterator for SurroundingFilterIter<T, Iter, F> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let include = (self.predicate)(&self.last, self.element.as_ref()?, &self.next);
+        let mut tmp = self.iter.next(); // get next element
+        swap(&mut tmp, &mut self.next);       // store next as self.next, hold old.next
+        swap(&mut tmp, &mut self.element);    // store old.next as self.element, hold old.element
+        self.last = tmp;                           // store old.element as self.last, discard self.last
+        if include {
+            Some(self.last.clone().unwrap())       // return clone of self.last==old.element
+        } else {
+            self.next()                            // skip this element
+        }
+    }
+}
 
 fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     if peaks.is_empty() {
@@ -75,8 +120,7 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
         .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
         .enumerate()
     {
-        let pos = peak.position.start / sr as usize;
-        let (hours, minutes, seconds) = crate::split_duration(&Duration::from_secs(pos as u64));
+        let (hours, minutes, seconds) = crate::split_duration(&start_as_duration(peak, sr));
         info(&format!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
             i + 1,
@@ -86,6 +130,10 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
             &peak.prominence.unwrap()
         ));
     }
+}
+
+pub(crate) fn start_as_duration(peak: &Peak<f32>, sr: u16) -> Duration {
+    Duration::from_secs((peak.position.start / sr as usize) as u64)
 }
 
 #[inline]
@@ -240,9 +288,6 @@ mod tests {
             .into_iter()
             .map(itertools::Itertools::collect_vec)
             .collect_vec();
-        assert!(
-            &is.eq(&expected),
-            "expected {expected:?} but was {is:?}"
-        );
+        assert!(&is.eq(&expected), "expected {expected:?} but was {is:?}");
     }
 }
