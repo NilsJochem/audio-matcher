@@ -89,7 +89,7 @@ pub fn calc_chunks<
 >(
     sr: u16,
     m_samples: Iter,
-    algo_with_sample: C,
+    algo_with_sample: &C,
     m_duration: Duration,
     scale: bool,
     config: Config,
@@ -551,7 +551,7 @@ mod tests {
         let peaks = calc_chunks(
             sr,
             m_samples,
-            algo,
+            &algo,
             n,
             false,
             Config {

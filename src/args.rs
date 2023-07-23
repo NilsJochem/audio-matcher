@@ -111,13 +111,6 @@ impl From<OutputLevel> for super::leveled_output::OutputLevel {
 }
 
 impl Arguments {
-    pub fn auto_out_path(&self) -> std::path::PathBuf {
-        assert!(self.within.len() == 1, "auto autfile isn't uniqe");
-        let mut path = self.within.first().unwrap().clone();
-        path.set_extension("txt");
-        path
-    }
-
     pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
         let out = !std::path::Path::new(path).exists() || {
             self.always_answer.ask_consent(&format!(

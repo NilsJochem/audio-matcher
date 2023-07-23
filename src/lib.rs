@@ -78,55 +78,70 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
     }
     debug(&format!("{args:#?}"));
 
-    verbose(&"preparing data");
-    let sr;
-    let s_samples;
-    let m_samples;
-    {
-        let (s_sr, m_sr);
-        (s_sr, s_samples) = mp3_reader::read_mp3(&args.snippet)?;
-        (m_sr, m_samples) = mp3_reader::read_mp3(&args.within.first().unwrap())?;
-
-        if s_sr != m_sr {
-            return Err(errors::CliError::SampleRateMismatch(s_sr, m_sr));
-        }
-        sr = s_sr;
+    if args.out_file.out_file.is_some() {
+        assert_eq!(
+            1,
+            args.within.len(),
+            "providet outfile only compatible with one main file"
+        );
     }
-    verbose(&"collecting snippet");
+
+    verbose(&"collecting snippet data");
+    let (sr, s_samples) = mp3_reader::read_mp3(&args.snippet)?;
+    let s_duration = mp3_reader::mp3_duration(&args.snippet, false)?;
     let sample_data = s_samples.collect::<Box<[SampleType]>>();
     verbose(&"preparing algo");
     let algo = audio_matcher::LibConvolve::new(sample_data);
 
-    verbose(&"collecting duration");
-    let s_duration = mp3_reader::mp3_duration(&args.snippet, false)?;
-    let m_duration = mp3_reader::mp3_duration(&args.within.first().unwrap(), false)?;
-    verbose(&"calculation chunks");
-    let peaks = audio_matcher::calc_chunks(
-        sr,
-        m_samples,
-        algo,
-        m_duration,
-        true,
-        audio_matcher::Config::from_args(args, s_duration),
-    );
+    for main_file in &args.within {
+        let msg = format!("preparing data of '{}'", main_file.display());
+        if args.within.len() == 1 {
+            verbose(&msg);
+        } else {
+            info(&msg);
+        }
 
-    print_offsets(&peaks, sr);
-    debug(&format!("found peaks {:#?}", &peaks));
+        let (m_sr, m_samples) = mp3_reader::read_mp3(&main_file)?;
+        if sr != m_sr {
+            // TODO only fail this one
+            return Err(errors::CliError::SampleRateMismatch(sr, m_sr));
+        }
 
-    if let Some(out_path) = args
-        .out_file
-        .out_file
-        .clone()
-        .or_else(|| (!args.out_file.no_out).then(|| args.auto_out_path()))
-        .filter(|path| args.should_overwrite_if_exists(path))
-    {
-        verbose(&format!("writing result to '{}'", out_path.display()));
-        TimeLabel::write_text_marks(
-            TimeLabel::from_peaks(&peaks, sr, Duration::from_secs(7), "Segment #"),
-            &out_path,
-            args.dry_run,
-        )?;
+        verbose(&"collecting duration");
+        let m_duration = mp3_reader::mp3_duration(&main_file, false)?;
+        verbose(&"calculation chunks");
+        let peaks = audio_matcher::calc_chunks(
+            sr,
+            m_samples,
+            &algo,
+            m_duration,
+            true,
+            audio_matcher::Config::from_args(args, s_duration),
+        );
+
+        print_offsets(&peaks, sr);
+        debug(&format!("found peaks {:#?}", &peaks));
+
+        if let Some(out_path) = args
+            .out_file
+            .out_file
+            .clone()
+            .or_else(|| (!args.out_file.no_out).then(|| auto_out_file(main_file.clone())))
+            .filter(|path| args.should_overwrite_if_exists(path))
+        {
+            verbose(&format!("writing result to '{}'", out_path.display()));
+            TimeLabel::write_text_marks(
+                TimeLabel::from_peaks(&peaks, sr, Duration::from_secs(7), "Segment #"),
+                &out_path,
+                args.dry_run,
+            )?;
+        }
     }
 
     Ok(())
+}
+
+fn auto_out_file(mut path: std::path::PathBuf) -> std::path::PathBuf {
+    path.set_extension("txt");
+    path
 }
