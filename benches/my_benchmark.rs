@@ -94,7 +94,7 @@ fn full_match_duration_vs(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("peaks in small_test", distance),
             &input,
-            |b, args| b.iter(|| audio_matcher::run(black_box(&args))),
+            |b, args| b.iter(|| audio_matcher::run(black_box(args))),
         );
     }
 

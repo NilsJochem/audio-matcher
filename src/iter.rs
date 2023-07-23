@@ -120,7 +120,6 @@ mod tests {
     #[test]
     fn surrounding_filter_test() {
         let is = (0..4)
-            .into_iter()
             .filter_surrounding(|l, _e, a| {
                 !(l.is_some_and(|it| it == 2) || a.is_some_and(|it| it == 2))
             })

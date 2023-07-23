@@ -20,8 +20,7 @@
     clippy::cast_lossless,
     clippy::cast_sign_loss,
     clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate
+    clippy::missing_panics_doc
 )]
 
 pub mod args;
@@ -63,6 +62,7 @@ pub(crate) fn start_as_duration(peak: &find_peaks::Peak<SampleType>, sr: u16) ->
 }
 
 #[inline]
+#[must_use]
 pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
     let elapsed = duration.as_secs() as usize;
     let seconds = elapsed % 60;
@@ -100,7 +100,11 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
 
     for main_file in &args.within {
         // TODO only fail this loop iteration
-        println_log!(loop_start_level, "preparing data of '{}'", main_file.display());
+        println_log!(
+            loop_start_level,
+            "preparing data of '{}'",
+            main_file.display()
+        );
         let (m_sr, m_samples) = mp3_reader::read_mp3(&main_file)?;
         if sr != m_sr {
             return Err(errors::CliError::SampleRateMismatch(sr, m_sr));

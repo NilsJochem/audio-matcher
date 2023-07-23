@@ -68,6 +68,7 @@ pub struct Inputs {
     pub trys: u8,
 }
 impl Inputs {
+    #[must_use]
     pub fn ask_consent(&self, msg: &str) -> bool {
         if self.yes || self.no {
             return self.yes;
@@ -113,6 +114,7 @@ impl From<OutputLevel> for super::leveled_output::OutputLevel {
 }
 
 impl Arguments {
+    #[must_use]
     pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
         let out = !std::path::Path::new(path).exists() || {
             self.always_answer.ask_consent(&format!(

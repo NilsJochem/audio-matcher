@@ -6,6 +6,7 @@ pub enum OutputLevel {
     Error,
 }
 pub(crate) static mut OUTPUT_LEVEL: OutputLevel = OutputLevel::Info;
+#[must_use]
 pub fn is_level(level: OutputLevel) -> bool {
     unsafe { OUTPUT_LEVEL <= level }
 }

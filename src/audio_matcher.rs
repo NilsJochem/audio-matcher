@@ -33,6 +33,7 @@ struct PeakConfig {
     prominence: SampleType,
 }
 impl Config {
+    #[must_use]
     pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
         Self {
             chunk_size: Duration::from_secs(args.chunk_size as u64),
@@ -166,7 +167,7 @@ mod overshadow_tests {
     use find_peaks::Peak;
 
     fn test_data() -> (Peak<f32>, Peak<f32>, Peak<f32>) {
-        let mut peaks = find_peaks::PeakFinder::new(&[0_f32, 0.7, 0.5, 1.0, 0.5, 0.8, 0.0])
+        let mut peaks = find_peaks::PeakFinder::new(&[0f32, 0.7, 0.5, 1.0, 0.5, 0.8, 0.0])
             .with_min_prominence(0.0)
             .find_peaks();
         // println!("{peaks:?}");
@@ -188,7 +189,7 @@ mod overshadow_tests {
     #[test]
     fn distance_dropoff() {
         let (p1, p2, p3) = test_data();
-        let sp1 = Some(p1.clone());
+        let sp1 = Some(p1);
 
         //overshadowning only at correct distance
         assert!(is_overshadowed(&p3, &sp1, 1, Duration::from_secs(3)));
@@ -210,8 +211,8 @@ mod overshadow_tests {
     #[test]
     fn true_peak_not_overshadowed() {
         let (p1, p2, p3) = test_data();
-        let sp2 = Some(p2.clone());
-        let sp3 = Some(p3.clone());
+        let sp2 = Some(p2);
+        let sp3 = Some(p3);
 
         //nothing overshadows p1
         assert!(!is_overshadowed(&p1, &sp2, 1, Duration::from_secs(6)));
@@ -286,6 +287,7 @@ pub struct LibConvolve {
     sample_array: lazy_init::Lazy<Array1<SampleType>>,
 }
 impl LibConvolve {
+    #[must_use]
     pub fn new(sample_data: Box<[SampleType]>) -> Self {
         Self {
             sample_data,
@@ -383,6 +385,7 @@ pub struct MyConvolve<R: FftNum> {
     pub use_conjugation: bool,
 }
 impl<R: FftNum + From<f32>> MyConvolve<R> {
+    #[must_use]
     pub fn new_with_planner(planner: RealFftPlanner<R>, sample_data: Box<[R]>) -> Self {
         Self {
             planner: std::sync::Mutex::new(planner),
@@ -391,6 +394,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
             use_conjugation: true,
         }
     }
+    #[must_use]
     pub fn new(sample_data: Box<[R]>) -> Self {
         Self {
             planner: std::sync::Mutex::new(RealFftPlanner::<R>::new()),

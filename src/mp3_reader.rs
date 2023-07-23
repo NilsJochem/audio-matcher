@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn short_mp3_samples() {
-        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323_712)
+        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323_712);
     }
 
     #[test]
@@ -126,6 +126,6 @@ mod tests {
         assert_eq!(
             read_mp3(&"res/big_test.mp3").unwrap().1.count(),
             531_668_736
-        )
+        );
     }
 }
