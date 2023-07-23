@@ -27,99 +27,25 @@
 pub mod args;
 pub mod audio_matcher;
 mod errors;
+mod iter;
 pub mod leveled_output;
 pub mod mp3_reader;
 
-use std::{time::Duration, usize, mem::swap};
-
 use errors::CliError;
-use find_peaks::Peak;
 use itertools::Itertools;
 use leveled_output::{debug, error, info, verbose};
 use mp3_reader::SampleType;
-use text_io::read;
+use std::{time::Duration, usize};
 
 const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
     (range.start + offset)..(range.end + offset)
-}
-
-fn chunked<T: Clone + Send + Sync>(
-    mut data: impl Iterator<Item = T> + Send + Sync + 'static,
-    window_size: usize,
-    hop_length: usize,
-) -> impl Iterator<Item = Vec<T>> + Send + Sync {
-    let mut buffer = Vec::with_capacity(hop_length);
-    std::iter::from_fn(move || {
-        while buffer.len() < window_size {
-            match data.next() {
-                Some(e) => buffer.push(e),
-                None => break,
-            }
-        }
-        if buffer.is_empty() {
-            return None;
-        }
-        let ret = buffer.clone();
-        buffer.drain(..hop_length.min(buffer.len()));
-
-        Some(ret)
-    })
-}
-trait FilterIterExt<T, F: FnMut(&Option<T>, &T, &Option<T>) -> bool>: Iterator<Item = T> + Sized {
-    fn filter_surrounding(self, predicate: F) -> SurroundingFilterIter<T, Self, F>;
-}
-impl<T, F: FnMut(&Option<T>, &T, &Option<T>) -> bool, Iter: Iterator<Item = T>> FilterIterExt<T, F> for Iter {
-    fn filter_surrounding(self, predicate: F) -> SurroundingFilterIter<T, Self, F> {
-        SurroundingFilterIter::new(self, predicate)
-    }
-}
-
-pub struct SurroundingFilterIter<T, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> {
-    iter: Iter,
-    predicate: F,
-    last: Option<T>,
-    element: Option<T>,
-    next: Option<T>,
-}
-
-impl<T, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> SurroundingFilterIter<T, Iter, F> {
-    pub fn new(mut iter: Iter, predicate: F) -> Self {
-        Self {
-            predicate,
-            last: None,
-            element: iter.next(),
-            next: iter.next(),
-            iter,
-        }
-    }
-}
-
-impl <T: Clone, Iter: Iterator<Item = T>, F: FnMut(&Option<T>, &T, &Option<T>) -> bool> Iterator for SurroundingFilterIter<T, Iter, F> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let include = (self.predicate)(&self.last, self.element.as_ref()?, &self.next);
-        let mut tmp = self.iter.next(); // get next element
-        swap(&mut tmp, &mut self.next);       // store next as self.next, hold old.next
-        swap(&mut tmp, &mut self.element);    // store old.next as self.element, hold old.element
-        self.last = tmp;                           // store old.element as self.last, discard self.last
-        if include {
-            Some(self.last.clone().unwrap())       // return clone of self.last==old.element
-        } else {
-            self.next()                            // skip this element
-        }
-    }
 }
 
 fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     if peaks.is_empty() {
         info(&"no offsets found");
     }
-    for (i, peak) in peaks
-        .iter()
-        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
-        .enumerate()
-    {
+    for (i, peak) in peaks.iter().enumerate() {
         let (hours, minutes, seconds) = crate::split_duration(&start_as_duration(peak, sr));
         info(&format!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
@@ -132,7 +58,7 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     }
 }
 
-pub(crate) fn start_as_duration(peak: &Peak<f32>, sr: u16) -> Duration {
+pub(crate) const fn start_as_duration(peak: &find_peaks::Peak<f32>, sr: u16) -> Duration {
     Duration::from_secs((peak.position.start / sr as usize) as u64)
 }
 
@@ -151,31 +77,29 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     }
     debug(&format!("{args:#?}"));
 
-    let snippet_path = &args.snippet;
-    let main_path = args.within.first().unwrap();
-
     verbose(&"preparing data");
     let sr;
     let s_samples;
     let m_samples;
     {
         let (s_sr, m_sr);
-        (s_sr, s_samples) = mp3_reader::read_mp3(&snippet_path)?;
-        (m_sr, m_samples) = mp3_reader::read_mp3(&main_path)?;
+        (s_sr, s_samples) = mp3_reader::read_mp3(&(&args.snippet))?;
+        (m_sr, m_samples) = mp3_reader::read_mp3(&args.within.first().unwrap())?;
 
         if s_sr != m_sr {
             return Err(errors::CliError::SampleRateMismatch(s_sr, m_sr));
         }
         sr = s_sr;
     }
-    verbose(&"prepared data");
-    let sample_data = s_samples.collect::<Box<[_]>>();
-    verbose(&"collected snippet");
+    verbose(&"collecting snippet");
+    let sample_data = s_samples.collect::<Box<[SampleType]>>();
+    verbose(&"preparing algo");
     let algo = audio_matcher::LibConvolve::new(sample_data);
 
-    let s_duration = mp3_reader::mp3_duration(&snippet_path, false)?;
-    let m_duration = mp3_reader::mp3_duration(&main_path, false)?;
-    verbose(&"got duration");
+    verbose(&"collecting duration");
+    let s_duration = mp3_reader::mp3_duration(&(&args.snippet), false)?;
+    let m_duration = mp3_reader::mp3_duration(&args.within.first().unwrap(), false)?;
+    verbose(&"calculation chunks");
     let peaks = audio_matcher::calc_chunks(
         sr,
         m_samples,
@@ -194,7 +118,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         .out_file
         .or_else(|| {
             (!args.out_file.no_out).then(|| {
-                let mut path = main_path.clone();
+                let mut path = args.within.first().unwrap().clone();
                 path.set_extension("txt");
                 path
             })
@@ -229,8 +153,8 @@ fn ask_consent(msg: &str, args: args::Inputs) -> bool {
         return args.yes;
     }
     print!("{msg} [y/n]: ");
-    for _ in std::iter::repeat(args.trys - 1) {
-        let rin: String = read!("{}\n");
+    for _ in 0..args.trys {
+        let rin: String = text_io::read!("{}\n");
         if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
             return true;
         } else if ["n", "no", "nein"].contains(&rin.as_str()) {
@@ -243,7 +167,7 @@ fn ask_consent(msg: &str, args: args::Inputs) -> bool {
 }
 
 fn write_text_marks<P: AsRef<std::path::Path>>(
-    peaks: &[Peak<SampleType>],
+    peaks: &[find_peaks::Peak<SampleType>],
     sr: SampleType,
     path: P,
     in_between: Duration,
@@ -275,19 +199,4 @@ fn write_text_marks<P: AsRef<std::path::Path>>(
         std::fs::write(&path, out).map_err(|_| errors::CliError::CantCreateFile(path.into()))?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chunked_test() {
-        let is = chunked(0..15, 6, 4).collect_vec();
-        let expected = vec![0..6, 4..10, 8..14, 12..15]
-            .into_iter()
-            .map(itertools::Itertools::collect_vec)
-            .collect_vec();
-        assert!(&is.eq(&expected), "expected {expected:?} but was {is:?}");
-    }
 }

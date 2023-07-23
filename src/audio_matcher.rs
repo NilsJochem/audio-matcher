@@ -1,7 +1,7 @@
 use crate::args::Arguments;
+use crate::iter::IteratorExt;
 use crate::mp3_reader::SampleType;
-use crate::offset_range;
-use crate::{chunked, start_as_duration, FilterIterExt};
+use crate::{offset_range, start_as_duration};
 
 use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
 use progress_bar::callback::OnceCallback;
@@ -96,16 +96,13 @@ pub fn calc_chunks<
 ) -> Vec<find_peaks::Peak<SampleType>> {
     // normalize inputs
     let chunks = (m_duration.as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
-    let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
-    let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
+    let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as usize;
+    let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as usize;
 
     let mut progress = Progress::new_external_bound(
-        chunked(
-            m_samples,
-            chunk_size as usize + overlap_length as usize,
-            chunk_size as usize,
-        )
-        .enumerate(),
+        m_samples
+            .chunked(chunk_size + overlap_length, chunk_size)
+            .enumerate(),
         Bar::new("Progress: ".to_owned(), true, config.arrow), // TODO maybe move Bar to config
         0,
         chunks,
@@ -120,7 +117,7 @@ pub fn calc_chunks<
             let [f1, f2] = OnceCallback::new(&holder);
             f1.call();
 
-            let offset = chunk_size as usize * i;
+            let offset = chunk_size * i;
             let matches = algo_with_sample
                 .correlate_with_sample(&chunk, Mode::Valid, scale)
                 .unwrap();
@@ -151,8 +148,8 @@ fn is_overshadowed(
     max_distance: Duration,
 ) -> bool {
     if let Some(other) = other {
-        let mut start_e = start_as_duration(&element, sr);
-        let mut start_b = start_as_duration(&other, sr);
+        let mut start_e = start_as_duration(element, sr);
+        let mut start_b = start_as_duration(other, sr);
         if start_e < start_b {
             (start_e, start_b) = (start_b, start_e);
         }
