@@ -34,14 +34,13 @@ impl TimeLabel {
     pub const fn new(start: Duration, end: Duration, name: String) -> Self {
         Self { start, end, name }
     }
-    pub fn from_peaks<'a>(
-        peaks: &'a [find_peaks::Peak<SampleType>],
+    pub fn from_peaks<'a, Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a>(
+        peaks: Iter,
         sr: u16,
         delay_start: Duration,
         name_pattern: &'a str,
     ) -> impl Iterator<Item = Self> + 'a {
         peaks
-            .iter()
             .map(move |p| start_as_duration(p, sr))
             .tuple_windows()
             .enumerate()

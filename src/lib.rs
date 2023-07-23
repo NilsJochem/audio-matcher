@@ -134,7 +134,7 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
         {
             verbose!("writing result to '{}'", out_path.display());
             TimeLabel::write_text_marks(
-                TimeLabel::from_peaks(&peaks, sr, Duration::from_secs(7), "Segment #"),
+                TimeLabel::from_peaks(peaks.iter(), sr, Duration::from_secs(7), "Segment #"),
                 &out_path,
                 args.dry_run,
             )?;
