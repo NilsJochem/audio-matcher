@@ -3,7 +3,7 @@ use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::{errors::CliError::{self, NoFile, NoMp3}, verbose};
+use crate::matcher::{errors::CliError::{self, NoFile, NoMp3}, verbose};
 
 pub type SampleType = f32;
 

@@ -1,7 +1,8 @@
-use crate::args::Arguments;
-use crate::iter::IteratorExt;
-use crate::mp3_reader::SampleType;
-use crate::{offset_range, start_as_duration};
+use crate::{
+    iter::IteratorExt,
+    matcher::{args::Arguments, mp3_reader::SampleType, start_as_duration},
+    offset_range,
+};
 
 use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
 use progress_bar::callback::OnceCallback;
@@ -538,10 +539,10 @@ mod tests {
         {
             let (s_sr, m_sr);
             (s_sr, s_samples) =
-                crate::mp3_reader::read_mp3(&snippet_path).expect("invalid snippet mp3");
+                crate::matcher::mp3_reader::read_mp3(&snippet_path).expect("invalid snippet mp3");
 
             (m_sr, m_samples) =
-                crate::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
+                crate::matcher::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
 
             assert!(s_sr == m_sr, "sample rate dosn't match");
             sr = s_sr;
@@ -549,7 +550,7 @@ mod tests {
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
-        let n = crate::mp3_reader::mp3_duration(&main_path, false)
+        let n = crate::matcher::mp3_reader::mp3_duration(&main_path, false)
             .expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(
@@ -560,7 +561,7 @@ mod tests {
             false,
             Config {
                 chunk_size: Duration::from_secs(60),
-                overlap_length: crate::mp3_reader::mp3_duration(&snippet_path, false)
+                overlap_length: crate::matcher::mp3_reader::mp3_duration(&snippet_path, false)
                     .expect("couln't refind snippet data file")
                     / 2,
                 peak_config: PeakConfig {

@@ -12,7 +12,10 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use crate::{mp3_reader::SampleType, start_as_duration, info};
+use crate::{
+    info,
+    matcher::{mp3_reader::SampleType, start_as_duration},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeLabel {
@@ -52,7 +55,7 @@ impl TimeLabel {
         lables: Iter,
         path: P,
         dry_run: bool,
-    ) -> Result<(), crate::errors::CliError> {
+    ) -> Result<(), crate::matcher::errors::CliError> {
         let out = lables.map_into::<String>().join("\n");
 
         if dry_run {
@@ -62,7 +65,7 @@ impl TimeLabel {
             );
         } else {
             std::fs::write(&path, out)
-                .map_err(|_| crate::errors::CliError::CantCreateFile(path.into()))?;
+                .map_err(|_| crate::matcher::errors::CliError::CantCreateFile(path.into()))?;
         }
         Ok(())
     }

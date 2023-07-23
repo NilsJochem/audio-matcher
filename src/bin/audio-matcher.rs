@@ -1,4 +1,4 @@
-use audio_matcher::{args::Arguments, run, error};
+use audio_matcher::{matcher::{args::Arguments, run}, error};
 use clap::Parser;
 
 fn main() {
