@@ -3,8 +3,7 @@ use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::errors::CliError::{self, NoFile, NoMp3};
-use crate::leveled_output::verbose;
+use crate::{errors::CliError::{self, NoFile, NoMp3}, verbose};
 
 pub type SampleType = f32;
 
@@ -20,7 +19,8 @@ where
     let iter = iter.flat_map(move |frame| {
         assert!(
             frame.sample_rate as u16 == sample_rate,
-            "sample rate changed from {sample_rate} to {}", frame.sample_rate
+            "sample rate changed from {sample_rate} to {}",
+            frame.sample_rate
         );
         assert!(frame.channels == 2, "can only handle stereo");
 
@@ -72,7 +72,8 @@ where
     if let Ok(duration) = mp3_duration::from_path(path) {
         return Ok(duration);
     }
-    verbose(&"fallback to own implementation for mp3_duration");
+    verbose!("fallback to own implementation for mp3_duration");
+
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
 
     let decoder = Decoder::new(file);
@@ -122,6 +123,9 @@ mod tests {
     #[test]
     #[ignore = "slow"]
     fn long_mp3_samples() {
-        assert_eq!(read_mp3(&"res/big_test.mp3").unwrap().1.count(), 531_668_736)
+        assert_eq!(
+            read_mp3(&"res/big_test.mp3").unwrap().1.count(),
+            531_668_736
+        )
     }
 }

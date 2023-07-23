@@ -1,6 +1,8 @@
 use clap::{Args, Parser};
 use std::path::PathBuf;
 
+use crate::error;
+
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 pub struct Arguments {
@@ -119,7 +121,7 @@ impl Arguments {
             ))
         };
         if !out {
-            crate::leveled_output::error(&format!("won't overwrite '{}'", path.display()));
+            error!("won't overwrite '{}'", path.display());
         }
         out
     }
