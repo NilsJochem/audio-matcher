@@ -32,9 +32,9 @@ mod iter;
 pub mod leveled_output;
 pub mod mp3_reader;
 
+use data::TimeLabel;
 use errors::CliError;
-use itertools::Itertools;
-use leveled_output::{debug, error, info, verbose};
+use leveled_output::{debug, info, verbose};
 use mp3_reader::SampleType;
 use std::{time::Duration, usize};
 
@@ -59,8 +59,8 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     }
 }
 
-pub(crate) const fn start_as_duration(peak: &find_peaks::Peak<f32>, sr: u16) -> Duration {
-    Duration::from_secs((peak.position.start / sr as usize) as u64)
+pub(crate) fn start_as_duration(peak: &find_peaks::Peak<SampleType>, sr: u16) -> Duration {
+    Duration::from_secs_f64(peak.position.start as f64 / sr as f64)
 }
 
 #[inline]
@@ -72,7 +72,7 @@ pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
     (hours, minutes, seconds)
 }
 
-pub fn run(args: args::Arguments) -> Result<(), CliError> {
+pub fn run(args: &args::Arguments) -> Result<(), CliError> {
     unsafe {
         crate::leveled_output::OUTPUT_LEVEL = args.output_level.into();
     }
@@ -84,7 +84,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     let m_samples;
     {
         let (s_sr, m_sr);
-        (s_sr, s_samples) = mp3_reader::read_mp3(&(&args.snippet))?;
+        (s_sr, s_samples) = mp3_reader::read_mp3(&args.snippet)?;
         (m_sr, m_samples) = mp3_reader::read_mp3(&args.within.first().unwrap())?;
 
         if s_sr != m_sr {
@@ -98,7 +98,7 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
     let algo = audio_matcher::LibConvolve::new(sample_data);
 
     verbose(&"collecting duration");
-    let s_duration = mp3_reader::mp3_duration(&(&args.snippet), false)?;
+    let s_duration = mp3_reader::mp3_duration(&args.snippet, false)?;
     let m_duration = mp3_reader::mp3_duration(&args.within.first().unwrap(), false)?;
     verbose(&"calculation chunks");
     let peaks = audio_matcher::calc_chunks(
@@ -107,90 +107,26 @@ pub fn run(args: args::Arguments) -> Result<(), CliError> {
         algo,
         m_duration,
         true,
-        audio_matcher::Config::from_args(&args, s_duration),
+        audio_matcher::Config::from_args(args, s_duration),
     );
 
     print_offsets(&peaks, sr);
     debug(&format!("found peaks {:#?}", &peaks));
 
-    info(&"");
     if let Some(out_path) = args
         .out_file
         .out_file
-        .or_else(|| {
-            (!args.out_file.no_out).then(|| {
-                let mut path = args.within.first().unwrap().clone();
-                path.set_extension("txt");
-                path
-            })
-        })
-        .filter(|path| {
-            let out = !std::path::Path::new(path).exists()
-                || ask_consent(
-                    &format!("file '{}' already exists, overwrite", path.display()),
-                    args.always_answer,
-                );
-            if !out {
-                error(&format!("won't overwrite '{}'", path.display()));
-            }
-            out
-        })
+        .clone()
+        .or_else(|| (!args.out_file.no_out).then(|| args.auto_out_path()))
+        .filter(|path| args.should_overwrite_if_exists(path))
     {
         verbose(&format!("writing result to '{}'", out_path.display()));
-        write_text_marks(
-            &peaks,
-            sr as SampleType,
+        TimeLabel::write_text_marks(
+            TimeLabel::from_peaks(&peaks, sr, Duration::from_secs(7), "Segment #"),
             &out_path,
-            Duration::from_secs(7),
             args.dry_run,
         )?;
     }
 
-    Ok(())
-}
-
-fn ask_consent(msg: &str, args: args::Inputs) -> bool {
-    if args.yes || args.no {
-        return args.yes;
-    }
-    print!("{msg} [y/n]: ");
-    for _ in 0..args.trys {
-        let rin: String = text_io::read!("{}\n");
-        if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
-            return true;
-        } else if ["n", "no", "nein"].contains(&rin.as_str()) {
-            return false;
-        }
-        print!("couldn't parse that, please try again [y/n]: ");
-    }
-    println!("probably not");
-    false
-}
-
-fn write_text_marks<P: AsRef<std::path::Path>>(
-    peaks: &[find_peaks::Peak<SampleType>],
-    sr: SampleType,
-    path: P,
-    delay_start: Duration,
-    dry_run: bool,
-) -> Result<(), CliError> {
-    let out = peaks
-        .iter()
-        .map(|p| Duration::from_secs_f64(p.position.start as f64 / sr as f64))
-        .tuple_windows()
-        .enumerate()
-        .map(|(i, (start, end))| {
-            Into::<String>::into(&data::TimeLabel::new(start + delay_start, end, i + 1))
-        })
-        .join("\n");
-
-    if dry_run {
-        info(&format!(
-            "writing \"\"\"\n{out}\"\"\" > {}",
-            path.as_ref().display()
-        ));
-    } else {
-        std::fs::write(&path, out).map_err(|_| errors::CliError::CantCreateFile(path.into()))?;
-    }
     Ok(())
 }

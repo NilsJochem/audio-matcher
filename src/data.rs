@@ -12,6 +12,8 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 
+use crate::{start_as_duration, mp3_reader::SampleType};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeLabel {
     start: Duration,
@@ -19,16 +21,55 @@ pub struct TimeLabel {
     name: String,
 }
 impl TimeLabel {
-    pub fn new(start: Duration, end: Duration, number: usize) -> Self {
-        Self {
-            start,
-            end,
-            name: format!("Segment {number}"),
+    pub fn new_with_pattern(
+        start: Duration,
+        end: Duration,
+        number: usize,
+        name_pattern: &str,
+    ) -> Self {
+        // TODO allow escaping, document
+        let name_convert = |number: usize| name_pattern.replace('#', &number.to_string());
+        Self::new(start, end, name_convert(number))
+    }
+    pub const fn new(start: Duration, end: Duration, name: String) -> Self {
+        Self { start, end, name }
+    }
+    pub fn from_peaks<'a>(
+        peaks: &'a [find_peaks::Peak<SampleType>],
+        sr: u16,
+        delay_start: Duration,
+        name_pattern: &'a str,
+    ) -> impl Iterator<Item = Self> + 'a {
+        peaks
+            .iter()
+            .map(move |p| start_as_duration(p, sr))
+            .tuple_windows()
+            .enumerate()
+            .map(move |(i, (start, end))| {
+                Self::new_with_pattern(start + delay_start, end, i + 1, name_pattern)
+            })
+    }
+    pub fn write_text_marks<P: AsRef<std::path::Path>, Iter: Iterator<Item = Self>>(
+        lables: Iter,
+        path: P,
+        dry_run: bool,
+    ) -> Result<(), crate::errors::CliError> {
+        let out = lables.map_into::<String>().join("\n");
+
+        if dry_run {
+            crate::leveled_output::info(&format!(
+                "writing: \"\"\"\n{out}\n\"\"\" > {}",
+                path.as_ref().display()
+            ));
+        } else {
+            std::fs::write(&path, out)
+                .map_err(|_| crate::errors::CliError::CantCreateFile(path.into()))?;
         }
+        Ok(())
     }
 }
-impl From<&TimeLabel> for String {
-    fn from(value: &TimeLabel) -> Self {
+impl From<TimeLabel> for String {
+    fn from(value: TimeLabel) -> Self {
         format!(
             "{}\t{}\t{}",
             value.start.as_secs_f64(),

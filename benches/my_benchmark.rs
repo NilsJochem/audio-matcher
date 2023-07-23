@@ -85,6 +85,7 @@ fn full_match_duration_vs(c: &mut Criterion) {
         "res/local/Interlude.mp3",
         "--no-out",
         "--dry-run",
+        "--silent",
         "-n",
     ]);
     for distance in [8, 20, 60, 120] {
@@ -93,7 +94,7 @@ fn full_match_duration_vs(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("peaks in small_test", distance),
             &input,
-            |b, args| b.iter(|| audio_matcher::run(black_box(args.clone()))),
+            |b, args| b.iter(|| audio_matcher::run(black_box(&args))),
         );
     }
 

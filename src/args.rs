@@ -19,14 +19,17 @@ pub struct Arguments {
     pub prominence: crate::mp3_reader::SampleType,
     #[clap(long, default_value_t = 8*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
     pub distance: usize,
-    #[clap(long, default_value_t = 60, value_name = "SECONDS", help="length in seconds of chunks to be processed")]
+    #[clap(
+        long,
+        default_value_t = 60,
+        value_name = "SECONDS",
+        help = "length in seconds of chunks to be processed"
+    )]
     pub chunk_size: usize,
-    #[clap(long, help="use fancy bar, needs fira ttf to work")]
+    #[clap(long, help = "use fancy bar, needs fira ttf to work")]
     pub fancy_bar: bool,
     // #[clap(long, help="use new implementation for fftcorrelate")]
     // pub new_correlate: bool,
-
-
     #[clap(long)]
     pub dry_run: bool,
 
@@ -38,7 +41,7 @@ pub struct Arguments {
     pub output_level: OutputLevel,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 #[group(required = false, multiple = false)]
 pub struct OutFile {
     #[clap(long, help = "generates no file with times")]
@@ -61,6 +64,25 @@ pub struct Inputs {
     pub no: bool,
     #[clap(long, default_value_t = 3, help = "number of retrys")]
     pub trys: u8,
+}
+impl Inputs {
+    pub fn ask_consent(&self, msg: &str) -> bool {
+        if self.yes || self.no {
+            return self.yes;
+        }
+        print!("{msg} [y/n]: ");
+        for _ in 0..self.trys {
+            let rin: String = text_io::read!("{}\n");
+            if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
+                return true;
+            } else if ["n", "no", "nein"].contains(&rin.as_str()) {
+                return false;
+            }
+            print!("couldn't parse that, please try again [y/n]: ");
+        }
+        println!("probably not");
+        false
+    }
 }
 
 #[derive(Args, Debug, Clone, Copy)]
@@ -85,5 +107,27 @@ impl From<OutputLevel> for super::leveled_output::OutputLevel {
         } else {
             Self::Info
         }
+    }
+}
+
+impl Arguments {
+    pub fn auto_out_path(&self) -> std::path::PathBuf {
+        assert!(self.within.len() == 1, "auto autfile isn't uniqe");
+        let mut path = self.within.first().unwrap().clone();
+        path.set_extension("txt");
+        path
+    }
+
+    pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
+        let out = !std::path::Path::new(path).exists() || {
+            self.always_answer.ask_consent(&format!(
+                "file '{}' already exists, overwrite",
+                path.display()
+            ))
+        };
+        if !out {
+            crate::leveled_output::error(&format!("won't overwrite '{}'", path.display()));
+        }
+        out
     }
 }
