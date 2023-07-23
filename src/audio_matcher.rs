@@ -6,26 +6,24 @@ use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
 use progress_bar::callback::OnceCallback;
 use progress_bar::{Bar, Progress};
 
-use find_peaks::Peak;
 use itertools::Itertools;
 use ndarray::Array1;
+use rayon::prelude::{ParallelBridge, ParallelIterator};
 use realfft::{
     num_complex::Complex, num_traits::Zero, ComplexToReal, FftNum, RealFftPlanner, RealToComplex,
 };
 use std::{
     marker::{Send, Sync},
-    sync::{mpsc::Sender, Arc},
+    sync::Arc,
     time::Duration,
     vec,
 };
-use threadpool::ThreadPool;
 
 #[derive(Debug)]
 pub struct Config {
     chunk_size: Duration,
     overlap_length: Duration,
     peak_config: PeakConfig,
-    threads: usize,
     arrow: Box<dyn Arrow<2> + Send + Sync>,
 }
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +40,6 @@ impl Config {
                 distance: Duration::from_secs(args.distance as u64),
                 prominence: args.prominence / 100.0,
             },
-            threads: args.threads,
             arrow: if args.fancy_bar {
                 Box::<FancyArrow>::default()
             } else {
@@ -101,14 +98,6 @@ pub fn calc_chunks<
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as u64;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as u64;
 
-    let algo_with_sample = Arc::new(algo_with_sample);
-
-    // threadpool size = Number of Available Cores * (1 + Wait time / Work time)
-    // should use less, cause RAM fills up, 3 seems to be enough to saturate decoder
-    let n_workers = config.threads;
-    let pool = ThreadPool::new(n_workers);
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<Peak<SampleType>>>();
-
     let mut progress = Progress::new_external_bound(
         chunked(
             m_samples,
@@ -123,16 +112,12 @@ pub fn calc_chunks<
     if let Some(width) = progress_bar::terminal_width() {
         progress.set_max_len(width);
     }
-    let (iter, holder) = progress.into();
+    let (iter, holder) = progress.get_arc_iter();
 
-    for (i, chunk) in iter {
-        assert!(chunks > i, "to many chunks");
-
-        let [f1, f2] = OnceCallback::new(&holder);
-
-        let algo_with_sample = Arc::clone(&algo_with_sample);
-        let tx = Sender::clone(&tx);
-        pool.execute(move || {
+    let mut out = iter
+        .par_bridge()
+        .map(move | (i, chunk) | {
+            let [f1, f2] = OnceCallback::new(&holder);
             f1.call();
 
             let offset = chunk_size as usize * i;
@@ -145,19 +130,13 @@ pub fn calc_chunks<
                 .update(|p| p.position = offset_range(&p.position, offset))
                 .collect::<Vec<_>>();
 
-            tx.send(peaks).unwrap();
             f2.call();
-        });
-    }
-
-    pool.join();
-
-    assert!(pool.panic_count() == 0, "some worker threads paniced");
-    rx.into_iter()
-        .take(chunks)
+            peaks
+        })
         .flatten()
-        .sorted_by(|a, b| Ord::cmp(&a.position.start, &b.position.start))
-        .collect_vec()
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| Ord::cmp(&a.position.start, &b.position.start));
+    out
 }
 
 fn find_peaks(
@@ -504,7 +483,6 @@ mod tests {
                     distance: Duration::from_secs(8 * 60),
                     prominence: 15. as SampleType,
                 },
-                threads: 6,
                 arrow: Box::<SimpleArrow<2>>::default(),
             },
         );
