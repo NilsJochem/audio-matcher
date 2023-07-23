@@ -80,13 +80,14 @@ impl From<TimeLabel> for String {
         )
     }
 }
+#[derive(Debug)]
 pub enum LableParseError {
     MissingElement,
-    NotAnFloat(std::num::ParseFloatError),
+    NotAnFloat(String, std::num::ParseFloatError),
 }
 fn parse_duration(s: &str) -> Result<Duration, LableParseError> {
     Ok(Duration::from_secs_f64(
-        s.parse::<f64>().map_err(LableParseError::NotAnFloat)?,
+        s.parse::<f64>().map_err(|err| LableParseError::NotAnFloat(s.to_string(), err))?,
     ))
 }
 fn next<'a>(
@@ -99,7 +100,7 @@ impl TryFrom<&str> for TimeLabel {
     type Error = LableParseError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let mut splitter = value.splitn(2, '\t');
+        let mut splitter = value.splitn(3, '\t');
         let start = parse_duration(next(&mut splitter)?)?;
         let end = parse_duration(next(&mut splitter)?)?;
         let name = next(&mut splitter)?.to_owned();
@@ -108,11 +109,90 @@ impl TryFrom<&str> for TimeLabel {
 }
 
 #[derive(Debug, Clone)]
-struct Archive {
+pub struct Archive {
     data: Vec<Series>,
 }
 impl Archive {
-    fn format(
+    pub fn read<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        use std::fs;
+        let mut tmp = Vec::new();
+        for entry in glob::glob(&format!(
+            "{}/*.txt",
+            path.as_ref().to_str().expect("path contained wierd char")
+        ))
+        .expect("glob pattern failed")
+        {
+            let entry = entry.expect("couldn't read globbet file");
+            let source =
+                Source::from_path(&entry).expect(&format!("couldn't parse '{}'", entry.display()));
+
+            tmp.push((
+                source,
+                fs::read_to_string(&entry)
+                    .expect(&format!("couldn't read '{}'", entry.display()))
+                    .lines()
+                    .map(|line| TimeLabel::try_from(line).expect(&format!("couldn't parse lable {line}")))
+                    .collect_vec()
+                    .into_iter(),
+            ));
+        }
+
+        Ok(Self::try_from(tmp.into_iter()).expect("msg"))
+    }
+
+    fn try_from<InnerIter: Iterator<Item = TimeLabel>>(
+        value: impl Iterator<Item = (Source, InnerIter)>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut archive = Self { data: Vec::new() };
+        lazy_static! {
+            static ref RE: Regex = Regex::new("(?:(?P<series>.*) )(?:(?P<nr>[\\d]+)(?P<extra>\\??)(?:\\.[\\d?]+)+)(?: (?P<chapter>.*))?").unwrap();
+        }
+        for (source, labels) in value {
+            for label in labels {
+                let captures = RE
+                    .captures(&label.name)
+                    .unwrap_or_else(|| panic!("name of {label:?} couldn't be parsed to Series"));
+
+                let ch_nr = ChapterNumber::new(
+                    captures.name("nr").unwrap().as_str().parse::<usize>()?,
+                    !captures.name("extra").unwrap().is_empty(),
+                );
+                let series_name = captures.name("series").map(|it| it.as_str()).unwrap();
+                let chapter_name = captures.name("chapter").map(|it| it.as_str());
+
+                let series = if let Some(it) = archive.get_mut_series_by_name(series_name) {
+                    it
+                } else {
+                    archive.data.push(Series::new(series_name.to_owned()));
+                    archive.data.last_mut().unwrap()
+                };
+
+                let chapter = if let Some(it) = series.chapters.iter_mut().find(|it| it.nr == ch_nr)
+                {
+                    it
+                } else {
+                    series.chapters.push(Chapter::new(
+                        ch_nr,
+                        chapter_name.map(std::borrow::ToOwned::to_owned),
+                    ));
+                    series.chapters.last_mut().unwrap()
+                };
+
+                if let Some(part) = chapter.parts.get_mut(&source) {
+                    *part += 1;
+                } else {
+                    chapter.parts.insert(source.clone(), 1);
+                }
+            }
+        }
+        archive.data.sort_by(|a,b| Ord::cmp(&a.name, &b.name));
+        for s in archive.data.iter_mut() {
+            s.chapters.sort_by(|a,b| Ord::cmp(&a.nr.nr, &b.nr.nr));
+        }
+        Ok(archive)
+    }
+
+    pub fn format(
         &self,
         s: &mut impl Write,
         indent: &str,
@@ -130,7 +210,7 @@ impl Archive {
         }
         Ok(())
     }
-    fn get_element(&self, identifier: &str, just_series: bool) -> Option<ArchiveSearchResult> {
+    pub fn get_element(&self, identifier: &str, just_series: bool) -> Option<ArchiveSearchResult> {
         lazy_static! {
             static ref RE: Regex =
                 Regex::new("(?P<series>\\d+)(?:\\.(?P<chapter>\\d+\\??))?").unwrap();
@@ -169,69 +249,20 @@ impl Archive {
         }
     }
 
-    fn get_mut_series_by_name(&mut self, identifier: &str) -> Option<&mut Series> {
+    pub fn get_mut_series_by_name(&mut self, identifier: &str) -> Option<&mut Series> {
         self.data.iter_mut().find(|x| x.name == identifier)
     }
-    fn get_series_by_name(&self, identifier: &str) -> Option<&Series> {
+    pub fn get_series_by_name(&self, identifier: &str) -> Option<&Series> {
         self.data.iter().find(|x| x.name == identifier)
     }
 }
-union ArchiveSearchResult<'a> {
+pub union ArchiveSearchResult<'a> {
     series: &'a Series,
     chapter: &'a Chapter,
 }
-impl TryFrom<&[(Source, &[TimeLabel])]> for Archive {
-    type Error = Box<dyn Error>;
-
-    fn try_from(value: &[(Source, &[TimeLabel])]) -> Result<Self, Self::Error> {
-        let mut archive = Self { data: Vec::new() };
-        lazy_static! {
-            static ref RE: Regex = Regex::new("(?:(?P<series>.*) )(?:(?P<nr>[\\d]+)(?P<extra>\\??)(?:\\.[\\d?]+)+)(?: (?P<chapter>.*))?").unwrap();
-        }
-        for (source, labels) in value {
-            for label in *labels {
-                let captures = RE
-                    .captures(&label.name)
-                    .unwrap_or_else(|| panic!("name of {label:?} couldn't be parsed to Series"));
-
-                let ch_nr = ChapterNumber::new(
-                    captures.name("nr").unwrap().as_str().parse::<usize>()?,
-                    !captures.name("extra").unwrap().is_empty(),
-                );
-                let series_name = captures.name("series").map(|it| it.as_str()).unwrap();
-                let chapter_name = captures.name("chapter").map(|it| it.as_str());
-
-                let series = if let Some(it) = archive.get_mut_series_by_name(series_name) {
-                    it
-                } else {
-                    archive.data.push(Series::new(series_name.to_owned()));
-                    archive.data.last_mut().unwrap()
-                };
-
-                let chapter = if let Some(it) = series.chapters.iter_mut().find(|it| it.nr == ch_nr)
-                {
-                    it
-                } else {
-                    series.chapters.push(Chapter::new(
-                        ch_nr,
-                        chapter_name.map(std::borrow::ToOwned::to_owned),
-                    ));
-                    series.chapters.last_mut().unwrap()
-                };
-
-                if let Some(part) = chapter.parts.get_mut(source) {
-                    *part += 1;
-                } else {
-                    chapter.parts.insert(source.clone(), 1);
-                }
-            }
-        }
-        Ok(archive)
-    }
-}
 
 #[derive(Debug, Clone)]
-struct Series {
+pub struct Series {
     name: String,
     chapters: Vec<Chapter>,
 }
@@ -242,7 +273,7 @@ impl Series {
             chapters: Vec::new(),
         }
     }
-    fn format(
+    pub fn format(
         &self,
         s: &mut impl Write,
         indent: &str,
@@ -268,7 +299,7 @@ impl Series {
 }
 
 #[derive(Debug, Clone)]
-struct Chapter {
+pub struct Chapter {
     nr: ChapterNumber,
     name: Option<String>,
     parts: HashMap<Source, u8>, // source and number of parts in source
@@ -282,7 +313,7 @@ impl Chapter {
             parts: HashMap::new(),
         }
     }
-    fn format(
+    pub fn format(
         &self,
         s: &mut impl Write,
         r_just: Option<(usize, bool)>,
@@ -339,7 +370,7 @@ impl ChapterNumber {
     /// nr.format(&mut s2, Some((4, true)), true).unwrap();
     /// assert_eq!(s2, "0003 ");
     /// ```
-    fn format(
+    pub fn format(
         &self,
         s: &mut impl Write,
         r_just: Option<(usize, bool)>,
@@ -365,7 +396,7 @@ impl ChapterNumber {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Source {
+pub struct Source {
     station: String,
     date: NaiveDate,
 }
