@@ -1,5 +1,8 @@
 pub mod scripting_interface {
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
     use thiserror::Error;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
@@ -24,6 +27,8 @@ pub mod scripting_interface {
         AudacityErr(String), // TODO parse Error
         #[error("couldn't parse result '{0:?}' because {1}")]
         MalformedResult(String, serde_json::Error),
+        #[error("Unkown path '{0}', {1}")]
+        PathErr(PathBuf, std::io::Error), // TODO parse Error
     }
 
     #[derive(Debug)]
@@ -118,8 +123,8 @@ pub mod scripting_interface {
                 commant.push_str(" End=");
                 commant.push_str(&end);
             }
-            let json = self.write(&commant).await;
-            json.map(|_| ())
+            let _json = self.write(&commant).await?;
+            Ok(())
         }
 
         pub async fn get_label_info(
@@ -127,6 +132,33 @@ pub mod scripting_interface {
         ) -> Result<Vec<(usize, Vec<(f64, f64, String)>)>, Error> {
             let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
             serde_json::from_str(&json).map_err(|e| Error::MalformedResult(json, e))
+        }
+
+        pub async fn import_audio<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+            let path = path
+                .as_ref()
+                .canonicalize()
+                .map_err(|e| Error::PathErr(path.as_ref().to_path_buf(), e))?;
+
+            let _json = self
+                .write(&format!("Import2: Filename=\"{}\"", path.display()))
+                .await?;
+
+            Ok(())
+        }
+
+        pub async fn export_multiple(&mut self) -> Result<(), Error> {
+            let _json = self.write("ExportMultiple:").await?;
+            Ok(())
+        }
+
+        pub async fn export_labels(&mut self) -> Result<(), Error> {
+            let _json = self.write("ExportLabels:").await?;
+            Ok(())
+        }
+        pub async fn import_labels(&mut self) -> Result<(), Error> {
+            let _json = self.write("ImportLabels:").await?;
+            Ok(())
         }
     }
 }
