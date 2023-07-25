@@ -1,8 +1,8 @@
 use clap::Parser;
 use log::trace;
-use std::{error::Error, path::PathBuf, process::Command};
+use std::{error::Error, path::PathBuf, process::Command, time::Duration};
 
-use audio_matcher::args::{Inputs, OutputLevel};
+use audio_matcher::args::{parse_duration, Inputs, OutputLevel};
 
 const LAUNCHER: &str = "gtk4-launch";
 const AUDACITY_APP_NAME: &str = "audacity";
@@ -20,6 +20,14 @@ struct Arguments {
     #[clap(long, value_name = "FILE", help = "path to audio file")]
     pub audio_path: PathBuf,
 
+    #[clap(
+        long,
+        value_name = "DURATION",
+        help = "timeout, can be just seconds, or somthing like 3h5m17s"
+    )]
+    #[arg(value_parser = parse_duration)]
+    pub timeout: Option<Duration>,
+
     #[clap(long)]
     pub dry_run: bool,
 
@@ -28,6 +36,7 @@ struct Arguments {
     #[command(flatten)]
     pub output_level: OutputLevel,
 }
+
 impl Arguments {
     #[allow(dead_code)]
     fn tmp_path(&self) -> PathBuf {
@@ -59,7 +68,7 @@ async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     // label_path.set_extension("txt");
     let tmp_path = args.tmp_path();
     assert!(launch_audacity()?, "couldn't launch audacity");
-    let mut audacity = audacity::scripting_interface::AudacityApi::new(None).await?;
+    let mut audacity = audacity::scripting_interface::AudacityApi::new(args.timeout).await?;
     trace!("opened audacity");
     if !audacity.get_track_info().await?.is_empty() {
         audacity.open_new().await?;

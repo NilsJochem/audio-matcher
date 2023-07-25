@@ -82,7 +82,7 @@ fn full_match_duration_vs(c: &mut Criterion) {
     let mut group = c.benchmark_group("compare_chunk_sizes");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(60));
-    let input = Arguments::parse_from([
+    let args = [
         "",
         "res/local/small_test.mp3",
         "--snippet",
@@ -91,10 +91,13 @@ fn full_match_duration_vs(c: &mut Criterion) {
         "--dry-run",
         "--silent",
         "-n",
-    ]);
+    ];
     for distance in [8, 20, 60, 120] {
-        let mut input = input.clone();
-        input.distance = distance;
+        let input = Arguments::parse_from(
+            args.clone()
+                .into_iter()
+                .chain(["--distance", &distance.to_string()]),
+        );
         group.bench_with_input(
             BenchmarkId::new("peaks in small_test", distance),
             &input,

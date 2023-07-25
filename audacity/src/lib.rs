@@ -32,6 +32,7 @@ pub mod scripting_interface {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
         net::unix::pipe::{Receiver, Sender},
+        time::{error::Elapsed, timeout},
     };
 
     #[cfg(windows)]
@@ -57,6 +58,8 @@ pub mod scripting_interface {
         MalformedResult(String, MalformedCause),
         #[error("Unkown path {0:?}, {1}")]
         PathErr(PathBuf, std::io::Error),
+        #[error("timeout after {0:?}")]
+        Timeout(Duration),
     }
     #[derive(Error, Debug)]
     pub enum MalformedCause {
@@ -129,11 +132,26 @@ pub mod scripting_interface {
         }
 
         async fn write(&mut self, command: &str) -> Result<String, Error> {
-            if let Some(_timer) = self.timer {
-                todo!("add timeout");
-            }
-            self.just_write(command).await;
-            self.read(false).await
+            let timer = self.timer;
+            let future = async {
+                self.just_write(command).await;
+                self.read(false).await
+            };
+
+            maybe_timeout(timer, future)
+                .await
+                .map_err(|_err| Error::Timeout(timer.unwrap()))?
+        }
+        async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
+            let timer = self.timer;
+            let future = async {
+                self.just_write(&format!("Message: Text=\"{msg}\"")).await;
+                self.read(allow_empty_result).await
+            };
+
+            maybe_timeout(timer, future)
+                .await
+                .map_err(|_err| Error::Timeout(timer.unwrap()))?
         }
 
         async fn just_write(&mut self, command: &str) {
@@ -178,17 +196,17 @@ pub mod scripting_interface {
                 // remove line ending
                 let line = &line[..(line.len() - LINE_ENDING.len())];
 
-                if line.starts_with("BatchCommand finished: ") {
+                if let Some(rest) = line.strip_prefix("BatchCommand finished: ") {
                     let mut tmp = String::new();
                     self.read_pipe.read_line(&mut tmp).await.unwrap();
                     let result = result.join("\n");
-                    if &tmp != LINE_ENDING {
+                    if tmp != LINE_ENDING {
                         return Err(Error::MalformedResult(
                             result,
                             MalformedCause::MissingLineBreak,
                         ));
                     }
-                    return match &line[23..] {
+                    return match rest {
                         "OK" => {
                             debug!("read '{result}' from audacity");
                             Ok(result)
@@ -199,12 +217,6 @@ pub mod scripting_interface {
                 }
                 result.push(line.to_owned());
             }
-        }
-
-        async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
-            self.just_write(&format!("Message: Text=\"{msg}\"")).await;
-            let result = self.read(allow_empty_result).await?;
-            Ok(result)
         }
 
         pub async fn ping(&mut self) -> Result<bool, Error> {
@@ -295,6 +307,16 @@ pub mod scripting_interface {
         pub async fn open_new(&mut self) -> Result<(), Error> {
             let _result = self.write("New:").await?;
             Ok(())
+        }
+    }
+
+    async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
+        timer: Option<Duration>,
+        future: F,
+    ) -> Result<T, Elapsed> {
+        match timer {
+            Some(timer) => timeout(timer, future).await,
+            None => Ok(future.await),
         }
     }
 

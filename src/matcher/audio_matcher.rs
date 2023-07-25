@@ -37,10 +37,10 @@ impl Config {
     #[must_use]
     pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
         Self {
-            chunk_size: Duration::from_secs(args.chunk_size as u64),
+            chunk_size: args.chunk_size(),
             overlap_length: s_duration,
             peak_config: PeakConfig {
-                distance: Duration::from_secs(args.distance as u64),
+                distance: args.distance(),
                 prominence: args.prominence / 100.0,
             },
             arrow: if args.fancy_bar {

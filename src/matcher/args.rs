@@ -1,8 +1,8 @@
 use clap::{Args, Parser};
 use log::error;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
-use crate::args::{Inputs, OutputLevel};
+use crate::args::{parse_duration, Inputs, OutputLevel};
 
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
@@ -20,15 +20,20 @@ pub struct Arguments {
         help = "minimum prominence of the peaks"
     )]
     pub prominence: crate::matcher::mp3_reader::SampleType,
-    #[clap(long, default_value_t = 8*60, value_name = "SECONDS", help="minimum distance between matches in seconds")]
-    pub distance: usize,
     #[clap(
         long,
-        default_value_t = 60,
+        value_name = "SECONDS",
+        help = "minimum distance between matches in seconds"
+    )]
+    #[arg(value_parser = parse_duration)]
+    distance: Option<Duration>,
+    #[clap(
+        long,
         value_name = "SECONDS",
         help = "length in seconds of chunks to be processed"
     )]
-    pub chunk_size: usize,
+    #[arg(value_parser = parse_duration)]
+    chunk_size: Option<Duration>,
     #[clap(long, help = "use fancy bar, needs fira ttf to work")]
     pub fancy_bar: bool,
     // #[clap(long, help="use new implementation for fftcorrelate")]
@@ -59,6 +64,12 @@ pub struct OutFile {
 }
 
 impl Arguments {
+    pub fn chunk_size(&self) -> Duration {
+        self.chunk_size.unwrap_or(Duration::from_secs(60))
+    }
+    pub fn distance(&self) -> Duration {
+        self.distance.unwrap_or(Duration::from_secs(8 * 60))
+    }
     #[must_use]
     pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
         let out = !std::path::Path::new(path).exists() || {
