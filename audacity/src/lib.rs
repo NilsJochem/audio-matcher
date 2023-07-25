@@ -64,8 +64,10 @@ pub mod scripting_interface {
         JSON(serde_json::Error),
         #[error("{0}")]
         Own(result::Error),
-        #[error("was empty")]
-        Empty,
+        #[error("ping returned {0:?}")]
+        BadPingResult(String),
+        #[error("missing line break")]
+        MissingLineBreak,
     }
 
     #[derive(Debug)]
@@ -145,7 +147,7 @@ pub mod scripting_interface {
         }
 
         async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
-            let mut result = String::new();
+            let mut result = Vec::new();
             loop {
                 let mut line = String::new();
                 if !allow_empty {
@@ -156,37 +158,46 @@ pub mod scripting_interface {
                     trace!("read line {line:?} from audacity");
                 }
 
-                if line == LINE_ENDING {
-                    return if !result.is_empty() {
-                        Err(Error::MissingOK { partial: result })
-                    } else if allow_empty {
-                        Ok(String::new())
-                    } else {
-                        trace!("recieved empty result");
-                        continue;
-                    };
-                }
                 if line.is_empty() {
                     error!("current result: {result:?}");
                     return Err(Error::PipeBroken("empty reader".to_owned()));
                 }
+
+                if line == LINE_ENDING {
+                    return if !result.is_empty() {
+                        Err(Error::MissingOK {
+                            partial: result.join("\n"),
+                        })
+                    } else if allow_empty {
+                        Ok(String::new())
+                    } else {
+                        trace!("skipping empty line");
+                        continue;
+                    };
+                }
+                // remove line ending
+                let line = &line[..(line.len() - LINE_ENDING.len())];
+
                 if line.starts_with("BatchCommand finished: ") {
                     let mut tmp = String::new();
                     self.read_pipe.read_line(&mut tmp).await.unwrap();
-                    assert_eq!(
-                        "\n", tmp,
-                        "message didn't end after 'BatchCommand finished: {{}}'"
-                    );
-                    return match &line[23..(line.len() - 1)] {
+                    let result = result.join("\n");
+                    if &tmp != LINE_ENDING {
+                        return Err(Error::MalformedResult(
+                            result,
+                            MalformedCause::MissingLineBreak,
+                        ));
+                    }
+                    return match &line[23..] {
                         "OK" => {
                             debug!("read '{result}' from audacity");
-                            Ok(result) //fine
+                            Ok(result)
                         }
                         "Failed!" => Err(Error::AudacityErr(result)),
                         x => panic!("need error handling for {x}"),
                     };
                 }
-                result.push_str(&line);
+                result.push(line.to_owned());
             }
         }
 
@@ -201,12 +212,12 @@ pub mod scripting_interface {
 
             if result.is_empty() {
                 Ok(false)
-            } else if result == "ping\n" {
+            } else if result == "ping" {
                 Ok(true)
             } else {
                 Err(Error::MalformedResult(
-                    format!("ping returned {result:?}"),
-                    MalformedCause::Empty,
+                    result.clone(),
+                    MalformedCause::BadPingResult(result),
                 ))
             }
         }
