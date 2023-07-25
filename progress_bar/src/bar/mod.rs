@@ -1,5 +1,5 @@
-pub(crate) mod arrow;
-pub(crate) mod bound;
+pub mod arrow;
+pub mod bound;
 
 use arrow::Arrow;
 use bound::{Bound, Bounded, Unbounded};
@@ -11,6 +11,7 @@ use std::{
     time::Instant,
 };
 
+#[must_use]
 pub struct Bar<const N: usize> {
     pre_msg: String,
     is_timed: bool,
@@ -49,14 +50,11 @@ impl<const N: usize, B: Bound> ProgressBarHolder<N, B> {
         Self::__inc(&mut self.i, n);
         let is_last = !self.bound.is_in_bound(self.i[N - 1]);
 
-        let fmt_elapsed = self.start.map_or_else(
-            || String::new(),
-            |start| {
-                let elapsed = Instant::now().duration_since(start);
-                let (_, minutes, seconds) = crate::split_duration(&elapsed);
-                format!(" {minutes:0>2}:{seconds:0>2}")
-            },
-        );
+        let fmt_elapsed = self.start.map_or_else(String::new, |start| {
+            let elapsed = Instant::now().duration_since(start);
+            let (_, minutes, seconds) = crate::split_duration(&elapsed);
+            format!(" {minutes:0>2}:{seconds:0>2}")
+        });
 
         self.bound.display(self, &fmt_elapsed); //update screen on every update
         if is_last {
@@ -73,7 +71,7 @@ impl<const N: usize, B: Bound> ProgressBarHolder<N, B> {
 }
 
 impl<Iter: Iterator, const N: usize> Progress<Iter, N, Unbounded> {
-    pub fn new_unbound(iter: Iter, bar: Bar<N>) -> Self {
+    pub const fn new_unbound(iter: Iter, bar: Bar<N>) -> Self {
         Self {
             iter,
             holder: ProgressBarHolder {
@@ -88,14 +86,14 @@ impl<Iter: Iterator, const N: usize> Progress<Iter, N, Unbounded> {
 impl<Iter: ExactSizeIterator, const N: usize> Progress<Iter, N, Bounded> {
     pub fn new_bound(iter: Iter, bar: Bar<N>, post_msg_len: usize) -> Self {
         let size = iter.len();
-        Progress::new_external_bound(iter, bar, post_msg_len, size)
+        Self::new_external_bound(iter, bar, post_msg_len, size)
     }
 }
 impl<Iter: Iterator, const N: usize> Progress<Iter, N, Bounded> {
     pub fn new_external_bound(iter: Iter, bar: Bar<N>, post_msg_len: usize, size: usize) -> Self {
         // add 6 to post_len, when time is shown to display extra ' MM:SS'
         let post_msg_len = post_msg_len + (bar.is_timed as usize * 6);
-        let start = bar.is_timed.then(|| Instant::now());
+        let start = bar.is_timed.then(Instant::now);
         Self {
             iter,
             holder: ProgressBarHolder {
@@ -106,17 +104,17 @@ impl<Iter: Iterator, const N: usize> Progress<Iter, N, Bounded> {
             },
         }
     }
-    pub fn max_len(&self) -> Option<usize> {
+    pub const fn max_len(&self) -> Option<usize> {
         self.holder.bound.max_len
     }
-    pub fn mut_max_len<'a>(&'a mut self) -> &'a mut Option<usize> {
+    pub fn mut_max_len(&mut self) -> &mut Option<usize> {
         &mut self.holder.bound.max_len
     }
     pub fn unset_max_len(&mut self) {
-        *self.mut_max_len() = None
+        *self.mut_max_len() = None;
     }
     pub fn set_max_len(&mut self, new_max_len: usize) {
-        *self.mut_max_len() = Some(new_max_len)
+        *self.mut_max_len() = Some(new_max_len);
     }
 }
 
@@ -128,18 +126,18 @@ impl<const N: usize, Iter: Iterator, B: Bound> Progress<Iter, N, B> {
         self.into()
     }
 }
-impl<const N: usize, Iter, B: Bound> Into<(Iter, ProgressBarHolder<N, B>)>
-    for Progress<Iter, N, B>
+impl<const N: usize, Iter, B: Bound> From<Progress<Iter, N, B>>
+    for (Iter, ProgressBarHolder<N, B>)
 {
-    fn into(self) -> (Iter, ProgressBarHolder<N, B>) {
-        (self.iter, self.holder)
+    fn from(val: Progress<Iter, N, B>) -> Self {
+        (val.iter, val.holder)
     }
 }
-impl<const N: usize, Iter, B: Bound> Into<(Iter, Arc<Mutex<ProgressBarHolder<N, B>>>)>
-    for Progress<Iter, N, B>
+impl<const N: usize, Iter, B: Bound> From<Progress<Iter, N, B>>
+    for (Iter, Arc<Mutex<ProgressBarHolder<N, B>>>)
 {
-    fn into(self) -> (Iter, Arc<Mutex<ProgressBarHolder<N, B>>>) {
-        (self.iter, Arc::new(Mutex::new(self.holder)))
+    fn from(val: Progress<Iter, N, B>) -> Self {
+        (val.iter, Arc::new(Mutex::new(val.holder)))
     }
 }
 
@@ -155,6 +153,7 @@ impl<Iter: Iterator, B: Bound> Iterator for Progress<Iter, 1, B> {
     }
 }
 
+#[must_use]
 pub struct Callback<const N: usize, B: Bound> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
 }
@@ -165,36 +164,38 @@ impl<const N: usize, B: Bound> Callback<N, B> {
         }
     }
 
-    pub fn get_once_calls(self) -> [OnceCallback<N, B>; N] {
+    pub fn get_once_calls(self) -> [Once<N, B>; N] {
         let mut vec = Vec::with_capacity(N);
         for i in 0..N {
             vec.push({
-                OnceCallback {
+                Once {
                     progress: Arc::clone(&self.progress),
                     i,
                 }
-            })
+            });
         }
         vec.try_into().map_err(|_| "const N doesn't hold").unwrap()
     }
-    pub fn get_mut_call(self) -> MutCallback<N, B> {
-        MutCallback {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn get_mut_call(self) -> Mut<N, B> {
+        Mut {
             progress: self.progress,
             i: 0,
         }
     }
 }
 
-pub struct OnceCallback<const N: usize, B: Bound> {
+#[must_use]
+pub struct Once<const N: usize, B: Bound> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
     i: usize,
 }
-impl<const N: usize, B: Bound> OnceCallback<N, B> {
+impl<const N: usize, B: Bound> Once<N, B> {
     pub fn new(holder: &Arc<Mutex<ProgressBarHolder<N, B>>>) -> [Self; N] {
         Callback::new(holder).get_once_calls()
     }
     pub fn new_fn(holder: &Arc<Mutex<ProgressBarHolder<N, B>>>) -> [impl FnOnce(); N] {
-        Self::new(holder).map(|it| it.as_fn())
+        Self::new(holder).map(Self::as_fn)
     }
 
     pub fn call(self) {
@@ -205,11 +206,12 @@ impl<const N: usize, B: Bound> OnceCallback<N, B> {
     }
 }
 
-pub struct MutCallback<const N: usize, B: Bound> {
+#[must_use]
+pub struct Mut<const N: usize, B: Bound> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
     i: usize,
 }
-impl<const N: usize, B: Bound> MutCallback<N, B> {
+impl<const N: usize, B: Bound> Mut<N, B> {
     pub fn new(holder: &Arc<Mutex<ProgressBarHolder<N, B>>>) -> Self {
         Callback::new(holder).get_mut_call()
     }

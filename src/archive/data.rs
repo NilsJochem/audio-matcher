@@ -24,6 +24,7 @@ pub struct TimeLabel {
     name: String,
 }
 impl TimeLabel {
+    #[must_use]
     pub fn new_with_pattern(
         start: Duration,
         end: Duration,
@@ -34,9 +35,11 @@ impl TimeLabel {
         let name_convert = |number: usize| name_pattern.replace('#', &number.to_string());
         Self::new(start, end, name_convert(number))
     }
+    #[must_use]
     pub const fn new(start: Duration, end: Duration, name: String) -> Self {
         Self { start, end, name }
     }
+
     pub fn from_peaks<'a, Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a>(
         peaks: Iter,
         sr: u16,
@@ -86,9 +89,9 @@ pub enum LableParseError {
     NotAnFloat(String, std::num::ParseFloatError),
 }
 fn parse_duration(s: &str) -> Result<Duration, LableParseError> {
-    Ok(Duration::from_secs_f64(
-        s.parse::<f64>().map_err(|err| LableParseError::NotAnFloat(s.to_string(), err))?,
-    ))
+    Ok(Duration::from_secs_f64(s.parse::<f64>().map_err(
+        |err| LableParseError::NotAnFloat(s.to_owned(), err),
+    )?))
 }
 fn next<'a>(
     splitter: &'_ mut std::str::SplitN<'a, char>,
@@ -123,15 +126,18 @@ impl Archive {
         .expect("glob pattern failed")
         {
             let entry = entry.expect("couldn't read globbet file");
-            let source =
-                Source::from_path(&entry).expect(&format!("couldn't parse '{}'", entry.display()));
+            let source = Source::from_path(&entry)
+                .unwrap_or_else(|_| panic!("couldn't parse '{}'", entry.display()));
 
             tmp.push((
                 source,
                 fs::read_to_string(&entry)
-                    .expect(&format!("couldn't read '{}'", entry.display()))
+                    .unwrap_or_else(|_| panic!("couldn't read '{}'", entry.display()))
                     .lines()
-                    .map(|line| TimeLabel::try_from(line).expect(&format!("couldn't parse lable {line}")))
+                    .map(|line| {
+                        TimeLabel::try_from(line)
+                            .unwrap_or_else(|_| panic!("couldn't parse lable {line}"))
+                    })
                     .collect_vec()
                     .into_iter(),
             ));
@@ -185,9 +191,9 @@ impl Archive {
                 }
             }
         }
-        archive.data.sort_by(|a,b| Ord::cmp(&a.name, &b.name));
-        for s in archive.data.iter_mut() {
-            s.chapters.sort_by(|a,b| Ord::cmp(&a.nr.nr, &b.nr.nr));
+        archive.data.sort_by(|a, b| Ord::cmp(&a.name, &b.name));
+        for s in &mut archive.data {
+            s.chapters.sort_by(|a, b| Ord::cmp(&a.nr.nr, &b.nr.nr));
         }
         Ok(archive)
     }
@@ -210,6 +216,7 @@ impl Archive {
         }
         Ok(())
     }
+    #[must_use]
     pub fn get_element(&self, identifier: &str, just_series: bool) -> Option<ArchiveSearchResult> {
         lazy_static! {
             static ref RE: Regex =
@@ -249,9 +256,11 @@ impl Archive {
         }
     }
 
+    #[must_use]
     pub fn get_mut_series_by_name(&mut self, identifier: &str) -> Option<&mut Series> {
         self.data.iter_mut().find(|x| x.name == identifier)
     }
+    #[must_use]
     pub fn get_series_by_name(&self, identifier: &str) -> Option<&Series> {
         self.data.iter().find(|x| x.name == identifier)
     }
@@ -325,7 +334,7 @@ impl Chapter {
             write!(s, "{name} ")?;
         }
         s.write_char('[')?;
-        s.write_str(&self.parts.keys().join(", "))?;
+        s.write_str(&self.parts.keys().sorted().join(", "))?;
         s.write_char(']')?;
         Ok(())
     }
@@ -337,7 +346,7 @@ pub struct ChapterNumber {
     is_maybe: bool,
 }
 impl ChapterNumber {
-    const fn new(nr: usize, is_maybe: bool) -> Self {
+    pub const fn new(nr: usize, is_maybe: bool) -> Self {
         Self { nr, is_maybe }
     }
     // todo fix no_run
@@ -349,8 +358,10 @@ impl ChapterNumber {
     /// `l_just`: if it should pad for an extra '?' at the end
     ///
     /// # Examples
-    /// ```no_run
-    /// let nr = ChapterNumber { nr: 3, is_maybe: true };
+    /// ```
+    /// use audio_matcher::archive::data::ChapterNumber;
+    ///
+    /// let nr = ChapterNumber::new(3, true);
     /// let mut s1 = String::new();
     /// nr.format(&mut s1, None, false).unwrap();
     /// assert_eq!(s1, "3?");
@@ -360,8 +371,10 @@ impl ChapterNumber {
     /// assert_eq!(s2, "0003?");
     /// ```
     ///
-    /// ```no_run
-    /// let nr = ChapterNumber { nr: 3, is_maybe: false };
+    /// ```
+    /// use audio_matcher::archive::data::ChapterNumber;
+    ///
+    /// let nr = ChapterNumber::new(3, false);
     /// let mut s1 = String::new();
     /// nr.format(&mut s1, Some((3, false)), false).unwrap();
     /// assert_eq!(s1, "  3");
@@ -395,7 +408,7 @@ impl ChapterNumber {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Source {
     station: String,
     date: NaiveDate,

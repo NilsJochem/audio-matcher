@@ -6,31 +6,31 @@ pub trait Arrow<const N: usize>: Debug {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleArrow<const N: usize> {
+pub struct Simple<const N: usize> {
     arrow_prefix: &'static str,
     arrow_suffix: &'static str,
     base_char: char,
     arrow_chars: [char; N],
     arrow_tip: &'static str,
 }
-
+#[must_use]
 pub struct UnicodeBar(char, char);
 #[allow(non_snake_case, dead_code)]
 impl UnicodeBar {
-    pub fn Rising() -> Self {
-        Self('█', '▁')
+    pub const fn Rising() -> Self {
+        Self('\u{2588}', '\u{2581}')
     }
-    pub fn Box() -> Self {
-        Self('■', '□')
+    pub const fn Box() -> Self {
+        Self('\u{25a0}', '\u{25a1}')
     }
-    pub fn Circle() -> Self {
-        Self('⬤', '◯')
+    pub const fn Circle() -> Self {
+        Self('\u{2b24}', '\u{25ef}')
     }
-    pub fn Parallelogramm() -> Self {
-        Self('▰', '▱')
+    pub const fn Parallelogramm() -> Self {
+        Self('\u{25b0}', '\u{25b1}')
     }
 }
-impl From<UnicodeBar> for SimpleArrow<1> {
+impl From<UnicodeBar> for Simple<1> {
     fn from(value: UnicodeBar) -> Self {
         Self {
             arrow_prefix: "",
@@ -41,20 +41,20 @@ impl From<UnicodeBar> for SimpleArrow<1> {
         }
     }
 }
-impl SimpleArrow<2> {
+impl Simple<2> {
     #[allow(dead_code)]
-    pub(crate) fn unicode_grayscale() -> Self {
+    pub(crate) const fn unicode_grayscale() -> Self {
         Self {
             arrow_prefix: "",
             arrow_suffix: "",
-            base_char: '▒',
-            arrow_chars: ['█', '▓'],
+            base_char: '\u{2592}',
+            arrow_chars: ['\u{2588}', '\u{2593}'],
             arrow_tip: "",
         }
     }
 }
 
-impl Default for SimpleArrow<1> {
+impl Default for Simple<1> {
     fn default() -> Self {
         Self {
             arrow_prefix: "[",
@@ -65,18 +65,18 @@ impl Default for SimpleArrow<1> {
         }
     }
 }
-impl Default for SimpleArrow<2> {
+impl Default for Simple<2> {
     fn default() -> Self {
         Self {
             arrow_chars: ['=', '-'],
-            base_char: SimpleArrow::<1>::default().base_char,
-            arrow_prefix: SimpleArrow::<1>::default().arrow_prefix,
-            arrow_suffix: SimpleArrow::<1>::default().arrow_suffix,
-            arrow_tip: SimpleArrow::<1>::default().arrow_tip,
+            base_char: Simple::<1>::default().base_char,
+            arrow_prefix: Simple::<1>::default().arrow_prefix,
+            arrow_suffix: Simple::<1>::default().arrow_suffix,
+            arrow_tip: Simple::<1>::default().arrow_tip,
         }
     }
 }
-impl<const N: usize> Arrow<N> for SimpleArrow<N> {
+impl<const N: usize> Arrow<N> for Simple<N> {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
         let mut arrow = String::with_capacity(bar_length);
         let bar_length = bar_length - self.padding_needed(); //remove surrounding
@@ -106,21 +106,21 @@ impl<const N: usize> Arrow<N> for SimpleArrow<N> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct FancyArrow {
+pub struct Fancy {
     empty_bar: [char; 3],
     full_bar: [char; 3],
 }
-impl Default for FancyArrow {
+impl Default for Fancy {
     /// uses fira typeset to print connected progress bar
     fn default() -> Self {
         Self {
-            empty_bar: ['', '', ''], // '\u{ee00}', '\u{ee01}', '\u{ee02}'
-            full_bar: ['', '', ''],  // '\u{ee03}', '\u{ee04}', '\u{ee05}'
+            empty_bar: ['\u{ee00}', '\u{ee01}', '\u{ee02}'],
+            full_bar: ['\u{ee03}', '\u{ee04}', '\u{ee05}'],
         }
     }
 }
 // just use the last bar
-impl<const N: usize> Arrow<N> for FancyArrow {
+impl<const N: usize> Arrow<N> for Fancy {
     fn build(&self, fractions: [f64; N], bar_length: usize) -> String {
         let mut arrow = String::with_capacity(bar_length);
 
@@ -164,28 +164,28 @@ mod tests {
         #[test]
         fn empty_arrow() {
             assert_eq!(
-                SimpleArrow::default().build([0.0], 12),
+                Simple::default().build([0.0], 12),
                 String::from("[>         ]")
             )
         }
         #[test]
         fn short_arrow() {
             assert_eq!(
-                SimpleArrow::default().build([0.2], 12),
+                Simple::default().build([0.2], 12),
                 String::from("[==>       ]")
             )
         }
         #[test]
         fn long_arrow() {
             assert_eq!(
-                SimpleArrow::default().build([0.9], 12),
+                Simple::default().build([0.9], 12),
                 String::from("[=========>]")
             )
         }
         #[test]
         fn full_arrow() {
             assert_eq!(
-                SimpleArrow::default().build([1.0], 12),
+                Simple::default().build([1.0], 12),
                 String::from("[==========]")
             )
         }
@@ -193,7 +193,7 @@ mod tests {
         #[test]
         fn double_arrow() {
             assert_eq!(
-                SimpleArrow::default().build([0.3, 0.5], 12),
+                Simple::default().build([0.3, 0.5], 12),
                 String::from("[===-->    ]")
             );
         }
@@ -201,8 +201,8 @@ mod tests {
     mod fancy_arrow {
         use super::*;
 
-        fn ascci_arrow() -> FancyArrow {
-            FancyArrow {
+        fn ascci_arrow() -> Fancy {
+            Fancy {
                 empty_bar: ['(', ' ', ')'],
                 full_bar: ['{', '-', '}'],
             }

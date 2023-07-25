@@ -4,8 +4,8 @@ use crate::{
     offset_range,
 };
 
-use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
-use progress_bar::callback::OnceCallback;
+use progress_bar::arrow::{Arrow, Fancy, Simple};
+use progress_bar::callback::Once;
 use progress_bar::{Bar, Progress};
 
 use itertools::Itertools;
@@ -44,9 +44,9 @@ impl Config {
                 prominence: args.prominence / 100.0,
             },
             arrow: if args.fancy_bar {
-                Box::<FancyArrow>::default()
+                Box::<Fancy>::default()
             } else {
-                Box::<SimpleArrow<2>>::default()
+                Box::<Simple<2>>::default()
             },
         }
     }
@@ -116,7 +116,7 @@ pub fn calc_chunks<
 
     iter.par_bridge()
         .map(move |(i, chunk)| {
-            let [f1, f2] = OnceCallback::new(&holder);
+            let [f1, f2] = Once::new(&holder);
             f1.call();
 
             let offset = chunk_size * i;
@@ -568,7 +568,7 @@ mod tests {
                     distance: Duration::from_secs(8 * 60),
                     prominence: 15. as SampleType,
                 },
-                arrow: Box::<SimpleArrow<2>>::default(),
+                arrow: Box::<Simple<2>>::default(),
             },
         );
         assert!(peaks

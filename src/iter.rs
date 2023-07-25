@@ -125,6 +125,6 @@ mod tests {
             })
             .collect_vec();
         let expected = vec![0, 2];
-        assert!(&is.eq(&expected), "expected {expected:?} but got {is:?}")
+        assert!(&is.eq(&expected), "expected {expected:?} but got {is:?}");
     }
 }

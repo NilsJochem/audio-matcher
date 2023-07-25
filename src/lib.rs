@@ -24,7 +24,7 @@
 )]
 
 mod iter;
-mod args;
+pub mod args;
 pub mod leveled_output;
 pub mod matcher;
 pub mod archive;

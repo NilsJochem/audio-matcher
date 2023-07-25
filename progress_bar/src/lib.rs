@@ -29,12 +29,12 @@ mod bar;
 
 pub use bar::{Bar, Progress};
 pub mod arrow {
-    pub use crate::bar::arrow::{Arrow, FancyArrow, SimpleArrow, UnicodeBar};
+    pub use crate::bar::arrow::{Arrow, Fancy, Simple, UnicodeBar};
 }
 pub mod callback {
-    pub use crate::bar::{Callback, MutCallback, OnceCallback};
+    pub use crate::bar::{Callback, Mut, Once};
 }
-
+#[must_use]
 pub fn terminal_width() -> Option<usize> {
     term_size::dimensions().map(|(w, _)| w)
 }

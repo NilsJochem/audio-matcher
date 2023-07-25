@@ -12,22 +12,55 @@ pub struct Inputs {
 }
 impl Inputs {
     #[must_use]
+    pub const fn test() -> Self {
+        Self {
+            yes: false,
+            no: false,
+            trys: 3,
+        }
+    }
+    #[must_use]
     pub fn ask_consent(&self, msg: &str) -> bool {
         if self.yes || self.no {
             return self.yes;
         }
-        print!("{msg} [y/n]: ");
+        self.try_input(&format!("{msg} [y/n]: "), None, |rin| {
+            if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
+                return Some(true);
+            } else if ["n", "no", "nein"].contains(&rin.as_str()) {
+                return Some(false);
+            }
+            None
+        })
+        .unwrap_or_else(|| {
+            println!("probably not");
+            false
+        })
+    }
+
+    pub fn try_input<T>(
+        &self,
+        msg: &str,
+        default: Option<T>,
+        mut map: impl FnMut(String) -> Option<T>,
+    ) -> Option<T> {
+        print!("{msg}");
         for _ in 0..self.trys {
             let rin: String = text_io::read!("{}\n");
-            if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
-                return true;
-            } else if ["n", "no", "nein"].contains(&rin.as_str()) {
-                return false;
+            if default.is_some() && rin.is_empty() {
+                return default;
             }
-            print!("couldn't parse that, please try again [y/n]: ");
+            match map(rin) {
+                Some(t) => return Some(t),
+                None => print!("couldn't parse that, please try again: "),
+            }
         }
-        println!("probably not");
-        false
+        None
+    }
+    #[must_use]
+    pub fn input(&self, msg: &str, default: Option<String>) -> String {
+        self.try_input(msg, default, Some)
+            .unwrap_or_else(|| unreachable!())
     }
 }
 

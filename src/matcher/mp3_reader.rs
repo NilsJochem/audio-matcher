@@ -3,7 +3,10 @@ use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::matcher::{errors::CliError::{self, NoFile, NoMp3}, verbose};
+use crate::matcher::{
+    errors::CliError::{self, NoFile, NoMp3},
+    verbose,
+};
 
 pub type SampleType = f32;
 
@@ -102,7 +105,9 @@ mod tests {
     #[test]
     fn short_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/Interlude.mp3", false).unwrap().as_secs(),
+            mp3_duration(&"res/local/Interlude.mp3", false)
+                .unwrap()
+                .as_secs(),
             7
         );
     }
@@ -110,21 +115,26 @@ mod tests {
     #[ignore = "slow"]
     fn long_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/big_test.mp3", false).unwrap().as_secs(),
+            mp3_duration(&"res/local/big_test.mp3", false)
+                .unwrap()
+                .as_secs(),
             (3 * 60 + 20) * 60 + 55
         );
     }
 
     #[test]
     fn short_mp3_samples() {
-        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323_712);
+        assert_eq!(
+            read_mp3(&"res/local/Interlude.mp3").unwrap().1.count(),
+            323_712
+        );
     }
 
     #[test]
     #[ignore = "slow"]
     fn long_mp3_samples() {
         assert_eq!(
-            read_mp3(&"res/big_test.mp3").unwrap().1.count(),
+            read_mp3(&"res/local/big_test.mp3").unwrap().1.count(),
             531_668_736
         );
     }
