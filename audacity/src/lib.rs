@@ -23,7 +23,7 @@
     clippy::missing_panics_doc
 )]
 pub mod scripting_interface {
-    use log::{debug, trace};
+    use log::{debug, error, trace};
     use std::{
         path::{Path, PathBuf},
         time::Duration,
@@ -53,10 +53,10 @@ pub mod scripting_interface {
         MissingOK { partial: String },
         #[error("Failed with '{0}'")]
         AudacityErr(String), // TODO parse Error
-        #[error("couldn't parse result '{0:?}' because {1}")]
-        MalformedResult(String, serde_json::Error),
+        #[error("couldn't parse result '{0:?}' because {1:?}")]
+        MalformedResult(String, Option<serde_json::Error>),
         #[error("Unkown path '{0}', {1}")]
-        PathErr(PathBuf, std::io::Error), // TODO parse Error
+        PathErr(PathBuf, std::io::Error),
     }
 
     #[derive(Debug)]
@@ -81,32 +81,51 @@ pub mod scripting_interface {
             let uid = unsafe { geteuid() };
             let base_path = "/tmp/audacity_script_pipe";
             let options = tokio::net::unix::pipe::OpenOptions::new();
-            let mut inst = tokio::time::interval(Duration::from_millis(100));
+            let mut poll_rate = tokio::time::interval(Duration::from_millis(100));
             let writer = loop {
-                inst.tick().await;
+                poll_rate.tick().await;
                 match options.open_sender(format!("{base_path}.to.{uid}")) {
                     Ok(writer) => break writer,
-                    Err(_err) => {
-                        // Error::PipeBroken(format!("open writer with {err:?}",))
-                    }
+                    Err(_err) => {} // Error::PipeBroken(format!("open writer with {err:?}",))
                 }
                 trace!("waiting for audacity to start");
             };
-            Ok(Self {
+            let reader = options
+                .open_receiver(format!("{base_path}.from.{uid}"))
+                .map_err(|e| Error::PipeBroken(format!("open reader with {e:?}")))?;
+
+            Self::with_pipes(reader, writer, timer, poll_rate).await
+        }
+
+        async fn with_pipes(
+            reader: Receiver,
+            writer: Sender,
+            timer: Option<Duration>,
+            mut poll_rate: tokio::time::Interval,
+        ) -> Result<Self, Error> {
+            let mut audacity_api = Self {
                 write_pipe: BufWriter::new(writer),
-                read_pipe: BufReader::new(
-                    options
-                        .open_receiver(format!("{base_path}.from.{uid}"))
-                        .map_err(|e| Error::PipeBroken(format!("open reader with {e:?}",)))?,
-                ),
+                read_pipe: BufReader::new(reader),
                 timer,
-            })
+            };
+            poll_rate.reset();
+            poll_rate.tick().await;
+            // waiting for audacity to be ready
+            while !audacity_api.ping().await? {
+                poll_rate.tick().await;
+            }
+            Ok(audacity_api)
         }
 
         async fn write(&mut self, command: &str) -> Result<String, Error> {
             if let Some(_timer) = self.timer {
                 todo!("add timeout");
             }
+            self.just_write(command).await;
+            self.read(false).await
+        }
+
+        async fn just_write(&mut self, command: &str) {
             debug!("writing '{command}' to audacity");
             self.write_pipe.write_all(command.as_bytes()).await.unwrap();
             self.write_pipe
@@ -114,22 +133,32 @@ pub mod scripting_interface {
                 .await
                 .unwrap();
             self.write_pipe.flush().await.unwrap();
-
-            self.read().await
         }
 
-        async fn read(&mut self) -> Result<String, Error> {
+        async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
             let mut result = String::new();
             loop {
                 let mut line = String::new();
-                trace!("read '{line}' from audacity");
+                if !allow_empty {
+                    trace!("reading next line from audacity");
+                }
                 self.read_pipe.read_line(&mut line).await.unwrap();
+                if !allow_empty {
+                    trace!("read line {line:?} from audacity");
+                }
 
-                if line == LINE_ENDING && !result.is_empty() {
-                    return Err(Error::MissingOK { partial: result });
+                if line == LINE_ENDING {
+                    return if !result.is_empty() {
+                        Err(Error::MissingOK { partial: result })
+                    } else if allow_empty {
+                        Ok(String::new())
+                    } else {
+                        trace!("recieved empty result");
+                        continue;
+                    };
                 }
                 if line.is_empty() {
-                    eprintln!("current result: {result}");
+                    error!("current result: {result:?}");
                     return Err(Error::PipeBroken("empty reader".to_owned()));
                 }
                 if line.starts_with("BatchCommand finished: ") {
@@ -140,13 +169,36 @@ pub mod scripting_interface {
                         "message didn't end after 'BatchCommand finished: {{}}'"
                     );
                     return match &line[23..(line.len() - 1)] {
-                        "OK" => Ok(result), //fine
+                        "OK" => {
+                            debug!("read '{result}' from audacity");
+                            Ok(result) //fine
+                        }
                         "Failed!" => Err(Error::AudacityErr(result)),
                         x => panic!("need error handling for {x}"),
                     };
                 }
-                debug!("read '{result}' from audacity");
                 result.push_str(&line);
+            }
+        }
+
+        async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
+            self.just_write(&format!("Message: Text=\"{msg}\"")).await;
+            let result = self.read(allow_empty_result).await?;
+            Ok(result)
+        }
+
+        pub async fn ping(&mut self) -> Result<bool, Error> {
+            let result = self.send_msg("ping", true).await?;
+
+            if result.is_empty() {
+                Ok(false)
+            } else if result == "ping\n" {
+                Ok(true)
+            } else {
+                Err(Error::MalformedResult(
+                    format!("ping returned {result:?}"),
+                    None,
+                ))
             }
         }
 
@@ -171,7 +223,7 @@ pub mod scripting_interface {
                 commant.push_str(" End=");
                 commant.push_str(&end);
             }
-            let _json = self.write(&commant).await?;
+            let _result = self.write(&commant).await?;
             Ok(())
         }
 
@@ -179,7 +231,7 @@ pub mod scripting_interface {
             &mut self,
         ) -> Result<Vec<(usize, Vec<(f64, f64, String)>)>, Error> {
             let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
-            serde_json::from_str(&json).map_err(|e| Error::MalformedResult(json, e))
+            serde_json::from_str(&json).map_err(|e| Error::MalformedResult(json, Some(e)))
         }
 
         pub async fn import_audio<P: AsRef<Path> + Send>(&mut self, path: P) -> Result<(), Error> {
@@ -188,7 +240,7 @@ pub mod scripting_interface {
                 .canonicalize()
                 .map_err(|e| Error::PathErr(path.as_ref().to_path_buf(), e))?;
 
-            let _json = self
+            let _result = self
                 .write(&format!("Import2: Filename=\"{}\"", path.display()))
                 .await?;
 
@@ -196,20 +248,20 @@ pub mod scripting_interface {
         }
 
         pub async fn export_multiple(&mut self) -> Result<(), Error> {
-            let _json = self.write("ExportMultiple:").await?;
+            let _result = self.write("ExportMultiple:").await?;
             Ok(())
         }
 
         pub async fn export_labels(&mut self) -> Result<(), Error> {
-            let _json = self.write("ExportLabels:").await?;
+            let _result = self.write("ExportLabels:").await?;
             Ok(())
         }
         pub async fn import_labels(&mut self) -> Result<(), Error> {
-            let _json = self.write("ImportLabels:").await?;
+            let _result = self.write("ImportLabels:").await?;
             Ok(())
         }
         pub async fn open_new(&mut self) -> Result<(), Error> {
-            let _json = self.write("New:").await?;
+            let _result = self.write("New:").await?;
             Ok(())
         }
     }
