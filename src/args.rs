@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::Args;
 use log::info;
 
@@ -116,7 +118,7 @@ use thiserror::Error;
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("couldn't find duration in {0:?}")]
 pub struct NoMatch(String);
-// TODO activate when Issue #67295 was finished
+// TODO activate when Issue #67295 is finished
 // #[cfg(doctest)]
 impl NoMatch {
     /// only used for doctest
@@ -133,6 +135,7 @@ impl NoMatch {
 /// assert_eq!(Ok(Duration::from_secs(17)), parse_duration("17"), "blank seconds");
 /// assert_eq!(Ok(Duration::from_secs(58)), parse_duration("58sec"), "seconds with identifier");
 /// assert_eq!(Ok(Duration::from_secs(60)), parse_duration("1m"), "minutes without seconds");
+/// assert_eq!(Ok(Duration::from_millis(100)), parse_duration("100ms"), "milliseconds");
 /// assert_eq!(Ok(Duration::from_secs(3661)), parse_duration("1hour1m1s"), "hours, minutes and seconds");
 ///
 /// assert_eq!(Err(NoMatch::new("")), parse_duration(""), "fail the empty string");
@@ -141,22 +144,31 @@ impl NoMatch {
 /// ```
 pub fn parse_duration(arg: &str) -> Result<std::time::Duration, NoMatch> {
     lazy_static::lazy_static! {
-        static ref RE: Regex = Regex::new("^(?:(?:(?P<hour>\\d+)h(?:ours?)?)?(?:(?P<min>\\d+)m(?:in)?)?(?:(?P<sec>\\d+)(?:s(?:ec)?)?)?)$").unwrap();
+        static ref RE: Regex = Regex::new("^(?:(?:(?P<hour>\\d+)h(?:ours?)?)?(?:(?P<min>\\d+)m(?:in)?)?(?:(?P<sec>\\d+)s(?:ec)?)?)(?:(?P<msec>\\d+)ms(?:ec)?)?$").unwrap();
     }
     if arg.is_empty() {
         // special case, so one seconds capture group is enough
         return Err(NoMatch(arg.to_owned()));
     }
+    if let Ok(seconds) = arg.parse::<u64>() {
+        return Ok(Duration::from_secs(seconds));
+    }
     let capures = RE.captures(arg).ok_or_else(|| NoMatch(arg.to_owned()))?;
-    let mut seconds = 0;
+    let mut milliseconds = 0;
     if let Some(hours) = capures.name("hour") {
-        seconds += unsafe { hours.as_str().parse::<u64>().unwrap_unchecked() } * 60 * 60;
+        milliseconds += unsafe { hours.as_str().parse::<u64>().unwrap_unchecked() };
     }
+    milliseconds *= 60;
     if let Some(min) = capures.name("min") {
-        seconds += unsafe { min.as_str().parse::<u64>().unwrap_unchecked() } * 60;
+        milliseconds += unsafe { min.as_str().parse::<u64>().unwrap_unchecked() };
     }
+    milliseconds *= 60;
     if let Some(sec) = capures.name("sec") {
-        seconds += unsafe { sec.as_str().parse::<u64>().unwrap_unchecked() };
+        milliseconds += unsafe { sec.as_str().parse::<u64>().unwrap_unchecked() };
     }
-    Ok(std::time::Duration::from_secs(seconds))
+    milliseconds *= 1000;
+    if let Some(msec) = capures.name("msec") {
+        milliseconds += unsafe { msec.as_str().parse::<u64>().unwrap_unchecked() };
+    }
+    Ok(std::time::Duration::from_millis(milliseconds))
 }

@@ -68,7 +68,7 @@ async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     // label_path.set_extension("txt");
     let tmp_path = args.tmp_path();
     assert!(launch_audacity()?, "couldn't launch audacity");
-    let mut audacity = audacity::scripting_interface::AudacityApi::new(args.timeout).await?;
+    let mut audacity = audacity::AudacityApi::new(args.timeout).await?;
     trace!("opened audacity");
     if !audacity.get_track_info().await?.is_empty() {
         audacity.open_new().await?;
