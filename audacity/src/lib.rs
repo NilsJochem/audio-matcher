@@ -51,12 +51,21 @@ pub mod scripting_interface {
         PipeBroken(String),
         #[error("Didn't finish with OK or Failed!, {partial:?}")]
         MissingOK { partial: String },
-        #[error("Failed with '{0}'")]
+        #[error("Failed with {0:?}")]
         AudacityErr(String), // TODO parse Error
-        #[error("couldn't parse result '{0:?}' because {1:?}")]
-        MalformedResult(String, Option<serde_json::Error>),
-        #[error("Unkown path '{0}', {1}")]
+        #[error("couldn't parse result {0:?} because {1}")]
+        MalformedResult(String, MalformedCause),
+        #[error("Unkown path {0:?}, {1}")]
         PathErr(PathBuf, std::io::Error),
+    }
+    #[derive(Error, Debug)]
+    pub enum MalformedCause {
+        #[error("{0}")]
+        JSON(serde_json::Error),
+        #[error("{0}")]
+        Own(result::Error),
+        #[error("was empty")]
+        Empty,
     }
 
     #[derive(Debug)]
@@ -197,7 +206,7 @@ pub mod scripting_interface {
             } else {
                 Err(Error::MalformedResult(
                     format!("ping returned {result:?}"),
-                    None,
+                    MalformedCause::Empty,
                 ))
             }
         }
@@ -231,7 +240,19 @@ pub mod scripting_interface {
             &mut self,
         ) -> Result<Vec<(usize, Vec<(f64, f64, String)>)>, Error> {
             let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
-            serde_json::from_str(&json).map_err(|e| Error::MalformedResult(json, Some(e)))
+            serde_json::from_str(&json)
+                .map_err(|e| Error::MalformedResult(json, MalformedCause::JSON(e)))
+        }
+        pub async fn get_track_info(&mut self) -> Result<Vec<result::TrackInfo>, Error> {
+            let json = self.write("GetInfo: Type=Tracks Format=JSON").await?;
+            serde_json::from_str::<Vec<result::RawTrackInfo>>(&json)
+                .map_err(|e| Error::MalformedResult(json.clone(), MalformedCause::JSON(e)))?
+                .into_iter()
+                .map(|it| {
+                    it.try_into()
+                        .map_err(|e| Error::MalformedResult(json.clone(), MalformedCause::Own(e)))
+                })
+                .collect()
         }
 
         pub async fn import_audio<P: AsRef<Path> + Send>(&mut self, path: P) -> Result<(), Error> {
@@ -263,6 +284,82 @@ pub mod scripting_interface {
         pub async fn open_new(&mut self) -> Result<(), Error> {
             let _result = self.write("New:").await?;
             Ok(())
+        }
+    }
+
+    pub mod result {
+        use serde::{Deserialize, Serialize};
+        use thiserror::Error;
+
+        #[derive(Debug, Error, Clone)]
+        pub enum Error {
+            #[error("Missing field {0}")]
+            MissingField(&'static str),
+            #[error("Unkown Kind at {0}")]
+            UnkownKind(String),
+        }
+
+        #[derive(Serialize, Deserialize, Debug)]
+        pub(super) struct RawTrackInfo {
+            name: String,
+            focused: u8,
+            selected: u8,
+            kind: String,
+            start: Option<f64>,
+            end: Option<f64>,
+            pan: Option<usize>,
+            gain: Option<f64>,
+            channels: Option<usize>,
+            solo: Option<u8>,
+            mute: Option<u8>,
+        }
+        impl TryFrom<RawTrackInfo> for TrackInfo {
+            type Error = Error;
+
+            fn try_from(value: RawTrackInfo) -> Result<Self, Self::Error> {
+                Ok(Self {
+                    name: value.name,
+                    focused: value.focused == 1,
+                    selected: value.selected == 1,
+                    kind: match value.kind.as_str() {
+                        "wave" => Kind::Wave {
+                            start: value.start.ok_or(Error::MissingField("wave.start"))?,
+                            end: value.end.ok_or(Error::MissingField("wave.end"))?,
+                            pan: value.pan.ok_or(Error::MissingField("wave.pan"))?,
+                            gain: value.gain.ok_or(Error::MissingField("wave.gain"))?,
+                            channels: value.channels.ok_or(Error::MissingField("wave.channels"))?,
+                            solo: value.solo.ok_or(Error::MissingField("wave.solo"))? == 1,
+                            mute: value.mute.ok_or(Error::MissingField("wave.mute"))? == 1,
+                        },
+                        "label" => Kind::Label,
+                        "time" => Kind::Time,
+                        _ => return Err(Error::UnkownKind(value.kind)),
+                    },
+                })
+            }
+        }
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        pub struct TrackInfo {
+            name: String,
+            focused: bool,
+            selected: bool,
+            kind: Kind,
+        }
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        pub enum Kind {
+            Wave {
+                start: f64,
+                end: f64,
+                pan: usize,
+                gain: f64,
+                channels: usize,
+                solo: bool,
+                mute: bool,
+            },
+            Label,
+            Time,
         }
     }
 }

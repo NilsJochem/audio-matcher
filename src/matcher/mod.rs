@@ -1,4 +1,5 @@
 pub mod args;
+#[allow(clippy::module_name_repetitions)] // TODO fix
 pub mod audio_matcher;
 pub mod errors;
 pub mod mp3_reader;

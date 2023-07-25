@@ -61,8 +61,13 @@ async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     assert!(launch_audacity()?, "couldn't launch audacity");
     let mut audacity = audacity::scripting_interface::AudacityApi::new(None).await?;
     trace!("opened audacity");
-    audacity.open_new().await?;
-    trace!("opened new project");
+    if !audacity.get_track_info().await?.is_empty() {
+        audacity.open_new().await?;
+        trace!("opened new project");
+    } else {
+        trace!("no need to open new project");
+    }
+
     audacity.import_audio(&args.audio_path).await?;
     trace!("loaded audio");
     audacity.import_labels().await?;
@@ -73,15 +78,27 @@ async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     let mut patterns = Vec::new();
 
     let mut i = 0;
+    let series = args
+        .always_answer
+        .input("Welche Serie ist heute dran: ", None);
     while i < labels.len() {
-        let pattern: String = read_pattern(&args.always_answer, i + 1);
-        let number: usize = read_number(&args.always_answer);
+        let chapter_number: String = args
+            .always_answer
+            .input("Welche Nummer hat die nächste Folge: ", None);
+        let chapter_name: String = args
+            .always_answer
+            .input("Wie heißt die nächste Folge: ", None);
+        let number = read_number(
+            &args.always_answer,
+            "Wie viele Teile hat die nächste Folge: ",
+            Some(4),
+        );
         for j in 0..number.min(labels.len() - i) {
-            let name = pattern.replace('#', &format!(".{}", j + 1));
-            audacity.set_label(i, Some(name), None, None).await?;
-            i += 1;
+            let name = format!("{series} {chapter_number}.{j} {chapter_name}");
+            audacity.set_label(i + j, Some(name), None, None).await?;
         }
-        patterns.push(pattern);
+        i += number;
+        patterns.push(format!("{chapter_number}# {chapter_name}"));
     }
     let _ = args
         .always_answer
@@ -103,20 +120,18 @@ async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn read_pattern(input: &Inputs, i: usize) -> String {
-    input
-        .try_input(
-            &format!("input label pattern {}+ (# for changing number): ", i),
-            None,
-            |rin| rin.contains('#').then_some(rin),
-        )
-        .expect("need #")
-}
+// fn read_pattern(input: &Inputs, i: usize) -> String {
+//     input
+//         .try_input(
+//             &format!("input label pattern {}+ (# for changing number): ", i),
+//             None,
+//             |rin| rin.contains('#').then_some(rin),
+//         )
+//         .expect("need #")
+// }
 
-fn read_number(input: &Inputs) -> usize {
+fn read_number(input: &Inputs, msg: &str, default: Option<usize>) -> usize {
     input
-        .try_input("number of labels (default 4): ", Some(4), |rin| {
-            rin.parse().ok()
-        })
+        .try_input(msg, default, |rin| rin.parse().ok())
         .expect("gib was vernünftiges ein")
 }
