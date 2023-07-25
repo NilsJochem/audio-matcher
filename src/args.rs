@@ -1,4 +1,5 @@
 use clap::Args;
+use log::info;
 
 #[derive(Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
@@ -33,7 +34,7 @@ impl Inputs {
             None
         })
         .unwrap_or_else(|| {
-            println!("probably not");
+            info!("probably not");
             false
         })
     }
@@ -66,13 +67,39 @@ impl Inputs {
 
 #[derive(Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OutputLevel {
     #[clap(short, long, help = "print maximum info")]
     debug: bool,
     #[clap(short, long, help = "print more info")]
     verbose: bool,
-    #[clap(short, long, help = "print less info")]
+    #[clap(short, long, help = "print sligtly more info")]
+    warn: bool,
+    #[clap(short, long, help = "print almost no info")]
     silent: bool,
+}
+
+impl OutputLevel {
+    pub fn init_logger(&self) {
+        let level = crate::leveled_output::OutputLevel::from(*self);
+        let log_name = match level {
+            crate::leveled_output::OutputLevel::Debug => "Debug",
+            crate::leveled_output::OutputLevel::Verbose => "Trace",
+            crate::leveled_output::OutputLevel::Info => "Info",
+            crate::leveled_output::OutputLevel::Warn => "Warn",
+            crate::leveled_output::OutputLevel::Error => "Error",
+        };
+        let env = env_logger::Env::default();
+        let env = env.default_filter_or(log_name);
+
+        let mut builder = env_logger::Builder::from_env(env);
+
+        builder.format_timestamp(None);
+        builder.format_target(false);
+        builder.format_level(level < crate::leveled_output::OutputLevel::Info);
+
+        builder.init();
+    }
 }
 
 impl From<OutputLevel> for crate::leveled_output::OutputLevel {
@@ -83,6 +110,8 @@ impl From<OutputLevel> for crate::leveled_output::OutputLevel {
             Self::Verbose
         } else if val.debug {
             Self::Debug
+        } else if val.warn {
+            Self::Warn
         } else {
             Self::Info
         }

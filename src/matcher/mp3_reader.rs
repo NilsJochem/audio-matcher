@@ -1,12 +1,10 @@
 use itertools::Itertools;
+use log::trace;
 use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::matcher::{
-    errors::CliError::{self, NoFile, NoMp3},
-    verbose,
-};
+use crate::matcher::errors::CliError::{self, NoFile, NoMp3};
 
 pub type SampleType = f32;
 
@@ -75,7 +73,7 @@ where
     if let Ok(duration) = mp3_duration::from_path(path) {
         return Ok(duration);
     }
-    verbose!("fallback to own implementation for mp3_duration");
+    trace!("fallback to own implementation for mp3_duration");
 
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
 

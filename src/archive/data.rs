@@ -12,10 +12,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use crate::{
-    info,
-    matcher::{mp3_reader::SampleType, start_as_duration},
-};
+use crate::matcher::{mp3_reader::SampleType, start_as_duration};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeLabel {
@@ -62,7 +59,7 @@ impl TimeLabel {
         let out = lables.map_into::<String>().join("\n");
 
         if dry_run {
-            info!(
+            println!(
                 "writing: \"\"\"\n{out}\n\"\"\" > {}",
                 path.as_ref().display()
             );
@@ -341,6 +338,7 @@ impl Chapter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct ChapterNumber {
     nr: usize,
     is_maybe: bool,

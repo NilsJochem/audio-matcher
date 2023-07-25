@@ -22,8 +22,8 @@
     clippy::missing_errors_doc,
     clippy::missing_panics_doc
 )]
-
 pub mod scripting_interface {
+    use log::{debug, trace};
     use std::{
         path::{Path, PathBuf},
         time::Duration,
@@ -62,8 +62,6 @@ pub mod scripting_interface {
     #[derive(Debug)]
     #[must_use]
     pub struct AudacityApi {
-        // to_name: PathBuf,
-        // from_name: PathBuf,
         write_pipe: BufWriter<Sender>,
         read_pipe: BufReader<Receiver>,
         timer: Option<Duration>,
@@ -79,16 +77,23 @@ pub mod scripting_interface {
             }
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        pub fn new(timer: Option<Duration>) -> Result<Self, Error> {
+        pub async fn new(timer: Option<Duration>) -> Result<Self, Error> {
             let uid = unsafe { geteuid() };
             let base_path = "/tmp/audacity_script_pipe";
             let options = tokio::net::unix::pipe::OpenOptions::new();
+            let mut inst = tokio::time::interval(Duration::from_millis(100));
+            let writer = loop {
+                inst.tick().await;
+                match options.open_sender(format!("{base_path}.to.{uid}")) {
+                    Ok(writer) => break writer,
+                    Err(_err) => {
+                        // Error::PipeBroken(format!("open writer with {err:?}",))
+                    }
+                }
+                trace!("waiting for audacity to start");
+            };
             Ok(Self {
-                write_pipe: BufWriter::new(
-                    options
-                        .open_sender(format!("{base_path}.to.{uid}"))
-                        .map_err(|e| Error::PipeBroken(format!("open writer with {e:?}",)))?,
-                ),
+                write_pipe: BufWriter::new(writer),
                 read_pipe: BufReader::new(
                     options
                         .open_receiver(format!("{base_path}.from.{uid}"))
@@ -102,6 +107,7 @@ pub mod scripting_interface {
             if let Some(_timer) = self.timer {
                 todo!("add timeout");
             }
+            debug!("writing '{command}' to audacity");
             self.write_pipe.write_all(command.as_bytes()).await.unwrap();
             self.write_pipe
                 .write_all(LINE_ENDING.as_bytes())
@@ -116,6 +122,7 @@ pub mod scripting_interface {
             let mut result = String::new();
             loop {
                 let mut line = String::new();
+                trace!("read '{line}' from audacity");
                 self.read_pipe.read_line(&mut line).await.unwrap();
 
                 if line == LINE_ENDING && !result.is_empty() {
@@ -138,6 +145,7 @@ pub mod scripting_interface {
                         x => panic!("need error handling for {x}"),
                     };
                 }
+                debug!("read '{result}' from audacity");
                 result.push_str(&line);
             }
         }
@@ -201,7 +209,7 @@ pub mod scripting_interface {
             Ok(())
         }
         pub async fn open_new(&mut self) -> Result<(), Error> {
-            let _json = self.write("Open:").await?;
+            let _json = self.write("New:").await?;
             Ok(())
         }
     }

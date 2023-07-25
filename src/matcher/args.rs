@@ -1,4 +1,5 @@
 use clap::{Args, Parser};
+use log::error;
 use std::path::PathBuf;
 
 use crate::args::{Inputs, OutputLevel};
@@ -67,7 +68,7 @@ impl Arguments {
             ))
         };
         if !out {
-            crate::error!("won't overwrite '{}'", path.display());
+            error!("won't overwrite '{}'", path.display());
         }
         out
     }
