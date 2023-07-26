@@ -23,11 +23,12 @@
     clippy::missing_panics_doc
 )]
 
-mod iter;
+pub mod archive;
 pub mod args;
+mod iter;
 pub mod leveled_output;
 pub mod matcher;
-pub mod archive;
+pub mod worker;
 
 use std::{time::Duration, usize};
 

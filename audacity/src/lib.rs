@@ -97,10 +97,50 @@ pub struct AudacityApi {
     timer: Option<Duration>,
 }
 
+#[derive(Debug, Error)]
+pub enum LaunchError {
+    #[error("{0}")]
+    IO(tokio::io::Error),
+    #[error("failed with status code {0}")]
+    Failed(i32),
+    #[error("process was terminated")]
+    Terminated,
+}
+
+impl LaunchError {
+    const fn from_status_code(value: Option<i32>) -> Result<(), Self> {
+        match value {
+            Some(0) => Ok(()),
+            Some(code) => Err(Self::Failed(code)),
+            None => Err(Self::Terminated),
+        }
+    }
+}
+
 impl AudacityApi {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     const BASE_PATH: &str = "/tmp/audacity_script_pipe";
     const ACK_START: &str = "BatchCommand finished: ";
+
+    const LAUNCHER: &str = "gtk4-launch";
+    const AUDACITY_APP_NAME: &str = "audacity";
+    /// Launches Audacity.
+    ///
+    /// # Errors
+    /// - [`LaunchError::IO`] when executing the commant failed
+    /// - [`LaunchError::Failed`] when the launcher exited with an statuscode != 0
+    /// - [`LaunchError::Terminated`] when the launcher was terminated by a signal
+    pub async fn launch_audacity() -> Result<(), LaunchError> {
+        LaunchError::from_status_code(
+            tokio::process::Command::new(Self::LAUNCHER)
+                .arg(Self::AUDACITY_APP_NAME)
+                .output()
+                .await
+                .map_err(LaunchError::IO)?
+                .status
+                .code(),
+        )
+    }
 
     #[cfg(target_os = "windows")]
     pub const fn new(timer: Option<Duration>) -> Self {
