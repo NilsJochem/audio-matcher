@@ -19,11 +19,11 @@
     clippy::cast_precision_loss,
     clippy::cast_lossless,
     clippy::cast_sign_loss,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc
+    // clippy::missing_errors_doc,
+    // clippy::missing_panics_doc
 )]
 
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -100,9 +100,11 @@ pub struct AudacityApi {
 impl AudacityApi {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     const BASE_PATH: &str = "/tmp/audacity_script_pipe";
+    const ACK_START: &str = "BatchCommand finished: ";
 
     #[cfg(target_os = "windows")]
     pub const fn new(timer: Option<Duration>) -> Self {
+        todo!("not up to date");
         Self {
             to_name: PathBuf::from(r"\\.\pipe\ToSrvPipe"),
             from_name: PathBuf::from(r"\\.\pipe\FromSrvPipe"),
@@ -110,6 +112,15 @@ impl AudacityApi {
         }
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// creates a new Instance of `AudacityApi` for linux.
+    ///
+    /// Will wait for `timer` until the pipe is ready, and saves the timer in `self`.
+    /// Will also wait for ping to answer.
+    ///
+    /// # Errors
+    /// - when a Timeout occures
+    /// - when the other Pipe isn't ready after waiting for the first pipe
+    /// - when Ping returns false
     pub async fn new(timer: Option<Duration>) -> Result<Self, Error> {
         use tokio::net::unix::pipe::OpenOptions;
 
@@ -122,7 +133,9 @@ impl AudacityApi {
                 poll_rate.tick().await;
                 match options.open_sender(writer_path.clone()) {
                     Ok(writer) => break writer,
-                    Err(_err) => {} // Error::PipeBroken(format!("open writer with {err:?}",))
+                    Err(err) => {
+                        warn!("{}", Error::PipeBroken(format!("open writer with {err:?}")));
+                    }
                 }
                 trace!("waiting for audacity to start");
             }
@@ -152,33 +165,66 @@ impl AudacityApi {
         Ok(audacity_api)
     }
 
+    /// writes `command` to audacity and waits for a result
+    /// applys timeout if `self.timer` is Some
+    /// this errors when either `self.write` or `self.read` errors, or the timeout occures
     async fn write(&mut self, command: &str) -> Result<String, Error> {
         let timer = self.timer;
         let future = async {
-            self.just_write(command).await;
+            self.just_write(command).await?;
             self.read(false).await
         };
 
         Self::maybe_timeout(timer, future).await?
     }
+    /// sends `msg` to audacity and waits for a result, which should always be Ok(msg)
+    /// used for ping
+    /// applys timeout if `self.timer` is Some
+    ///
+    /// # Errors
+    /// this errors when either `self.write` or `self.read` errors, or the timeout occures
     async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
         let timer = self.timer;
         let future = async {
-            self.just_write(&format!("Message: Text=\"{msg}\"")).await;
+            self.just_write(&format!("Message: Text=\"{msg}\"")).await?;
             self.read(allow_empty_result).await
         };
 
         Self::maybe_timeout(timer, future).await?
     }
-    async fn just_write(&mut self, command: &str) {
+    /// sends `command` to audacity, but doesn't wait for a result
+    ///
+    /// # Errors
+    /// this will Error with [`Error::PipeBroken`] when the `command` couldn't be written to audacity
+    async fn just_write(&mut self, command: &str) -> Result<(), Error> {
         debug!("writing '{command}' to audacity");
-        self.write_pipe.write_all(command.as_bytes()).await.unwrap();
+        self.write_pipe
+            .write_all(command.as_bytes())
+            .await
+            .map_err(|_err| Error::PipeBroken(format!("failed to send {command:?}")))?;
         self.write_pipe
             .write_all(LINE_ENDING.as_bytes())
             .await
-            .unwrap();
-        self.write_pipe.flush().await.unwrap();
+            .map_err(|_err| {
+                Error::PipeBroken(format!("failed to send line break after {command:?}"))
+            })?;
+        self.write_pipe
+            .flush()
+            .await
+            .map_err(|_err| Error::PipeBroken(format!("failed to flush after {command:?}")))?;
+        Ok(())
     }
+    /// Reads the next answer from audacity.
+    /// When not `allow_empty` reads lines until {[`Self::ACK_START`]}+\["OK"|"Failed!"\]+"\n\n" is reached and returns everything before
+    /// Else will also accept just "\n"
+    ///
+    /// # Errors
+    ///  - [`Error::PipeBroken`] when the read pipe is closed or it reads ""
+    ///  - [`Error::MissingOK`] or [`Error::MalformedResult`] when it didn't recieve OK\n
+    ///  - [`Error::AudacityErr`] when it recieved an "Failed!", the error will contain the Error message
+    ///
+    /// # Panics
+    /// This can panic, when after {[`Self::ACK_START`]} somthing unexpected appears
     async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
         let mut result = Vec::new();
         loop {
@@ -186,7 +232,12 @@ impl AudacityApi {
             if !allow_empty {
                 trace!("reading next line from audacity");
             }
-            self.read_pipe.read_line(&mut line).await.unwrap();
+            self.read_pipe.read_line(&mut line).await.map_err(|_err| {
+                Error::PipeBroken(format!(
+                    "failed to read next line, current buffer: {:?}",
+                    result.join("\n")
+                ))
+            })?;
             if !allow_empty {
                 trace!("read line {line:?} from audacity");
             }
@@ -211,9 +262,14 @@ impl AudacityApi {
             // remove line ending
             let line = &line[..(line.len() - LINE_ENDING.len())];
 
-            if let Some(rest) = line.strip_prefix("BatchCommand finished: ") {
+            if let Some(rest) = line.strip_prefix(Self::ACK_START) {
                 let mut tmp = String::new();
-                self.read_pipe.read_line(&mut tmp).await.unwrap();
+                self.read_pipe.read_line(&mut tmp).await.map_err(|_err| {
+                    Error::PipeBroken(format!(
+                        "failed to read newline after ok. Current buffer: {:?}",
+                        result.join("\n")
+                    ))
+                })?;
                 let result = result.join("\n");
                 if tmp != LINE_ENDING {
                     return Err(Error::MalformedResult(
@@ -234,6 +290,7 @@ impl AudacityApi {
         }
     }
 
+    /// formats the error of [`maybe_timeout`] to [`Error::Timeout`]
     async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
         timer: Option<Duration>,
         future: F,
@@ -242,6 +299,11 @@ impl AudacityApi {
             .await
             .map_err(|_err| Error::Timeout(timer.unwrap()))
     }
+    /// Pings Audacity and returns if the result is correct.
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::MalformedResult`] when something other then ping is answered
     pub async fn ping(&mut self) -> Result<bool, Error> {
         let result = self.send_msg("ping", true).await?;
 
@@ -257,6 +319,11 @@ impl AudacityApi {
         }
     }
 
+    /// Gets Infos of the Tracks in the currently open Project
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::MalformedResult`] when the result can't be parsed
     pub async fn get_track_info(&mut self) -> Result<Vec<result::TrackInfo>, Error> {
         let json = self.write("GetInfo: Type=Tracks Format=JSON").await?;
         serde_json::from_str::<Vec<result::RawTrackInfo>>(&json)
@@ -268,6 +335,14 @@ impl AudacityApi {
             })
             .collect()
     }
+    /// Selects the tracks with position `tracks`
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::AudacityErr`] when any of `tracks` is invalid
+    ///
+    /// # Panics
+    ///  - when `tracks` is empty
     pub async fn select_tracks(
         &mut self,
         mut tracks: impl Iterator<Item = usize> + Send,
@@ -280,6 +355,10 @@ impl AudacityApi {
         }
         Ok(())
     }
+    /// Mutes the selected tracks
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn mute_selected_tracks(&mut self, mute: bool) -> Result<(), Error> {
         let command = if mute { "MuteTracks:" } else { "UnmuteTracks:" };
         let _result = self.write(command).await?;
@@ -287,6 +366,11 @@ impl AudacityApi {
     }
     //TODO align tracks
 
+    /// imports the audio file at `path` into a new track
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::AudacityErr`] when path is not a valid audio file (probably)
     pub async fn import_audio<P: AsRef<Path> + Send>(&mut self, path: P) -> Result<(), Error> {
         let path = path
             .as_ref()
@@ -299,11 +383,20 @@ impl AudacityApi {
 
         Ok(())
     }
+    /// Opens the dialoge for export multiple
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn export_multiple(&mut self) -> Result<(), Error> {
         let _result = self.write("ExportMultiple:").await?;
         Ok(())
     }
 
+    /// Gets Infos of the lables in the currently open Project
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::MalformedResult`] when the result can't be parsed
     pub async fn get_label_info(
         &mut self,
     ) -> Result<HashMap<usize, Vec<(f64, f64, String)>>, Error> {
@@ -312,18 +405,39 @@ impl AudacityApi {
             .map_err(|e| Error::MalformedResult(json, MalformedCause::JSON(e)))
             .map(|list: Vec<(usize, Vec<_>)>| list.into_iter().collect())
     }
+    /// Adds a new label track to the currently open Project
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn add_label_track(&mut self) -> Result<(), Error> {
         let _result = self.write("NewLabelTrack:").await?;
         Ok(())
     }
+    /// Opens the dialoge for import labels
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn import_labels(&mut self) -> Result<(), Error> {
         let _result = self.write("ImportLabels:").await?;
         Ok(())
     }
+    /// Opens the dialoge for export labels
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn export_labels(&mut self) -> Result<(), Error> {
         let _result = self.write("ExportLabels:").await?;
         Ok(())
     }
+    /// Sets the `text`, `start`, `end` of the label at position `i`.
+    ///
+    /// When the project has multiple label tracks the position seems to be offset by all labels in tracks before.
+    ///
+    /// Only logs a warning if all parameters are [`None`], buts returns [`Ok`]
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::AudacityErr`] when `i` is not a valid track position
     pub async fn set_label(
         &mut self,
         i: usize,
@@ -331,14 +445,27 @@ impl AudacityApi {
         start: Option<f64>,
         end: Option<f64>,
     ) -> Result<(), Error> {
-        let mut commant = format!("SetLabel: Label={i}");
-        push_if_some(&mut commant, "Text", text, true);
-        push_if_some(&mut commant, "Start", start, false);
-        push_if_some(&mut commant, "End", end, false);
-        let _result = self.write(&commant).await?;
+        if text.is_some() || start.is_some() || end.is_some() {
+            warn!("attempted to set_label with no values");
+            return Ok(());
+        }
+        let mut command = format!("SetLabel: Label={i}");
+        push_if_some(&mut command, "Text", text, true);
+        push_if_some(&mut command, "Start", start, false);
+        push_if_some(&mut command, "End", end, false);
+        let _result = self.write(&command).await?;
         Ok(())
     }
-    /// adds a new label with Some(text) or empty
+    /// Creates a new label on track `track_nr` from `start` to `end` with Some(text).
+    ///
+    /// Sets the current selection to the given values and then adds a new blank Label. If text is not empty updates the label to `text`
+    /// returns the postition of the label in this track
+    ///
+    /// # Panics
+    /// - when the new label can't be located after creation
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn add_label(
         &mut self,
         track_nr: usize,
@@ -357,6 +484,7 @@ impl AudacityApi {
         });
         let new_id = new_candidates.next().expect("not enought labels").0;
         assert!(new_candidates.next().is_none(), "to many labels");
+        //TODO check if new_id needs to be offset for non first tracks
 
         if let Some(text) = text.filter(|it| !it.is_empty()) {
             self.set_label(new_id, Some(text), None, None).await?;
@@ -364,43 +492,75 @@ impl AudacityApi {
         Ok(new_id)
     }
 
+    /// opens a new project
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn new_project(&mut self) -> Result<(), Error> {
         let _result = self.write("New:").await?;
         Ok(())
     }
+    /// closes the current project. May ask the User what to do with unsaved changes
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn close_projext(&mut self) -> Result<(), Error> {
         let _result = self.write("Close:").await?;
         Ok(())
     }
 
+    /// selects time from `start` to `end` in the selected track. If one is None keeps the current selection for it
+    ///
+    /// Only logs a warning if all parameters are [`None`], buts returns [`Ok`]
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn select_time(
         &mut self,
         start: Option<f64>,
         end: Option<f64>,
         relative_to: Option<RelativeTo>,
     ) -> Result<(), Error> {
-        let mut commant = "SelectTime:".to_owned();
-        push_if_some(&mut commant, "Start", start, false);
-        push_if_some(&mut commant, "End", end, false);
-        push_if_some(&mut commant, "RelativeTo", relative_to, false);
-        let _result = self.write(&commant).await?;
+        if start.is_some() || end.is_some() {
+            warn!("attempted to select_time with no values");
+            return Ok(());
+        }
+        let mut command = "SelectTime:".to_owned();
+        push_if_some(&mut command, "Start", start, false);
+        push_if_some(&mut command, "End", end, false);
+        push_if_some(&mut command, "RelativeTo", relative_to, false);
+        let _result = self.write(&command).await?;
         Ok(())
     }
+    /// Removes the selected audio data and/or labels without copying these to the Audacity clipboard. Any audio or labels to right of the selection are shifted to the left.
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn delete_selection(&mut self) -> Result<(), Error> {
         let _result = self.write("Delete:").await?;
         Ok(())
     }
-    /// deletes selectet section, without shifting stuff to fill the gap
+    /// Removes the selected audio data and/or labels without copying these to the Audacity clipboard. None of the audio data or labels to right of the selection are shifted
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn split_delete_selection(&mut self) -> Result<(), Error> {
         let _result = self.write("SplitDelete:").await?;
         Ok(())
     }
+    /// Creates a new track containing only the current selection as a new clip.
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn duplicate_selection(&mut self) -> Result<(), Error> {
         let _result = self.write("Duplicate:").await?;
         Ok(())
     }
 
-    /// splits the selection and moves it to a new track
+    /// Does a Split Cut on the current selection in the current track, then creates a new track and pastes the selection into the new track
+    ///
+    /// # Errors
+    ///  - when write/send errors
     pub async fn split_new(&mut self) -> Result<(), Error> {
         let _result = self.write("SplitNew:").await?;
         Ok(())
@@ -411,8 +571,8 @@ impl AudacityApi {
     // }
 }
 
-fn push_if_some<T: ToString>(s: &mut String, cmd: &str, option: Option<T>, escape: bool) {
-    if let Some(value) = option {
+fn push_if_some<T: ToString>(s: &mut String, cmd: &str, param: Option<T>, escape: bool) {
+    if let Some(value) = param {
         let value = value.to_string();
         s.reserve(4 + cmd.len() + value.len());
         s.push(' ');
