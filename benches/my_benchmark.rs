@@ -94,8 +94,7 @@ fn full_match_duration_vs(c: &mut Criterion) {
     ];
     for distance in [8, 20, 60, 120] {
         let input = Arguments::parse_from(
-            args.clone()
-                .into_iter()
+            args.into_iter()
                 .chain(["--distance", &distance.to_string()]),
         );
         group.bench_with_input(

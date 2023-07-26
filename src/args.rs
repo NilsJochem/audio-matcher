@@ -76,6 +76,9 @@ pub struct OutputLevel {
 impl OutputLevel {
     pub fn init_logger(&self) {
         let level = crate::leveled_output::OutputLevel::from(*self);
+        Self::init_logger_with(level);
+    }
+    pub fn init_logger_with(level: crate::leveled_output::OutputLevel) {
         let log_name = match level {
             crate::leveled_output::OutputLevel::Debug => "Debug",
             crate::leveled_output::OutputLevel::Verbose => "Trace",
@@ -122,6 +125,7 @@ pub struct NoMatch(String);
 // #[cfg(doctest)]
 impl NoMatch {
     /// only used for doctest
+    #[must_use]
     pub fn new(s: &str) -> Self {
         Self(s.to_owned())
     }

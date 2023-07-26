@@ -64,9 +64,11 @@ pub struct OutFile {
 }
 
 impl Arguments {
+    #[must_use]
     pub fn chunk_size(&self) -> Duration {
         self.chunk_size.unwrap_or(Duration::from_secs(60))
     }
+    #[must_use]
     pub fn distance(&self) -> Duration {
         self.distance.unwrap_or(Duration::from_secs(8 * 60))
     }

@@ -25,6 +25,7 @@
 
 use log::{debug, error, trace};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -73,6 +74,21 @@ pub enum MalformedCause {
     MissingLineBreak,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelativeTo {
+    ProjectStart,
+    Project,
+    ProjectEnd,
+    SelectionStart,
+    Selection,
+    SelectionEnd,
+}
+impl std::fmt::Display for RelativeTo {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 #[derive(Debug)]
 #[must_use]
 pub struct AudacityApi {
@@ -93,7 +109,6 @@ impl AudacityApi {
             timer,
         }
     }
-
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub async fn new(timer: Option<Duration>) -> Result<Self, Error> {
         use tokio::net::unix::pipe::OpenOptions;
@@ -101,7 +116,7 @@ impl AudacityApi {
         let uid = unsafe { geteuid() };
         let options = OpenOptions::new();
         let mut poll_rate = interval(Duration::from_millis(100));
-        let writer_path = format!("{}.to.{uid}", AudacityApi::BASE_PATH);
+        let writer_path = format!("{}.to.{uid}", Self::BASE_PATH);
         let future = async {
             loop {
                 poll_rate.tick().await;
@@ -114,11 +129,10 @@ impl AudacityApi {
         };
         let writer = Self::maybe_timeout(timer, future).await?;
         let reader = options
-            .open_receiver(format!("{}.from.{uid}", AudacityApi::BASE_PATH))
+            .open_receiver(format!("{}.from.{uid}", Self::BASE_PATH))
             .map_err(|e| Error::PipeBroken(format!("open reader with {e:?}")))?;
         Self::with_pipes(reader, writer, timer, poll_rate).await
     }
-
     async fn with_pipes(
         reader: Receiver,
         writer: Sender,
@@ -156,16 +170,6 @@ impl AudacityApi {
 
         Self::maybe_timeout(timer, future).await?
     }
-
-    async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
-        timer: Option<Duration>,
-        future: F,
-    ) -> Result<T, Error> {
-        maybe_timeout(timer, future)
-            .await
-            .map_err(|_err| Error::Timeout(timer.unwrap()))
-    }
-
     async fn just_write(&mut self, command: &str) {
         debug!("writing '{command}' to audacity");
         self.write_pipe.write_all(command.as_bytes()).await.unwrap();
@@ -175,7 +179,6 @@ impl AudacityApi {
             .unwrap();
         self.write_pipe.flush().await.unwrap();
     }
-
     async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
         let mut result = Vec::new();
         loop {
@@ -231,6 +234,14 @@ impl AudacityApi {
         }
     }
 
+    async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
+        timer: Option<Duration>,
+        future: F,
+    ) -> Result<T, Error> {
+        maybe_timeout(timer, future)
+            .await
+            .map_err(|_err| Error::Timeout(timer.unwrap()))
+    }
     pub async fn ping(&mut self) -> Result<bool, Error> {
         let result = self.send_msg("ping", true).await?;
 
@@ -246,36 +257,6 @@ impl AudacityApi {
         }
     }
 
-    pub async fn set_label(
-        &mut self,
-        i: usize,
-        text: Option<String>,
-        start: Option<String>,
-        end: Option<String>,
-    ) -> Result<(), Error> {
-        let mut commant = format!("SetLabel: Label={i}");
-        if let Some(text) = text {
-            commant.push_str(" Text=\"");
-            commant.push_str(&text);
-            commant.push('"');
-        }
-        if let Some(start) = start {
-            commant.push_str(" Start=");
-            commant.push_str(&start);
-        }
-        if let Some(end) = end {
-            commant.push_str(" End=");
-            commant.push_str(&end);
-        }
-        let _result = self.write(&commant).await?;
-        Ok(())
-    }
-
-    pub async fn get_label_info(&mut self) -> Result<Vec<(usize, Vec<(f64, f64, String)>)>, Error> {
-        let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
-        serde_json::from_str(&json)
-            .map_err(|e| Error::MalformedResult(json, MalformedCause::JSON(e)))
-    }
     pub async fn get_track_info(&mut self) -> Result<Vec<result::TrackInfo>, Error> {
         let json = self.write("GetInfo: Type=Tracks Format=JSON").await?;
         serde_json::from_str::<Vec<result::RawTrackInfo>>(&json)
@@ -287,6 +268,24 @@ impl AudacityApi {
             })
             .collect()
     }
+    pub async fn select_tracks(
+        &mut self,
+        mut tracks: impl Iterator<Item = usize> + Send,
+    ) -> Result<(), Error> {
+        let command = &format!("SelectTracks: Mode=Set Track={}", tracks.next().unwrap());
+        let _result = self.write(command).await?;
+        for track in tracks {
+            let command = &format!("SelectTracks: Mode=Add Track={track}");
+            let _result = self.write(command).await?;
+        }
+        Ok(())
+    }
+    pub async fn mute_selected_tracks(&mut self, mute: bool) -> Result<(), Error> {
+        let command = if mute { "MuteTracks:" } else { "UnmuteTracks:" };
+        let _result = self.write(command).await?;
+        Ok(())
+    }
+    //TODO align tracks
 
     pub async fn import_audio<P: AsRef<Path> + Send>(&mut self, path: P) -> Result<(), Error> {
         let path = path
@@ -300,24 +299,138 @@ impl AudacityApi {
 
         Ok(())
     }
-
     pub async fn export_multiple(&mut self) -> Result<(), Error> {
         let _result = self.write("ExportMultiple:").await?;
         Ok(())
     }
 
-    pub async fn export_labels(&mut self) -> Result<(), Error> {
-        let _result = self.write("ExportLabels:").await?;
+    pub async fn get_label_info(
+        &mut self,
+    ) -> Result<HashMap<usize, Vec<(f64, f64, String)>>, Error> {
+        let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
+        serde_json::from_str(&json)
+            .map_err(|e| Error::MalformedResult(json, MalformedCause::JSON(e)))
+            .map(|list: Vec<(usize, Vec<_>)>| list.into_iter().collect())
+    }
+    pub async fn add_label_track(&mut self) -> Result<(), Error> {
+        let _result = self.write("NewLabelTrack:").await?;
         Ok(())
     }
     pub async fn import_labels(&mut self) -> Result<(), Error> {
         let _result = self.write("ImportLabels:").await?;
         Ok(())
     }
-    pub async fn open_new(&mut self) -> Result<(), Error> {
+    pub async fn export_labels(&mut self) -> Result<(), Error> {
+        let _result = self.write("ExportLabels:").await?;
+        Ok(())
+    }
+    pub async fn set_label(
+        &mut self,
+        i: usize,
+        text: Option<String>,
+        start: Option<f64>,
+        end: Option<f64>,
+    ) -> Result<(), Error> {
+        let mut commant = format!("SetLabel: Label={i}");
+        push_if_some(&mut commant, "Text", text, true);
+        push_if_some(&mut commant, "Start", start, false);
+        push_if_some(&mut commant, "End", end, false);
+        let _result = self.write(&commant).await?;
+        Ok(())
+    }
+    /// adds a new label with Some(text) or empty
+    pub async fn add_label(
+        &mut self,
+        track_nr: usize,
+        text: Option<String>,
+        start: f64,
+        end: f64,
+    ) -> Result<usize, Error> {
+        self.select_tracks(std::iter::once(track_nr)).await?;
+        self.select_time(Some(start), Some(end), Some(RelativeTo::ProjectStart))
+            .await?;
+        let _result = self.write("AddLabel:").await?;
+        let new_labels = self.get_label_info().await?.remove(&track_nr).unwrap();
+
+        let mut new_candidates = new_labels.into_iter().enumerate().filter(|(_, (s, e, t))| {
+            t.is_empty() && compare_times(*s, start) && compare_times(*e, end)
+        });
+        let new_id = new_candidates.next().expect("not enought labels").0;
+        assert!(new_candidates.next().is_none(), "to many labels");
+
+        if let Some(text) = text.filter(|it| !it.is_empty()) {
+            self.set_label(new_id, Some(text), None, None).await?;
+        }
+        Ok(new_id)
+    }
+
+    pub async fn new_project(&mut self) -> Result<(), Error> {
         let _result = self.write("New:").await?;
         Ok(())
     }
+    pub async fn close_projext(&mut self) -> Result<(), Error> {
+        let _result = self.write("Close:").await?;
+        Ok(())
+    }
+
+    pub async fn select_time(
+        &mut self,
+        start: Option<f64>,
+        end: Option<f64>,
+        relative_to: Option<RelativeTo>,
+    ) -> Result<(), Error> {
+        let mut commant = "SelectTime:".to_owned();
+        push_if_some(&mut commant, "Start", start, false);
+        push_if_some(&mut commant, "End", end, false);
+        push_if_some(&mut commant, "RelativeTo", relative_to, false);
+        let _result = self.write(&commant).await?;
+        Ok(())
+    }
+    pub async fn delete_selection(&mut self) -> Result<(), Error> {
+        let _result = self.write("Delete:").await?;
+        Ok(())
+    }
+    /// deletes selectet section, without shifting stuff to fill the gap
+    pub async fn split_delete_selection(&mut self) -> Result<(), Error> {
+        let _result = self.write("SplitDelete:").await?;
+        Ok(())
+    }
+    pub async fn duplicate_selection(&mut self) -> Result<(), Error> {
+        let _result = self.write("Duplicate:").await?;
+        Ok(())
+    }
+
+    /// splits the selection and moves it to a new track
+    pub async fn split_new(&mut self) -> Result<(), Error> {
+        let _result = self.write("SplitNew:").await?;
+        Ok(())
+    }
+    // pub async fn edit_metadate(&mut self) -> Result<(), Error> {
+    //     let _result = self.write("EditMetaData:").await?;
+    //     Ok(())
+    // }
+}
+
+fn push_if_some<T: ToString>(s: &mut String, cmd: &str, option: Option<T>, escape: bool) {
+    if let Some(value) = option {
+        let value = value.to_string();
+        s.reserve(4 + cmd.len() + value.len());
+        s.push(' ');
+        s.push_str(cmd);
+        s.push('=');
+        if escape {
+            s.push('"');
+        }
+        s.push_str(&value);
+        if escape {
+            s.push('"');
+        }
+    }
+}
+
+#[inline]
+fn compare_times(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-5
 }
 
 async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
