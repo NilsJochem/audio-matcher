@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::{Display, Write},
+    num::ParseIntError,
     path::Path,
     time::Duration,
 };
@@ -337,7 +338,7 @@ impl Chapter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[must_use]
 pub struct ChapterNumber {
     nr: usize,
@@ -347,7 +348,15 @@ impl ChapterNumber {
     pub const fn new(nr: usize, is_maybe: bool) -> Self {
         Self { nr, is_maybe }
     }
-    // todo fix no_run
+    #[must_use]
+    pub const fn nr(&self) -> usize {
+        self.nr
+    }
+    pub const fn next(mut self) -> Self {
+        self.nr += 1;
+        self
+    }
+
     /// formats the [`ChapterNumber`] onto `s`.
     ///
     /// # Arguments
@@ -367,15 +376,11 @@ impl ChapterNumber {
     /// let mut s2 = String::new();
     /// nr.format(&mut s2, Some((4, true)), false).unwrap();
     /// assert_eq!(s2, "0003?");
-    /// ```
-    ///
-    /// ```
-    /// use audio_matcher::archive::data::ChapterNumber;
     ///
     /// let nr = ChapterNumber::new(3, false);
     /// let mut s1 = String::new();
-    /// nr.format(&mut s1, Some((3, false)), false).unwrap();
-    /// assert_eq!(s1, "  3");
+    /// nr.format(&mut s1, Some((3, false)), true).unwrap();
+    /// assert_eq!(s1, "  3 ");
     ///
     /// let mut s2 = String::new();
     /// nr.format(&mut s2, Some((4, true)), true).unwrap();
@@ -403,6 +408,34 @@ impl ChapterNumber {
             s.write_char(' ')?;
         }
         Ok(())
+    }
+}
+impl Display for ChapterNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.format(f, None, false)
+    }
+}
+impl std::str::FromStr for ChapterNumber {
+    type Err = ParseIntError;
+
+    /// Extracts a Chapter Number from a str.
+    ///
+    /// # Examples
+    /// ```
+    /// use audio_matcher::archive::data::ChapterNumber;
+    ///
+    /// assert_eq!(Ok(ChapterNumber::new(3, true)), ChapterNumber::try_from("3?"));
+    /// assert_eq!(Ok(ChapterNumber::new(3, false)), ChapterNumber::try_from("3"));
+    /// assert_eq!(Ok(ChapterNumber::new(3, true)), ChapterNumber::try_from("003?"));
+    /// assert_eq!(Ok(ChapterNumber::new(3, false)), ChapterNumber::try_from(" 3 "));
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let value = s.trim();
+        let strip = value.strip_suffix('?');
+        Ok(Self {
+            nr: strip.unwrap_or(value).parse::<usize>()?,
+            is_maybe: strip.is_some(),
+        })
     }
 }
 

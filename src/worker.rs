@@ -10,7 +10,10 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinSet;
 
-use crate::args::{parse_duration, Inputs, OutputLevel};
+use crate::{
+    archive::data::ChapterNumber,
+    args::{parse_duration, Inputs, OutputLevel},
+};
 
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
@@ -101,17 +104,17 @@ pub async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-type Pattern = (String, String, String);
+type Pattern = (String, ChapterNumber, String);
 fn debug_name() -> Vec<Pattern> {
     vec![
         (
             "Gruselkabinett".to_owned(),
-            "142".to_owned(),
+            ChapterNumber::new(142, false),
             "Das Zeichen der Bestie".to_owned(),
         ),
         (
             "Gruselkabinett".to_owned(),
-            "143".to_owned(),
+            ChapterNumber::new(143, false),
             "Der Wolverden-Turm".to_owned(),
         ),
     ]
@@ -217,13 +220,21 @@ async fn rename_labels(
         Some(path) => Some(read_index(path).await?),
         None => None,
     };
+    let mut expected_next_chapter_number: Option<ChapterNumber> = None;
 
     while i < labels.len() {
-        let chapter_number: String = args
-            .always_answer
-            .input("Welche Nummer hat die n\u{e4}chste Folge: ", None);
+        let chapter_number = read_chapter_number(
+            args.always_answer,
+            &format!(
+                "Welche Nummer hat die n\u{e4}chste Folge{}: ",
+                expected_next_chapter_number
+                    .map_or_else(String::new, |next| format!(", erwarte {next}"))
+            ),
+            expected_next_chapter_number,
+        );
+        expected_next_chapter_number = Some(chapter_number.next());
 
-        let chapter_name = get_chapter_name_from_index(args, &chapter_number, &index)
+        let chapter_name = get_chapter_name_from_index(args, chapter_number, index.as_ref())
             .unwrap_or_else(|| request_next_chapter_name(args));
         let number = read_number(
             args.always_answer,
@@ -243,22 +254,14 @@ async fn rename_labels(
 #[must_use]
 pub fn get_chapter_name_from_index(
     args: &Arguments,
-    chapter_number: &str,
-    index: &Option<Vec<String>>,
+    chapter_number: ChapterNumber,
+    index: Option<&Vec<String>>,
 ) -> Option<String> {
-    chapter_number
-        .strip_suffix('?')
-        .unwrap_or(chapter_number)
-        .parse::<usize>()
-        .ok()
-        .and_then(|i| {
-            index
-                .as_ref()
-                .map(|chaptes| chaptes[i - 1].clone())
-                .filter(|it| {
-                    args.always_answer
-                        .ask_consent(&format!("Ist der Name {it:?} richtig"))
-                })
+    index
+        .map(|chaptes| chaptes[chapter_number.nr() - 1].clone())
+        .filter(|it| {
+            args.always_answer
+                .ask_consent(&format!("Ist der Name {it:?} richtig"))
         })
 }
 
@@ -286,17 +289,11 @@ pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Vec<String>, t
 //         .expect("need #")
 // }
 
-// fn read_chapter_number(input: &Inputs, msg: &str, default: Option<ChapterNumber>) -> ChapterNumber {
-//     input
-//         .try_input(msg, default, |mut rin| {
-//             let ends_with = rin.ends_with('?');
-//             if ends_with {
-//                 rin.pop();
-//             }
-//             rin.parse().ok().map(|it| ChapterNumber::new(it, ends_with))
-//         })
-//         .expect("gib was vernünftiges ein")
-// }
+fn read_chapter_number(input: Inputs, msg: &str, default: Option<ChapterNumber>) -> ChapterNumber {
+    input
+        .try_input(msg, default, |rin| rin.parse::<ChapterNumber>().ok())
+        .expect("gib was vern\u{fc}nftiges ein")
+}
 
 fn read_number(input: Inputs, msg: &str, default: Option<usize>) -> usize {
     input
