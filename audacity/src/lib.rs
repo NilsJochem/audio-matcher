@@ -51,23 +51,23 @@ extern "C" {
 pub enum Error {
     #[error("Pipe Broken at {0}")]
     PipeBroken(String),
-    #[error("Didn't finish with OK or Failed!, {partial:?}")]
-    MissingOK { partial: String },
+    #[error("Didn't finish with OK or Failed!, {0:?}")]
+    MissingOK(String),
     #[error("Failed with {0:?}")]
     AudacityErr(String), // TODO parse Error
     #[error("couldn't parse result {0:?} because {1}")]
-    MalformedResult(String, MalformedCause),
+    MalformedResult(String, #[source] MalformedCause),
     #[error("Unkown path {0:?}, {1}")]
-    PathErr(PathBuf, std::io::Error),
+    PathErr(PathBuf, #[source] std::io::Error),
     #[error("timeout after {0:?}")]
     Timeout(Duration),
 }
 #[derive(Error, Debug)]
 pub enum MalformedCause {
-    #[error("{0}")]
-    JSON(serde_json::Error),
-    #[error("{0}")]
-    Own(result::Error),
+    #[error(transparent)]
+    JSON(#[from] serde_json::Error),
+    #[error(transparent)]
+    Own(#[from] result::Error),
     #[error("ping returned {0:?}")]
     BadPingResult(String),
     #[error("missing line break")]
@@ -99,8 +99,8 @@ pub struct AudacityApi {
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
-    #[error("{0}")]
-    IO(tokio::io::Error),
+    #[error(transparent)]
+    IO(#[from] tokio::io::Error),
     #[error("failed with status code {0}")]
     Failed(i32),
     #[error("process was terminated")]
@@ -135,8 +135,7 @@ impl AudacityApi {
             tokio::process::Command::new(Self::LAUNCHER)
                 .arg(Self::AUDACITY_APP_NAME)
                 .output()
-                .await
-                .map_err(LaunchError::IO)?
+                .await?
                 .status
                 .code(),
         )
@@ -289,9 +288,7 @@ impl AudacityApi {
 
             if line == LINE_ENDING {
                 return if !result.is_empty() {
-                    Err(Error::MissingOK {
-                        partial: result.join("\n"),
-                    })
+                    Err(Error::MissingOK(result.join("\n")))
                 } else if allow_empty {
                     Ok(String::new())
                 } else {
@@ -367,11 +364,11 @@ impl AudacityApi {
     pub async fn get_track_info(&mut self) -> Result<Vec<result::TrackInfo>, Error> {
         let json = self.write("GetInfo: Type=Tracks Format=JSON").await?;
         serde_json::from_str::<Vec<result::RawTrackInfo>>(&json)
-            .map_err(|e| Error::MalformedResult(json.clone(), MalformedCause::JSON(e)))?
+            .map_err(|e| Error::MalformedResult(json.clone(), e.into()))?
             .into_iter()
             .map(|it| {
                 it.try_into()
-                    .map_err(|e| Error::MalformedResult(json.clone(), MalformedCause::Own(e)))
+                    .map_err(|e: result::Error| Error::MalformedResult(json.clone(), e.into()))
             })
             .collect()
     }
@@ -442,7 +439,7 @@ impl AudacityApi {
     ) -> Result<HashMap<usize, Vec<(f64, f64, String)>>, Error> {
         let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
         serde_json::from_str(&json)
-            .map_err(|e| Error::MalformedResult(json, MalformedCause::JSON(e)))
+            .map_err(|e| Error::MalformedResult(json, e.into()))
             .map(|list: Vec<(usize, Vec<_>)>| list.into_iter().collect())
     }
     /// Adds a new label track to the currently open Project
@@ -647,7 +644,7 @@ pub mod result {
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
-    #[derive(Debug, Error, Clone)]
+    #[derive(Debug, Error)]
     pub enum Error {
         #[error("Missing field {0}")]
         MissingField(&'static str),

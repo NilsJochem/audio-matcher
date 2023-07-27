@@ -3,7 +3,6 @@ use clap::Parser;
 use itertools::Itertools;
 use log::trace;
 use std::{
-    error::Error,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -63,7 +62,7 @@ impl Arguments {
 async fn get_api_handle<'a>(
     cache: &'a mut Option<AudacityApi>,
     args: &Arguments,
-) -> Result<&'a mut AudacityApi, Box<dyn Error>> {
+) -> Result<&'a mut AudacityApi, Error> {
     Ok(match cache {
         None => {
             audacity::AudacityApi::launch_audacity().await?;
@@ -74,8 +73,7 @@ async fn get_api_handle<'a>(
     })
 }
 
-#[allow(clippy::future_not_send)] // TODO make new Error enum
-pub async fn run(args: &Arguments) -> Result<(), Box<dyn Error>> {
+pub async fn run(args: &Arguments) -> Result<(), Error> {
     let mut audacity_cache: Option<AudacityApi> = None; // only start Audacity when needed
 
     if !args.skip_load {
@@ -121,37 +119,41 @@ fn debug_name() -> Vec<Pattern> {
 }
 
 #[derive(Debug, Error)]
-enum MoveError {
-    #[error("{0}")]
-    IO(tokio::io::Error),
-    #[error("{0}")]
-    GlobPattern(glob::PatternError),
-    #[error("{0}")]
-    Glob(glob::GlobError),
-    #[error("{0}")]
-    JoinError(tokio::task::JoinError),
+#[error(transparent)]
+pub enum Error {
+    Move(#[from] MoveError),
+    Launch(#[from] audacity::LaunchError),
+    Audacity(#[from] audacity::Error),
 }
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub enum MoveError {
+    IO(#[from] tokio::io::Error),
+    JoinError(#[from] tokio::task::JoinError),
+    GlobPattern(#[from] glob::PatternError),
+    Glob(#[from] glob::GlobError),
+}
+
 async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Result<(), MoveError> {
     if dry_run {
         println!("create directory '{}'", dir.display());
         println!("moving {glob_pattern:?} to '{}'", dir.display());
         return Ok(());
     }
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(MoveError::IO)?;
+    tokio::fs::create_dir_all(&dir).await?;
     trace!("create directory {}", dir.display());
 
     let mut handles = JoinSet::new();
-    for f in glob::glob(&glob_pattern).map_err(MoveError::GlobPattern)? {
-        let f = f.map_err(MoveError::Glob)?;
+    for f in glob::glob(&glob_pattern)? {
+        let f = f?;
         let mut target = dir.clone();
         target.push(f.file_name().unwrap());
         trace!("moving {} to {}", f.display(), target.display());
-        handles.spawn(async move { tokio::fs::rename(&f, &target).await.map_err(MoveError::IO) });
+        handles.spawn(async move { tokio::fs::rename(&f, &target).await });
     }
     while let Some(result) = handles.join_next().await {
-        result.map_err(MoveError::JoinError)??;
+        result??;
     }
     Ok(())
 }
@@ -169,7 +171,7 @@ async fn move_results(
         handles.spawn(move_result(dir, glob_pattern, args.dry_run));
     }
     while let Some(result) = handles.join_next().await {
-        result.map_err(MoveError::JoinError)??;
+        result??;
     }
     Ok(())
 }
@@ -194,7 +196,7 @@ async fn prepare_project(
 async fn rename_labels(
     args: &Arguments,
     audacity: &mut audacity::AudacityApi,
-) -> Result<Vec<Pattern>, Box<dyn Error>> {
+) -> Result<Vec<Pattern>, Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
@@ -270,7 +272,7 @@ fn request_next_chapter_name(args: &Arguments) -> String {
         .input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
 }
 
-pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Vec<String>, tokio::io::Error> {
+pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Vec<String>, MoveError> {
     Ok(tokio::fs::read_to_string(path)
         .await?
         .lines()

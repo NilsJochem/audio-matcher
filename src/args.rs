@@ -118,7 +118,7 @@ impl From<OutputLevel> for crate::leveled_output::OutputLevel {
 use regex::Regex;
 use thiserror::Error;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 #[error("couldn't find duration in {0:?}")]
 pub struct NoMatch(String);
 // TODO activate when Issue #67295 is finished
