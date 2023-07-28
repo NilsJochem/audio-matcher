@@ -75,36 +75,29 @@ pub struct OutputLevel {
 
 impl OutputLevel {
     pub fn init_logger(&self) {
-        let level = crate::leveled_output::OutputLevel::from(*self);
+        let level = log::Level::from(*self);
         Self::init_logger_with(level);
     }
-    pub fn init_logger_with(level: crate::leveled_output::OutputLevel) {
-        let log_name = match level {
-            crate::leveled_output::OutputLevel::Debug => "Debug",
-            crate::leveled_output::OutputLevel::Verbose => "Trace",
-            crate::leveled_output::OutputLevel::Info => "Info",
-            crate::leveled_output::OutputLevel::Warn => "Warn",
-            crate::leveled_output::OutputLevel::Error => "Error",
-        };
+    pub fn init_logger_with(level: log::Level) {
         let env = env_logger::Env::default();
-        let env = env.default_filter_or(log_name);
+        let env = env.default_filter_or(level.as_str());
 
         let mut builder = env_logger::Builder::from_env(env);
 
         builder.format_timestamp(None);
         builder.format_target(false);
-        builder.format_level(level < crate::leveled_output::OutputLevel::Info);
+        builder.format_level(level < log::Level::Info);
 
         builder.init();
     }
 }
 
-impl From<OutputLevel> for crate::leveled_output::OutputLevel {
+impl From<OutputLevel> for log::Level {
     fn from(val: OutputLevel) -> Self {
         if val.silent {
             Self::Error
         } else if val.verbose {
-            Self::Verbose
+            Self::Trace
         } else if val.debug {
             Self::Debug
         } else if val.warn {

@@ -26,7 +26,6 @@
 pub mod archive;
 pub mod args;
 mod iter;
-pub mod leveled_output;
 pub mod matcher;
 pub mod worker;
 
