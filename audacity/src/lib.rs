@@ -170,10 +170,10 @@ impl AudacityApi {
         let future = async {
             loop {
                 poll_rate.tick().await;
-                match options.open_sender(writer_path.clone()) {
+                match options.open_sender(&writer_path) {
                     Ok(writer) => break writer,
                     Err(err) => {
-                        warn!("{}", Error::PipeBroken(format!("open writer with {err:?}")));
+                        debug!("{}", Error::PipeBroken(format!("open writer with {err:?}")));
                     }
                 }
                 trace!("waiting for audacity to start");
@@ -183,6 +183,7 @@ impl AudacityApi {
         let reader = options
             .open_receiver(format!("{}.from.{uid}", Self::BASE_PATH))
             .map_err(|e| Error::PipeBroken(format!("open reader with {e:?}")))?;
+        debug!("pipes found");
         Self::with_pipes(reader, writer, timer, poll_rate).await
     }
     async fn with_pipes(
@@ -482,7 +483,7 @@ impl AudacityApi {
         start: Option<f64>,
         end: Option<f64>,
     ) -> Result<(), Error> {
-        if text.is_some() || start.is_some() || end.is_some() {
+        if !(text.is_some() || start.is_some() || end.is_some()) {
             warn!("attempted to set_label with no values");
             return Ok(());
         }

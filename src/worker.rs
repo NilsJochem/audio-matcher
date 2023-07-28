@@ -17,8 +17,8 @@ use crate::{
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 pub struct Arguments {
-    #[clap(long, value_name = "FILE", help = "path to audio file")]
-    pub audio_path: PathBuf,
+    #[clap(value_name = "FILE", help = "path to audio file")]
+    pub audio_paths: Vec<PathBuf>,
     #[clap(long, value_name = "FILE", help = "path to index file")]
     pub index_file: Option<PathBuf>,
 
@@ -47,15 +47,16 @@ pub struct Arguments {
 impl Arguments {
     #[allow(dead_code)]
     fn tmp_path(&self) -> PathBuf {
-        let mut tmp_path = self.audio_path.clone();
+        let mut tmp_path = self.audio_paths.first().unwrap().clone(); // TODO find common value
         tmp_path.pop();
         tmp_path
     }
     #[allow(dead_code)]
-    fn label_path(&self) -> PathBuf {
-        let mut label_path = self.audio_path.clone();
-        label_path.set_extension("txt");
-        label_path
+    fn label_paths<'a>(&'a self) -> impl Iterator<Item = PathBuf> + 'a {
+        self.audio_paths.iter().cloned().map(|mut label_path| {
+            label_path.set_extension("txt");
+            label_path
+        })
     }
 }
 
@@ -74,6 +75,11 @@ async fn get_api_handle<'a>(
 }
 
 pub async fn run(args: &Arguments) -> Result<(), Error> {
+    assert_eq!(
+        args.audio_paths.len(),
+        1,
+        "currently only supporting 1 path at a time"
+    );
     let mut audacity_cache: Option<AudacityApi> = None; // only start Audacity when needed
 
     if !args.skip_load {
@@ -187,7 +193,9 @@ async fn prepare_project(
         audacity.new_project().await?;
         trace!("opened new project");
     }
-    audacity.import_audio(&args.audio_path).await?;
+    audacity
+        .import_audio(&args.audio_paths.first().unwrap())
+        .await?;
     trace!("loaded audio");
     audacity.import_labels().await?;
     Ok(())
