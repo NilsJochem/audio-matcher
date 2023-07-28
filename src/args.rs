@@ -153,19 +153,31 @@ pub fn parse_duration(arg: &str) -> Result<std::time::Duration, NoMatch> {
     let capures = RE.captures(arg).ok_or_else(|| NoMatch(arg.to_owned()))?;
     let mut milliseconds = 0;
     if let Some(hours) = capures.name("hour") {
-        milliseconds += unsafe { hours.as_str().parse::<u64>().unwrap_unchecked() };
+        milliseconds += hours
+            .as_str()
+            .parse::<u64>()
+            .unwrap_or_else(|_| unreachable!());
     }
     milliseconds *= 60;
     if let Some(min) = capures.name("min") {
-        milliseconds += unsafe { min.as_str().parse::<u64>().unwrap_unchecked() };
+        milliseconds += min
+            .as_str()
+            .parse::<u64>()
+            .unwrap_or_else(|_| unreachable!());
     }
     milliseconds *= 60;
     if let Some(sec) = capures.name("sec") {
-        milliseconds += unsafe { sec.as_str().parse::<u64>().unwrap_unchecked() };
+        milliseconds += sec
+            .as_str()
+            .parse::<u64>()
+            .unwrap_or_else(|_| unreachable!());
     }
     milliseconds *= 1000;
     if let Some(msec) = capures.name("msec") {
-        milliseconds += unsafe { msec.as_str().parse::<u64>().unwrap_unchecked() };
+        milliseconds += msec
+            .as_str()
+            .parse::<u64>()
+            .unwrap_or_else(|_| unreachable!());
     }
     Ok(std::time::Duration::from_millis(milliseconds))
 }

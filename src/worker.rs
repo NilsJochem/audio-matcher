@@ -20,7 +20,7 @@ pub struct Arguments {
     #[clap(value_name = "FILE", help = "path to audio file")]
     pub audio_paths: Vec<PathBuf>,
     #[clap(long, value_name = "FILE", help = "path to index file")]
-    pub index_file: Option<PathBuf>,
+    pub index_folder: Option<PathBuf>,
 
     #[clap(
         long,
@@ -52,76 +52,12 @@ impl Arguments {
         tmp_path
     }
     #[allow(dead_code)]
-    fn label_paths<'a>(&'a self) -> impl Iterator<Item = PathBuf> + 'a {
+    fn label_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.audio_paths.iter().cloned().map(|mut label_path| {
             label_path.set_extension("txt");
             label_path
         })
     }
-}
-
-async fn get_api_handle<'a>(
-    cache: &'a mut Option<AudacityApi>,
-    args: &Arguments,
-) -> Result<&'a mut AudacityApi, Error> {
-    Ok(match cache {
-        None => {
-            audacity::AudacityApi::launch_audacity().await?;
-            let x = audacity::AudacityApi::new(args.timeout).await?;
-            cache.insert(x)
-        }
-        Some(a) => a,
-    })
-}
-
-pub async fn run(args: &Arguments) -> Result<(), Error> {
-    assert_eq!(
-        args.audio_paths.len(),
-        1,
-        "currently only supporting 1 path at a time"
-    );
-    let mut audacity_cache: Option<AudacityApi> = None; // only start Audacity when needed
-
-    if !args.skip_load {
-        prepare_project(get_api_handle(&mut audacity_cache, args).await?, args).await?;
-    }
-
-    let patterns = if args.skip_name {
-        debug_name()
-    } else {
-        let audacity_api = get_api_handle(&mut audacity_cache, args).await?;
-        let ret = rename_labels(args, audacity_api).await?;
-
-        let _ = args
-            .always_answer
-            .input("press enter when you are ready to finish", None);
-        if args.dry_run {
-            println!("asking to export audio and labels");
-        } else {
-            audacity_api.export_labels().await?;
-            audacity_api.export_multiple().await?;
-        }
-        ret
-    };
-
-    move_results(patterns, args.tmp_path(), args).await?;
-    Ok(())
-}
-
-type Pattern = (String, ChapterNumber, String);
-fn debug_name() -> Vec<Pattern> {
-    vec![
-        (
-            "Gruselkabinett".to_owned(),
-            ChapterNumber::new(142, false),
-            "Das Zeichen der Bestie".to_owned(),
-        ),
-        (
-            "Gruselkabinett".to_owned(),
-            ChapterNumber::new(143, false),
-            "Der Wolverden-Turm".to_owned(),
-        ),
-    ]
 }
 
 #[derive(Debug, Error)]
@@ -139,6 +75,134 @@ pub enum MoveError {
     JoinError(#[from] tokio::task::JoinError),
     GlobPattern(#[from] glob::PatternError),
     Glob(#[from] glob::GlobError),
+}
+
+type Pattern = (String, ChapterNumber, String);
+
+struct LazyApi {
+    timeout: Option<Duration>,
+    cache: Option<AudacityApi>,
+}
+impl LazyApi {
+    const fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            timeout,
+            cache: None,
+        }
+    }
+    pub const fn from_args(args: &Arguments) -> Self {
+        Self::new(args.timeout)
+    }
+    pub async fn get_api_handle(&mut self) -> Result<&mut AudacityApi, Error> {
+        let option = &mut self.cache;
+        Ok(match option {
+            Some(x) => x,
+            None => option.insert({
+                audacity::AudacityApi::launch_audacity().await?;
+                audacity::AudacityApi::new(self.timeout).await?
+            }),
+        })
+    }
+}
+
+pub struct Index {
+    data: Vec<String>,
+}
+impl Index {
+    async fn get_index(args: &Arguments, series: &String) -> Result<Option<Self>, Error> {
+        let index = args.index_folder.clone().map_or_else(
+            || {
+                args.always_answer
+                    .try_input(
+                        "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                        Some(None),
+                        |it| Some(Some(it.into())),
+                    )
+                    .unwrap_or_else(|| unreachable!())
+            },
+            |mut folder| {
+                folder.push(series);
+                folder.push("index.txt");
+                Some(folder)
+            },
+        );
+        Ok(match index {
+            // need match because map would be async
+            Some(path) => Some(Self::read_index(path).await?),
+            None => None,
+        })
+    }
+    pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Self, MoveError> {
+        Ok(Self::from_slice_iter(
+            tokio::fs::read_to_string(path).await?.lines(),
+        ))
+    }
+
+    pub fn from_slice_iter<'a, Iter: Iterator<Item = &'a str>>(data: Iter) -> Self {
+        Self {
+            data: data
+                .filter(|line| !line.starts_with('#'))
+                .map_into()
+                .collect_vec(),
+        }
+    }
+    #[must_use]
+    pub fn get(&self, chapter_number: ChapterNumber) -> &str {
+        &self.data[chapter_number.nr() - 1]
+    }
+    #[must_use]
+    pub fn try_get(&self, chapter_number: ChapterNumber) -> Option<&str> {
+        self.data.get(chapter_number.nr() - 1).map(String::as_str)
+    }
+}
+
+pub async fn run(args: &Arguments) -> Result<(), Error> {
+    assert_eq!(
+        args.audio_paths.len(),
+        1,
+        "currently only supporting 1 path at a time"
+    );
+    let mut audacity_cache = LazyApi::from_args(args);
+
+    if !args.skip_load {
+        prepare_project(audacity_cache.get_api_handle().await?, args).await?;
+    }
+
+    let patterns = if args.skip_name {
+        assert!(
+            log::max_level() >= log::Level::Debug,
+            "skip-name only allowed, when log level is Debug or lower"
+        );
+        vec![
+            (
+                "Gruselkabinett".to_owned(),
+                ChapterNumber::new(142, false),
+                "Das Zeichen der Bestie".to_owned(),
+            ),
+            (
+                "Gruselkabinett".to_owned(),
+                ChapterNumber::new(143, false),
+                "Der Wolverden-Turm".to_owned(),
+            ),
+        ]
+    } else {
+        let audacity_api = audacity_cache.get_api_handle().await?;
+        let ret = rename_labels(args, audacity_api).await?;
+
+        let _ = args
+            .always_answer
+            .input("press enter when you are ready to finish", None);
+        if args.dry_run {
+            println!("asking to export audio and labels");
+        } else {
+            audacity_api.export_labels().await?;
+            audacity_api.export_multiple().await?;
+        }
+        ret
+    };
+
+    move_results(patterns, args.tmp_path(), args).await?;
+    Ok(())
 }
 
 async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Result<(), MoveError> {
@@ -214,38 +278,36 @@ async fn rename_labels(
     let series = args
         .always_answer
         .input("Welche Serie ist heute dran: ", None);
-    let index = args.index_file.clone().map_or_else(
-        || unsafe {
-            args.always_answer
-                .try_input(
-                    "m\u{f6}chtest du eine Index Datei verwenden",
-                    Some(None),
-                    |it| Some(Some(it.into())),
-                )
-                .unwrap_unchecked()
-        },
-        Some,
-    );
-    let index = match index {
-        Some(path) => Some(read_index(path).await?),
-        None => None,
-    };
+
+    let index = Index::get_index(args, &series).await?;
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
 
     while i < labels.len() {
-        let chapter_number = read_chapter_number(
-            args.always_answer,
-            &format!(
-                "Welche Nummer hat die n\u{e4}chste Folge{}: ",
-                expected_next_chapter_number
-                    .map_or_else(String::new, |next| format!(", erwarte {next}"))
-            ),
-            expected_next_chapter_number,
-        );
+        let chapter_number = args
+            .always_answer
+            .try_input(
+                &format!(
+                    "Welche Nummer hat die n\u{e4}chste Folge{}: ",
+                    expected_next_chapter_number
+                        .map_or_else(String::new, |next| format!(", erwarte {next}"))
+                ),
+                expected_next_chapter_number,
+                |rin| rin.parse::<ChapterNumber>().ok(),
+            )
+            .expect("gib was vern\u{fc}nftiges ein");
         expected_next_chapter_number = Some(chapter_number.next());
 
-        let chapter_name = get_chapter_name_from_index(args, chapter_number, index.as_ref())
-            .unwrap_or_else(|| request_next_chapter_name(args));
+        let chapter_name = index
+            .as_ref()
+            .map(|index| index.get(chapter_number))
+            .filter(|it| {
+                args.always_answer
+                    .ask_consent(&format!("Ist der Name {it:?} richtig"))
+            })
+            .map_or_else(
+                || request_next_chapter_name(args),
+                std::borrow::ToOwned::to_owned,
+            );
         let number = read_number(
             args.always_answer,
             "Wie viele Teile hat die n\u{e4}chste Folge: ",
@@ -261,52 +323,37 @@ async fn rename_labels(
     Ok(patterns)
 }
 
-#[must_use]
-pub fn get_chapter_name_from_index(
-    args: &Arguments,
-    chapter_number: ChapterNumber,
-    index: Option<&Vec<String>>,
-) -> Option<String> {
-    index
-        .map(|chaptes| chaptes[chapter_number.nr() - 1].clone())
-        .filter(|it| {
-            args.always_answer
-                .ask_consent(&format!("Ist der Name {it:?} richtig"))
-        })
-}
-
 fn request_next_chapter_name(args: &Arguments) -> String {
     args.always_answer
         .input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
-}
-
-pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Vec<String>, MoveError> {
-    Ok(tokio::fs::read_to_string(path)
-        .await?
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .map_into()
-        .collect_vec())
-}
-
-// fn read_pattern(input: &Inputs, i: usize) -> String {
-//     input
-//         .try_input(
-//             &format!("input label pattern {}+ (# for changing number): ", i),
-//             None,
-//             |rin| rin.contains('#').then_some(rin),
-//         )
-//         .expect("need #")
-// }
-
-fn read_chapter_number(input: Inputs, msg: &str, default: Option<ChapterNumber>) -> ChapterNumber {
-    input
-        .try_input(msg, default, |rin| rin.parse::<ChapterNumber>().ok())
-        .expect("gib was vern\u{fc}nftiges ein")
 }
 
 fn read_number(input: Inputs, msg: &str, default: Option<usize>) -> usize {
     input
         .try_input(msg, default, |rin| rin.parse().ok())
         .expect("gib was vern\u{fc}nftiges ein")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod index {
+        use super::*;
+
+        #[test]
+        fn filter_comments() {
+            let data = [
+                "first element",
+                "second element",
+                "# some comment",
+                "third element",
+            ];
+            let index = Index::from_slice_iter(data.into_iter());
+            assert_eq!(index.get(ChapterNumber::new(1, false)), data[0]);
+            assert_eq!(index.get(ChapterNumber::new(2, false)), data[1]);
+            assert_eq!(index.get(ChapterNumber::new(3, false)), data[3]);
+            assert_eq!(index.try_get(ChapterNumber::new(4, false)), None);
+        }
+    }
 }
