@@ -109,33 +109,34 @@ pub struct Index {
     data: Vec<String>,
 }
 impl Index {
-    async fn get_index(args: &Arguments, series: &String) -> Result<Option<Self>, Error> {
-        let index = args.index_folder.clone().map_or_else(
-            || {
-                args.always_answer
+    async fn get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
+        Ok(match &args.index_folder {
+            Some(folder) => Some(Self::read_index(folder.clone(), series).await?),
+            None => {
+                let path = args
+                    .always_answer
                     .try_input(
                         "welche Index Datei m\u{f6}chtest du verwenden?: ",
                         Some(None),
-                        |it| Some(Some(it.into())),
+                        |it| Some(Some(PathBuf::from(it))),
                     )
-                    .unwrap_or_else(|| unreachable!())
-            },
-            |mut folder| {
-                folder.push(series);
-                folder.push("index.txt");
-                Some(folder)
-            },
-        );
-        Ok(match index {
-            // need match because map would be async
-            Some(path) => Some(Self::read_index(path).await?),
-            None => None,
+                    .unwrap_or_else(|| unreachable!());
+                match path {
+                    Some(path) => Some(Self::from_path(path).await?),
+                    None => None,
+                }
+            }
         })
     }
-    pub async fn read_index<P: AsRef<Path> + Send>(path: P) -> Result<Self, MoveError> {
+    pub async fn from_path<P: AsRef<Path> + Send>(path: P) -> Result<Self, MoveError> {
         Ok(Self::from_slice_iter(
             tokio::fs::read_to_string(path).await?.lines(),
         ))
+    }
+    pub async fn read_index(mut base_folder: PathBuf, series: &str) -> Result<Self, MoveError> {
+        base_folder.push(series);
+        base_folder.push("index.txt");
+        Self::from_path(base_folder).await
     }
 
     pub fn from_slice_iter<'a, Iter: Iterator<Item = &'a str>>(data: Iter) -> Self {
@@ -162,18 +163,19 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         1,
         "currently only supporting 1 path at a time"
     );
-    let mut audacity_cache = LazyApi::from_args(args);
+    let mut audacity_api = LazyApi::from_args(args);
 
     if !args.skip_load {
-        prepare_project(audacity_cache.get_api_handle().await?, args).await?;
+        prepare_project(audacity_api.get_api_handle().await?, args).await?;
     }
 
-    let patterns = if args.skip_name {
+    let patterns;
+    if args.skip_name {
         assert!(
             log::max_level() >= log::Level::Debug,
             "skip-name only allowed, when log level is Debug or lower"
         );
-        vec![
+        patterns = vec![
             (
                 "Gruselkabinett".to_owned(),
                 ChapterNumber::new(142, false),
@@ -186,8 +188,11 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             ),
         ]
     } else {
-        let audacity_api = audacity_cache.get_api_handle().await?;
-        let ret = rename_labels(args, audacity_api).await?;
+        let audacity_api = audacity_api.get_api_handle().await?;
+        let _ = args
+            .always_answer
+            .input("press enter when you are ready to start renaming", None);
+        patterns = rename_labels(args, audacity_api).await?;
 
         let _ = args
             .always_answer
@@ -198,7 +203,6 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             audacity_api.export_labels().await?;
             audacity_api.export_multiple().await?;
         }
-        ret
     };
 
     move_results(patterns, args.tmp_path(), args).await?;
@@ -265,6 +269,8 @@ async fn prepare_project(
     Ok(())
 }
 
+///expecting that number of parts divides the length of the input or default to 4
+const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
 async fn rename_labels(
     args: &Arguments,
     audacity: &mut audacity::AudacityApi,
@@ -300,10 +306,6 @@ async fn rename_labels(
         let chapter_name = index
             .as_ref()
             .map(|index| index.get(chapter_number))
-            .filter(|it| {
-                args.always_answer
-                    .ask_consent(&format!("Ist der Name {it:?} richtig"))
-            })
             .map_or_else(
                 || request_next_chapter_name(args),
                 std::borrow::ToOwned::to_owned,
@@ -311,7 +313,7 @@ async fn rename_labels(
         let number = read_number(
             args.always_answer,
             "Wie viele Teile hat die n\u{e4}chste Folge: ",
-            Some(4),
+            Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i)),
         );
         for j in 0..number.min(labels.len() - i) {
             let name = format!("{series} {chapter_number}.{} {chapter_name}", j + 1);
