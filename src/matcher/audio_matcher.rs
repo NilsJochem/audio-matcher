@@ -87,27 +87,24 @@ impl From<Mode> for fftconvolve::Mode {
 
 pub fn calc_chunks<
     C: CorrelateAlgo<SampleType> + Sync + Send + 'static,
-    Iter: Iterator<Item = SampleType> + Send + Sync + 'static,
+    Iter: ExactSizeIterator<Item = SampleType> + Send + Sync + 'static,
 >(
     sr: u16,
     m_samples: Iter,
     algo_with_sample: &C,
-    m_duration: Duration,
     scale: bool,
     config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
     // normalize inputs
-    let chunks = (m_duration.as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as usize;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as usize;
 
-    let mut progress = Progress::new_external_bound(
+    let mut progress = Progress::new_bound(
         m_samples
             .chunked(chunk_size + overlap_length, chunk_size)
             .enumerate(),
         Bar::new("Progress: ".to_owned(), true, config.arrow), // TODO maybe move Bar to config
         0,
-        chunks,
     );
     if let Some(width) = progress_bar::terminal_width() {
         progress.set_max_len(width);
@@ -522,6 +519,8 @@ mod correlate_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::iter::IteratorExt;
+
     use super::*;
     use itertools::Itertools;
     use std::path::PathBuf;
@@ -555,9 +554,8 @@ mod tests {
         println!("got duration");
         let peaks = calc_chunks(
             sr,
-            m_samples,
+            m_samples.with_size((n.as_secs_f64() * sr as f64) as usize),
             &algo,
-            n,
             false,
             Config {
                 chunk_size: Duration::from_secs(60),

@@ -111,7 +111,7 @@ impl From<OutputLevel> for log::Level {
 use regex::Regex;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 #[error("couldn't find duration in {0:?}")]
 pub struct NoMatch(String);
 // TODO activate when Issue #67295 is finished

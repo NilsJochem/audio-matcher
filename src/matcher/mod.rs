@@ -6,9 +6,9 @@ pub mod mp3_reader;
 
 use std::time::Duration;
 
-use crate::archive::data::TimeLabel;
+use crate::{archive::data::TimeLabel, iter::IteratorExt};
 use errors::CliError;
-use log::{debug, info, trace};
+use log::{debug, info, log, trace};
 
 use mp3_reader::SampleType;
 
@@ -30,14 +30,17 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
     let sample_data = s_samples.collect::<Box<[SampleType]>>();
     trace!("preparing algo");
     let algo = audio_matcher::LibConvolve::new(sample_data);
+    let level = if args.within.len() == 1 {
+        // log number of iterations only if more than one file is processed
+        log::Level::Trace
+    } else {
+        log::Level::Info
+    };
 
     for main_file in &args.within {
         // TODO only fail this loop iteration
-        if args.within.len() == 1 {
-            trace!("preparing data of '{}'", main_file.display());
-        } else {
-            info!("preparing data of '{}'", main_file.display());
-        };
+        log!(level, "preparing data of '{}'", main_file.display());
+
         let (m_sr, m_samples) = mp3_reader::read_mp3(&main_file)?;
         if sr != m_sr {
             return Err(errors::CliError::SampleRateMismatch(sr, m_sr));
@@ -48,9 +51,8 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
         trace!("calculation chunks");
         let peaks = audio_matcher::calc_chunks(
             sr,
-            m_samples,
+            m_samples.with_size((m_duration.as_secs_f64() * sr as f64) as usize),
             &algo,
-            m_duration,
             true,
             audio_matcher::Config::from_args(args, s_duration),
         );

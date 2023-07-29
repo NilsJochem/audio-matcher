@@ -424,10 +424,10 @@ impl std::str::FromStr for ChapterNumber {
     /// ```
     /// use audio_matcher::archive::data::ChapterNumber;
     ///
-    /// assert_eq!(Ok(ChapterNumber::new(3, true)), ChapterNumber::try_from("3?"));
-    /// assert_eq!(Ok(ChapterNumber::new(3, false)), ChapterNumber::try_from("3"));
-    /// assert_eq!(Ok(ChapterNumber::new(3, true)), ChapterNumber::try_from("003?"));
-    /// assert_eq!(Ok(ChapterNumber::new(3, false)), ChapterNumber::try_from(" 3 "));
+    /// assert_eq!(Ok(ChapterNumber::new(3, true)), "3?".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber::new(3, false)), "3".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber::new(3, true)), "003?".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber::new(3, false)), " 3 ".parse::<ChapterNumber>());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let value = s.trim();

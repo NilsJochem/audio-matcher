@@ -1,5 +1,11 @@
-pub trait IteratorExt: Iterator + Sized {}
-impl<Iter: Iterator> IteratorExt for Iter {}
+pub trait IteratorExt: Iterator + Sized {
+    fn with_size(self, size: usize) -> ExactSizeWrapper<Self>;
+}
+impl<Iter: Iterator> IteratorExt for Iter {
+    fn with_size(self, size: usize) -> ExactSizeWrapper<Self> {
+        ExactSizeWrapper::new(self, size)
+    }
+}
 
 pub trait CloneIteratorExt: Iterator + Sized {
     fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self>;
@@ -116,15 +122,38 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let include = (self.predicate)(&self.last, self.element.as_ref()?, &self.next);
-        let mut tmp = self.iter.next(); // get next element
-        std::mem::swap(&mut tmp, &mut self.next); // store next as self.next, hold old.next
-        std::mem::swap(&mut tmp, &mut self.element); // store old.next as self.element, hold old.element
-        self.last = tmp; // store old.element as self.last, discard self.last
+        let element = std::mem::replace(&mut self.next, self.iter.next()); // get next element
+        self.last = std::mem::replace(&mut self.element, element);
         if include {
             Some(self.last.clone().unwrap()) // return clone of self.last==old.element
         } else {
             self.next() // skip this element
         }
+    }
+}
+
+pub struct ExactSizeWrapper<Iter: Iterator> {
+    iter: Iter,
+    i: usize,
+    size: usize,
+}
+impl<Iter: Iterator> ExactSizeWrapper<Iter> {
+    const fn new(iter: Iter, size: usize) -> Self {
+        Self { iter, i: 0, size }
+    }
+}
+impl<Iter: Iterator> Iterator for ExactSizeWrapper<Iter> {
+    type Item = Iter::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ret = self.iter.next();
+        self.i += ret.is_some() as usize;
+        ret
+    }
+}
+impl<Iter: Iterator> ExactSizeIterator for ExactSizeWrapper<Iter> {
+    fn len(&self) -> usize {
+        self.size - self.i
     }
 }
 
