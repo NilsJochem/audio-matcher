@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use crate::{
     archive::data::ChapterNumber,
     args::{parse_duration, Inputs, OutputLevel},
+    iter::CloneIteratorExt,
 };
 
 #[derive(Debug, Parser, Clone)]
@@ -98,8 +99,8 @@ impl LazyApi {
         Ok(match option {
             Some(x) => x,
             None => option.insert({
-                audacity::AudacityApi::launch_audacity().await?;
-                audacity::AudacityApi::new(self.timeout).await?
+                audacity::AudacityApiGeneric::launch_audacity().await?;
+                audacity::AudacityApiGeneric::new(self.timeout).await?
             }),
         })
     }
@@ -186,13 +187,14 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 ChapterNumber::new(143, false),
                 "Der Wolverden-Turm".to_owned(),
             ),
-        ]
+        ];
     } else {
         let audacity_api = audacity_api.get_api_handle().await?;
         let _ = args
             .always_answer
             .input("press enter when you are ready to start renaming", None);
         patterns = rename_labels(args, audacity_api).await?;
+        adjust_labels(args, audacity_api).await?;
 
         let _ = args
             .always_answer
@@ -206,6 +208,35 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
     };
 
     move_results(patterns, args.tmp_path(), args).await?;
+    Ok(())
+}
+
+pub async fn adjust_labels(
+    args: &Arguments,
+    audacity: &mut AudacityApi,
+) -> Result<(), audacity::Error> {
+    let labels = audacity.get_label_info().await?; // get new labels
+
+    for element in labels.values().flatten().open_border_pairs() {
+        let (prev_end, next_start) = match element {
+            crate::iter::State::Start(a) => (a.0, a.0 + 10.0),
+            crate::iter::State::Middle(a, b) => (a.1, b.0),
+            crate::iter::State::End(b) => (b.1, b.1 + 10.0),
+        };
+        audacity
+            .select_time(
+                Some(prev_end - 10.0),
+                Some(next_start + 10.0),
+                Some(audacity::RelativeTo::ProjectStart),
+            )
+            .await?;
+        audacity.zoom_to_selection().await?;
+        let _ = args.always_answer.input(
+            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
+            None,
+        );
+    }
+    audacity.zoom_normal().await?;
     Ok(())
 }
 
@@ -251,7 +282,7 @@ async fn move_results(
 }
 
 async fn prepare_project(
-    audacity: &mut audacity::AudacityApi,
+    audacity: &mut AudacityApi,
     args: &Arguments,
 ) -> Result<(), audacity::Error> {
     trace!("opened audacity");
@@ -273,7 +304,7 @@ async fn prepare_project(
 const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
 async fn rename_labels(
     args: &Arguments,
-    audacity: &mut audacity::AudacityApi,
+    audacity: &mut AudacityApi,
 ) -> Result<Vec<Pattern>, Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
