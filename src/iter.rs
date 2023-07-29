@@ -1,21 +1,29 @@
-pub trait IteratorExt: Iterator + Sized {
+pub trait IteratorExt: Iterator + Sized {}
+impl<Iter: Iterator> IteratorExt for Iter {}
+
+pub trait CloneIteratorExt: Iterator + Sized {
+    fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self>;
     fn filter_surrounding<F>(self, predicate: F) -> SurroundingFilterIterator<Self, F>
     where
         F: FnMut(&Option<Self::Item>, &Self::Item, &Option<Self::Item>) -> bool;
-
-    fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self>;
+    fn open_border_pairs(self) -> OpenBorderWindowIterator<Self>;
 }
-
-impl<Iter: Iterator> IteratorExt for Iter {
+impl<Iter> CloneIteratorExt for Iter
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+{
+    fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self> {
+        ChunkedIterator::new(self, window_size, hop_length)
+    }
     fn filter_surrounding<F>(self, predicate: F) -> SurroundingFilterIterator<Self, F>
     where
         F: FnMut(&Option<Self::Item>, &Self::Item, &Option<Self::Item>) -> bool,
     {
         SurroundingFilterIterator::new(self, predicate)
     }
-
-    fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self> {
-        ChunkedIterator::new(self, window_size, hop_length)
+    fn open_border_pairs(self) -> OpenBorderWindowIterator<Self> {
+        OpenBorderWindowIterator::new(self)
     }
 }
 
@@ -25,7 +33,11 @@ pub struct ChunkedIterator<Iter: Iterator> {
     hop_length: usize,
     buffer: Vec<Iter::Item>,
 }
-impl<Iter: Iterator> ChunkedIterator<Iter> {
+impl<Iter> ChunkedIterator<Iter>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+{
     fn new(iter: Iter, window_size: usize, hop_length: usize) -> Self {
         Self {
             iter,
@@ -35,7 +47,11 @@ impl<Iter: Iterator> ChunkedIterator<Iter> {
         }
     }
 }
-impl<T: Clone, Iter: Iterator<Item = T>> Iterator for ChunkedIterator<Iter> {
+impl<Iter> Iterator for ChunkedIterator<Iter>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+{
     type Item = Vec<Iter::Item>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -54,6 +70,15 @@ impl<T: Clone, Iter: Iterator<Item = T>> Iterator for ChunkedIterator<Iter> {
         Some(ret)
     }
 }
+impl<Iter> ExactSizeIterator for ChunkedIterator<Iter>
+where
+    Iter: ExactSizeIterator,
+    Iter::Item: Clone,
+{
+    fn len(&self) -> usize {
+        (self.iter.len() as f64 / self.hop_length as f64).ceil() as usize
+    }
+}
 
 pub struct SurroundingFilterIterator<
     Iter: Iterator,
@@ -65,9 +90,11 @@ pub struct SurroundingFilterIterator<
     element: Option<Iter::Item>,
     next: Option<Iter::Item>,
 }
-
-impl<Iter: Iterator, F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::Item>) -> bool>
-    SurroundingFilterIterator<Iter, F>
+impl<Iter, F> SurroundingFilterIterator<Iter, F>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+    F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::Item>) -> bool,
 {
     fn new(mut iter: Iter, predicate: F) -> Self {
         Self {
@@ -79,14 +106,13 @@ impl<Iter: Iterator, F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::It
         }
     }
 }
-
-impl<
-        T: Clone,
-        Iter: Iterator<Item = T>,
-        F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::Item>) -> bool,
-    > Iterator for SurroundingFilterIterator<Iter, F>
+impl<Iter, F> Iterator for SurroundingFilterIterator<Iter, F>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+    F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::Item>) -> bool,
 {
-    type Item = T;
+    type Item = Iter::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         let include = (self.predicate)(&self.last, self.element.as_ref()?, &self.next);
@@ -102,6 +128,58 @@ impl<
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum State<T> {
+    Start(T),
+    Middle(T, T),
+    End(T),
+}
+impl<T> State<T> {
+    #[allow(clippy::missing_const_for_fn)]
+    fn new(a: Option<T>, b: Option<T>) -> Option<Self> {
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(Self::Start(b)),
+            (Some(a), Some(b)) => Some(Self::Middle(a, b)),
+            (Some(a), None) => Some(Self::End(a)),
+        }
+    }
+}
+pub struct OpenBorderWindowIterator<Iter: Iterator> {
+    iter: Iter,
+    next: Option<Iter::Item>,
+}
+impl<Iter> OpenBorderWindowIterator<Iter>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+{
+    const fn new(iter: Iter) -> Self {
+        Self { iter, next: None }
+    }
+}
+impl<Iter> Iterator for OpenBorderWindowIterator<Iter>
+where
+    Iter: Iterator,
+    Iter::Item: Clone,
+{
+    type Item = State<Iter::Item>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let last = std::mem::replace(&mut self.next, self.iter.next());
+        State::new(last, self.next.clone())
+    }
+}
+impl<Iter> ExactSizeIterator for OpenBorderWindowIterator<Iter>
+where
+    Iter: ExactSizeIterator,
+    Iter::Item: Clone,
+{
+    fn len(&self) -> usize {
+        self.iter.len() + 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,11 +187,14 @@ mod tests {
 
     #[test]
     fn chunked_test() {
-        let is = (0..15).chunked(6, 4).collect_vec();
         let expected = vec![0..6, 4..10, 8..14, 12..15]
             .into_iter()
             .map(itertools::Itertools::collect_vec)
             .collect_vec();
+        let is = (0..15).chunked(6, 4);
+        assert_eq!(expected.len(), is.len());
+
+        let is = is.collect_vec();
         assert!(&is.eq(&expected), "expected {expected:?} but was {is:?}");
     }
 
@@ -126,5 +207,17 @@ mod tests {
             .collect_vec();
         let expected = vec![0, 2];
         assert!(&is.eq(&expected), "expected {expected:?} but got {is:?}");
+    }
+    #[test]
+    fn open_border_iter() {
+        let iter = [1, 2, 3].into_iter().open_border_pairs();
+        assert_eq!(iter.len(), 4);
+        assert!(iter.eq([
+            State::Start(1),
+            State::Middle(1, 2),
+            State::Middle(2, 3),
+            State::End(3)
+        ]
+        .into_iter()));
     }
 }

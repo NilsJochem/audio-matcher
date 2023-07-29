@@ -1,5 +1,5 @@
 use crate::{
-    iter::IteratorExt,
+    iter::CloneIteratorExt,
     matcher::{args::Arguments, mp3_reader::SampleType, start_as_duration},
     offset_range,
 };
