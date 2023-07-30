@@ -33,7 +33,6 @@ use std::{
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
-    net::unix::pipe::{Receiver, Sender},
     time::{error::Elapsed, interval, timeout},
 };
 
@@ -142,29 +141,40 @@ pub struct AudacityApiGeneric<W: AsyncWrite, R: AsyncRead> {
 
 ///exposes an os specific version
 #[cfg(windows)]
-pub type AudacityApi = AudacityApiGeneric;
-///exposes an os specific version
-#[cfg(target_family = "unix")]
-pub type AudacityApi = AudacityApiGeneric<Sender, Receiver>;
-
-#[cfg(target_os = "windows")]
+pub type AudacityApi = AudacityApiGeneric<
+    tokio::net::windows::named_pipe::NamedPipeClient,
+    tokio::net::windows::named_pipe::NamedPipeClient,
+>;
+#[cfg(windows)]
 impl AudacityApi {
+    pub async fn launch_audacity() -> Result<(), LaunchError> {
+        todo!("stub");
+    }
     pub const fn new(timer: Option<Duration>) -> Self {
-        todo!("not up to date");
-        Self {
-            to_name: PathBuf::from(r"\\.\pipe\ToSrvPipe"),
-            from_name: PathBuf::from(r"\\.\pipe\FromSrvPipe"),
+        todo!("stub");
+        use tokio::net::windows::named_pipe::ClientOptions;
+        let options = ClientOptions::new();
+        let mut poll_rate = interval(Duration::from_millis(100));
+
+        Self::with_pipes(
+            options.open(r"\\.\pipe\ToSrvPipe"),
+            options.open(r"\\.\pipe\FromSrvPipe"),
             timer,
-        }
+            poll_rate,
+        );
     }
 }
 
-#[cfg(target_family = "unix")]
+///exposes an os specific version
+#[cfg(unix)]
+pub type AudacityApi =
+    AudacityApiGeneric<tokio::net::unix::pipe::Sender, tokio::net::unix::pipe::Receiver>;
+#[cfg(unix)]
 impl AudacityApi {
     const BASE_PATH: &str = "/tmp/audacity_script_pipe";
-
     const LAUNCHER: &str = "gtk4-launch";
     const AUDACITY_APP_NAME: &str = "audacity";
+
     /// Launches Audacity.
     ///
     /// # Errors
