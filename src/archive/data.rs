@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 use std::{
     collections::HashMap,
-    error::Error,
     fmt::{Display, Write},
     num::ParseIntError,
     path::Path,
@@ -12,6 +11,7 @@ use std::{
 use chrono::NaiveDate;
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use log::{debug, warn};
 use regex::Regex;
 use thiserror::Error;
 
@@ -122,61 +122,82 @@ pub struct Archive {
     data: Vec<Series>,
 }
 impl Archive {
-    pub fn read<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        use std::fs;
-        let mut tmp = Vec::new();
-        for entry in glob::glob(&format!(
-            "{}/*.txt",
-            path.as_ref().to_str().expect("path contained wierd char")
-        ))
-        .expect("glob pattern failed")
-        {
-            let entry = entry.expect("couldn't read globbet file");
-            let source = Source::from_path(&entry)
-                .unwrap_or_else(|_| panic!("couldn't parse '{}'", entry.display()));
-
-            tmp.push((
-                source,
-                fs::read_to_string(&entry)
-                    .unwrap_or_else(|_| panic!("couldn't read '{}'", entry.display()))
+    /// will only log warnings, when errors from parsing occure
+    pub fn read<P: AsRef<Path>>(path: P) -> Self {
+        let path = path
+            .as_ref()
+            .to_str()
+            .expect("path contained non UTF-8 char");
+        let tmp = glob::glob(&format!("{path}/*.txt",))
+            .expect("glob pattern failed")
+            .filter_map(|entry| {
+                let entry = entry.expect("couldn't read globbet file");
+                let source = match Source::from_path(&entry) {
+                    Ok(s) => s,
+                    Err(kind) => {
+                        warn!("failed to parse source {entry:?} from filename because {kind:?}");
+                        return None;
+                    }
+                };
+                let read_to_string = match std::fs::read_to_string(&entry) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        warn!("couldn't read {entry:?}, because {err:?}");
+                        return None;
+                    }
+                };
+                let time_labels = read_to_string
                     .lines()
-                    .map(|line| {
-                        TimeLabel::try_from(line)
-                            .unwrap_or_else(|_| panic!("couldn't parse lable {line}"))
+                    .filter(|it| {
+                        let is_comment = it.trim_start().starts_with('#');
+                        if is_comment {
+                            debug!("found comment {it:?} in {source}");
+                        }
+                        !is_comment
+                    })
+                    .filter_map(|line| match line.parse() {
+                        Ok(label) => Some(label),
+                        Err(err) => {
+                            warn!("couldn't parse lable {line:?} because {err:?}");
+                            None
+                        }
                     })
                     .collect_vec()
-                    .into_iter(),
-            ));
-        }
+                    .into_iter();
+                Some((source, time_labels))
+            });
 
-        Ok(Self::try_from(tmp.into_iter()).expect("msg"))
+        Self::from(tmp)
     }
 
-    fn try_from<InnerIter: Iterator<Item = TimeLabel>>(
-        value: impl Iterator<Item = (Source, InnerIter)>,
-    ) -> Result<Self, Box<dyn Error>> {
+    fn from<InnerIter, Iter>(value: Iter) -> Self
+    where
+        InnerIter: Iterator<Item = TimeLabel>,
+        Iter: Iterator<Item = (Source, InnerIter)>,
+    {
         let mut archive = Self { data: Vec::new() };
         lazy_static! {
             static ref RE: Regex = Regex::new("(?:(?P<series>.*) )(?:(?P<nr>[\\d]+)(?P<extra>\\??)(?:\\.[\\d?]+)+)(?: (?P<chapter>.*))?").unwrap();
         }
         for (source, labels) in value {
             for label in labels {
-                let captures = RE
-                    .captures(&label.name)
-                    .unwrap_or_else(|| panic!("name of {label:?} couldn't be parsed to Series"));
+                let Some(captures) = RE.captures(&label.name) else {
+                    warn!("name of {label:?} couldn't be parsed to Series");
+                    continue;
+                };
 
                 let ch_nr = ChapterNumber::new(
-                    captures.name("nr").unwrap().as_str().parse::<usize>()?,
+                    captures.name("nr").unwrap().as_str().parse().unwrap(),
                     !captures.name("extra").unwrap().is_empty(),
                 );
-                let series_name = captures.name("series").map(|it| it.as_str()).unwrap();
+                let series_name = captures.name("series").unwrap().as_str();
                 let chapter_name = captures.name("chapter").map(|it| it.as_str());
 
                 let series = if let Some(it) = archive.get_mut_series_by_name(series_name) {
                     it
                 } else {
                     archive.data.push(Series::new(series_name.to_owned()));
-                    archive.data.last_mut().unwrap()
+                    unsafe { archive.data.last_mut().unwrap_unchecked() }
                 };
 
                 let chapter = if let Some(it) = series.chapters.iter_mut().find(|it| it.nr == ch_nr)
@@ -187,7 +208,7 @@ impl Archive {
                         ch_nr,
                         chapter_name.map(std::borrow::ToOwned::to_owned),
                     ));
-                    series.chapters.last_mut().unwrap()
+                    unsafe { series.chapters.last_mut().unwrap_unchecked() }
                 };
 
                 if let Some(part) = chapter.parts.get_mut(&source) {
@@ -198,29 +219,23 @@ impl Archive {
             }
         }
         archive.data.sort_by(|a, b| Ord::cmp(&a.name, &b.name));
-        for s in &mut archive.data {
-            s.chapters.sort_by(|a, b| Ord::cmp(&a.nr.nr, &b.nr.nr));
-        }
-        Ok(archive)
+        archive.data.iter_mut().for_each(|s| s.chapters.sort());
+        archive
     }
 
-    pub fn format(
-        &self,
-        s: &mut impl Write,
-        indent: &str,
+    #[must_use]
+    pub const fn as_display<'a>(
+        &'a self,
+        indent: &'a str,
         print_index: bool,
         print_all: bool,
-    ) -> Result<(), std::fmt::Error> {
-        let pad_len = print_index.then(|| (self.data.len() as f64).log10().ceil() as usize);
-        let pad = pad_len.map_or_else(String::new, |l| " ".repeat(l + 3));
-
-        for (i, series) in self.data.iter().enumerate() {
-            if let Some(pad_len) = pad_len {
-                write!(s, "[{:0pad_len$}] ", i + 1)?;
-            }
-            series.format(s, &format!("{pad}{indent}"), print_all)?;
+    ) -> ArchiveDisplay<'a> {
+        ArchiveDisplay {
+            archive: self,
+            indent,
+            print_index,
+            print_all,
         }
-        Ok(())
     }
     #[must_use]
     pub fn get_element(&self, identifier: &str, just_series: bool) -> Option<ArchiveSearchResult> {
@@ -232,7 +247,7 @@ impl Archive {
             Some(capture) => {
                 let series_nr = capture
                     .name("series")
-                    .expect("series not found")
+                    .unwrap()
                     .as_str()
                     .parse::<usize>()
                     .unwrap();
@@ -243,22 +258,25 @@ impl Archive {
                 let found_s = &self.data[series_nr - 1];
                 if !just_series {
                     if let Some(chapter_nr) = chapter_nr {
-                        return Some(ArchiveSearchResult {
-                            chapter: found_s
-                                .chapters
-                                .iter()
-                                .find(|ch| ch.nr.nr == chapter_nr)
-                                .unwrap_or_else(|| {
-                                    panic!("no chapter with identifier '{identifier}'")
-                                }),
-                        });
+                        let res = found_s
+                            .chapters
+                            .iter()
+                            .find(|ch| ch.nr.nr == chapter_nr)
+                            .map(ArchiveSearchResult::Chapter);
+                        if res.is_none() {
+                            debug!(
+                                "couldn't find Chapter with nr {chapter_nr} in series {:?}",
+                                found_s.name
+                            );
+                        }
+                        return res;
                     }
                 }
-                Some(ArchiveSearchResult { series: found_s })
+                Some(ArchiveSearchResult::Series(found_s))
             }
             None => self
                 .get_series_by_name(identifier)
-                .map(|series| ArchiveSearchResult { series }),
+                .map(ArchiveSearchResult::Series),
         }
     }
 
@@ -271,9 +289,36 @@ impl Archive {
         self.data.iter().find(|x| x.name == identifier)
     }
 }
-pub union ArchiveSearchResult<'a> {
-    series: &'a Series,
-    chapter: &'a Chapter,
+pub struct ArchiveDisplay<'a> {
+    archive: &'a Archive,
+    indent: &'a str,
+    print_index: bool,
+    print_all: bool,
+}
+impl<'a> Display for ArchiveDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pad_len = self
+            .print_index
+            .then(|| (self.archive.data.len() as f64).log10().ceil() as usize);
+        let pad = pad_len.map_or_else(String::new, |l| " ".repeat(l + 3));
+
+        for (i, series) in self.archive.data.iter().enumerate() {
+            if let Some(pad_len) = pad_len {
+                write!(f, "[{:0pad_len$}] ", i + 1)?;
+            }
+            write!(
+                f,
+                "{}",
+                series.as_display(&format!("{pad}{}", self.indent), self.print_all)
+            )?;
+        }
+        Ok(())
+    }
+}
+
+pub enum ArchiveSearchResult<'a> {
+    Series(&'a Series),
+    Chapter(&'a Chapter),
 }
 
 #[derive(Debug, Clone)]
@@ -288,25 +333,39 @@ impl Series {
             chapters: Vec::new(),
         }
     }
-    pub fn format(
-        &self,
-        s: &mut impl Write,
-        indent: &str,
-        print_chapters: bool,
-    ) -> Result<(), std::fmt::Error> {
-        s.write_str(&self.name)?;
-        s.write_char('\n')?;
-        if print_chapters {
+    #[must_use]
+    const fn as_display<'a>(&'a self, indent: &'a str, print_chapters: bool) -> SeriesDisplay<'a> {
+        SeriesDisplay {
+            series: self,
+            indent,
+            print_chapters,
+        }
+    }
+}
+struct SeriesDisplay<'a> {
+    series: &'a Series,
+    indent: &'a str,
+    print_chapters: bool,
+}
+impl<'a> Display for SeriesDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.series.name)?;
+        f.write_char('\n')?;
+        if self.print_chapters {
             let mut nr_len = 0;
             let mut contains_extra = false;
-            for chapter in &self.chapters {
+            for chapter in &self.series.chapters {
                 nr_len = nr_len.max((chapter.nr.nr as f64).log10().ceil() as usize);
                 contains_extra |= chapter.nr.is_maybe;
             }
-            for chapter in &self.chapters {
-                s.write_str(indent)?;
-                chapter.format(s, Some((nr_len, false)), contains_extra)?;
-                s.write_char('\n')?;
+            for chapter in &self.series.chapters {
+                f.write_str(self.indent)?;
+                write!(
+                    f,
+                    "{}",
+                    chapter.as_display(Some((nr_len, false)), contains_extra)
+                )?;
+                f.write_char('\n')?;
             }
         }
         Ok(())
@@ -320,6 +379,26 @@ pub struct Chapter {
     parts: HashMap<Source, u8>, // source and number of parts in source
 }
 
+impl PartialEq for Chapter {
+    fn eq(&self, other: &Self) -> bool {
+        self.nr == other.nr && self.name == other.name
+    }
+}
+impl Eq for Chapter {}
+impl PartialOrd for Chapter {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Chapter {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.nr.cmp(&other.nr) {
+            std::cmp::Ordering::Equal => self.name.cmp(&other.name),
+            x => x,
+        }
+    }
+}
+
 impl Chapter {
     fn new(nr: ChapterNumber, name: Option<String>) -> Self {
         Self {
@@ -328,20 +407,34 @@ impl Chapter {
             parts: HashMap::new(),
         }
     }
-    pub fn format(
-        &self,
-        s: &mut impl Write,
-        r_just: Option<(usize, bool)>,
-        l_just: bool,
-    ) -> Result<(), std::fmt::Error> {
-        self.nr.format(s, r_just, l_just)?;
-        s.write_str(" - ")?;
-        if let Some(name) = &self.name {
-            write!(s, "{name} ")?;
+    #[must_use]
+    const fn as_display(&self, r_just: Option<(usize, bool)>, l_just: bool) -> ChapterDisplay<'_> {
+        ChapterDisplay {
+            chapter: self,
+            r_just,
+            l_just,
         }
-        s.write_char('[')?;
-        s.write_str(&self.parts.keys().sorted().join(", "))?;
-        s.write_char(']')?;
+    }
+}
+struct ChapterDisplay<'a> {
+    chapter: &'a Chapter,
+    r_just: Option<(usize, bool)>,
+    l_just: bool,
+}
+impl<'a> Display for ChapterDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.chapter.nr.as_display(self.r_just, self.l_just)
+        )?;
+        f.write_str(" - ")?;
+        if let Some(name) = &self.chapter.name {
+            write!(f, "{name} ")?;
+        }
+        f.write_char('[')?;
+        f.write_str(&self.chapter.parts.keys().sorted().join(", "))?;
+        f.write_char(']')?;
         Ok(())
     }
 }
@@ -377,50 +470,54 @@ impl ChapterNumber {
     /// use audio_matcher::archive::data::ChapterNumber;
     ///
     /// let nr = ChapterNumber::new(3, true);
-    /// let mut s1 = String::new();
-    /// nr.format(&mut s1, None, false).unwrap();
-    /// assert_eq!(s1, "3?");
-    ///
-    /// let mut s2 = String::new();
-    /// nr.format(&mut s2, Some((4, true)), false).unwrap();
-    /// assert_eq!(s2, "0003?");
+    /// assert_eq!("3?", nr.as_display(None, false).to_string());
+    /// assert_eq!("0003?", nr.as_display(Some((4, true)), false).to_string());
     ///
     /// let nr = ChapterNumber::new(3, false);
-    /// let mut s1 = String::new();
-    /// nr.format(&mut s1, Some((3, false)), true).unwrap();
-    /// assert_eq!(s1, "  3 ");
-    ///
-    /// let mut s2 = String::new();
-    /// nr.format(&mut s2, Some((4, true)), true).unwrap();
-    /// assert_eq!(s2, "0003 ");
+    /// assert_eq!("  3 ", nr.as_display(Some((3, false)), true).to_string());
+    /// assert_eq!("0003 ", nr.as_display(Some((4, true)), true).to_string());
     /// ```
-    pub fn format(
+    #[must_use]
+    pub const fn as_display(
         &self,
-        s: &mut impl Write,
         r_just: Option<(usize, bool)>,
         l_just: bool,
-    ) -> Result<(), std::fmt::Error> {
-        match r_just {
-            Some(r_just) => {
-                if r_just.1 {
-                    write!(s, "{:0width$}", self.nr, width = r_just.0)
-                } else {
-                    write!(s, "{:width$}", self.nr, width = r_just.0)
-                }
-            }
-            None => write!(s, "{}", self.nr),
-        }?;
-        if self.is_maybe {
-            s.write_char('?')?;
-        } else if l_just {
-            s.write_char(' ')?;
+    ) -> ChapterNumberDisplay<'_> {
+        ChapterNumberDisplay {
+            number: self,
+            r_just,
+            l_just,
         }
-        Ok(())
     }
 }
 impl Display for ChapterNumber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.format(f, None, false)
+        write!(f, "{}", self.as_display(None, false))
+    }
+}
+pub struct ChapterNumberDisplay<'a> {
+    number: &'a ChapterNumber,
+    r_just: Option<(usize, bool)>,
+    l_just: bool,
+}
+impl<'a> Display for ChapterNumberDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.r_just {
+            Some(r_just) => {
+                if r_just.1 {
+                    write!(f, "{:0width$}", self.number.nr, width = r_just.0)?;
+                } else {
+                    write!(f, "{:width$}", self.number.nr, width = r_just.0)?;
+                }
+            }
+            None => write!(f, "{}", self.number.nr)?,
+        }
+        if self.number.is_maybe {
+            f.write_char('?')?;
+        } else if self.l_just {
+            f.write_char(' ')?;
+        }
+        Ok(())
     }
 }
 impl std::str::FromStr for ChapterNumber {
@@ -530,9 +627,10 @@ mod test {
                 ChapterNumber::new(6, false),
                 Some("bekannt".to_owned()),
             ));
-            let mut s = String::new();
-            ser.format(&mut s, ".", true).unwrap();
-            assert_eq!("gute show\n.5? - unbekannt []\n.6  - bekannt []\n", s);
+            assert_eq!(
+                "gute show\n.5? - unbekannt []\n.6  - bekannt []\n",
+                ser.as_display(".", true).to_string()
+            );
         }
     }
 
@@ -543,14 +641,16 @@ mod test {
         fn format_with_parts() {
             let mut ch = Chapter::new(ChapterNumber::new(15, false), None);
             ch.parts.insert("station-2023_1_1".parse().unwrap(), 2);
-            let mut s = String::new();
-            ch.format(&mut s, None, false).unwrap();
-            assert_eq!("15 - [station - 2023-01-01]", s);
+            assert_eq!(
+                "15 - [station - 2023-01-01]",
+                ch.as_display(None, false).to_string()
+            );
             ch.parts.insert("station-2023_1_2".parse().unwrap(), 2);
 
-            s.clear();
-            ch.format(&mut s, None, false).unwrap();
-            assert_eq!("15 - [station - 2023-01-01, station - 2023-01-02]", s);
+            assert_eq!(
+                "15 - [station - 2023-01-01, station - 2023-01-02]",
+                ch.as_display(None, false).to_string()
+            );
         }
 
         #[test]
@@ -559,9 +659,10 @@ mod test {
                 ChapterNumber::new(15, false),
                 Some("chapter name".to_owned()),
             );
-            let mut s = String::new();
-            ch.format(&mut s, None, false).unwrap();
-            assert_eq!("15 - chapter name []", s);
+            assert_eq!(
+                "15 - chapter name []",
+                ch.as_display(None, false).to_string()
+            );
         }
     }
 
@@ -605,50 +706,34 @@ mod test {
         #[test]
         fn format_no_just() {
             let nr = ChapterNumber::new(3, false);
-            let mut s1 = String::new();
-            nr.format(&mut s1, None, false).unwrap();
-            assert_eq!(s1, "3");
+            assert_eq!("3", nr.as_display(None, false).to_string());
 
             let nr = ChapterNumber::new(30, true);
-            let mut s1 = String::new();
-            nr.format(&mut s1, None, false).unwrap();
-            assert_eq!(s1, "30?");
+            assert_eq!("30?", nr.as_display(None, false).to_string());
         }
         #[test]
         fn format_0_r_just() {
             let nr = ChapterNumber::new(3, false);
-            let mut s1 = String::new();
-            nr.format(&mut s1, Some((4, true)), false).unwrap();
-            assert_eq!(s1, "0003");
+            assert_eq!("0003", nr.as_display(Some((4, true)), false).to_string());
 
             let nr = ChapterNumber::new(30, true);
-            let mut s1 = String::new();
-            nr.format(&mut s1, Some((4, true)), false).unwrap();
-            assert_eq!(s1, "0030?");
+            assert_eq!("0030?", nr.as_display(Some((4, true)), false).to_string());
         }
         #[test]
         fn format_space_r_just() {
             let nr = ChapterNumber::new(3, false);
-            let mut s1 = String::new();
-            nr.format(&mut s1, Some((4, false)), false).unwrap();
-            assert_eq!(s1, "   3");
+            assert_eq!("   3", nr.as_display(Some((4, false)), false).to_string());
 
             let nr = ChapterNumber::new(30, true);
-            let mut s1 = String::new();
-            nr.format(&mut s1, Some((4, false)), false).unwrap();
-            assert_eq!(s1, "  30?");
+            assert_eq!("  30?", nr.as_display(Some((4, false)), false).to_string());
         }
         #[test]
         fn format_l_just() {
             let nr = ChapterNumber::new(3, false);
-            let mut s1 = String::new();
-            nr.format(&mut s1, None, true).unwrap();
-            assert_eq!(s1, "3 ");
+            assert_eq!("3 ", nr.as_display(None, true).to_string());
 
             let nr = ChapterNumber::new(30, true);
-            let mut s1 = String::new();
-            nr.format(&mut s1, None, true).unwrap();
-            assert_eq!(s1, "30?");
+            assert_eq!("30?", nr.as_display(None, true).to_string());
         }
     }
 }
