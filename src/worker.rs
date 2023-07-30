@@ -10,7 +10,7 @@ use thiserror::Error;
 use tokio::task::JoinSet;
 
 use crate::{
-    archive::data::ChapterNumber,
+    archive::data::{ChapterNumber, TimeLabel},
     args::{parse_duration, Inputs, OutputLevel},
     iter::CloneIteratorExt,
 };
@@ -347,7 +347,7 @@ async fn rename_labels(
             Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i)),
         );
         for j in 0..number.min(labels.len() - i) {
-            let name = format!("{series} {chapter_number}.{} {chapter_name}", j + 1);
+            let name = TimeLabel::build_name(&series, &chapter_number, j + 1, &chapter_name);
             audacity.set_label(i + j, Some(name), None, None).await?;
         }
         i += number;

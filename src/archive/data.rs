@@ -40,7 +40,6 @@ impl TimeLabel {
         number: usize,
         name_pattern: &str,
     ) -> Self {
-        // TODO allow escaping, document
         Self::new(start, end, Self::name_convert(name_pattern, number))
     }
     #[must_use]
@@ -48,7 +47,17 @@ impl TimeLabel {
         Self { start, end, name }
     }
     #[must_use]
-    pub fn name_convert(pattern: &str, number: usize) -> String {
+    pub fn build_name(
+        series_name: &str,
+        nr: &ChapterNumber,
+        part: usize,
+        chapter_name: &str,
+    ) -> String {
+        format!("{series_name} {nr}.{part} {chapter_name}")
+    }
+    #[must_use]
+    fn name_convert(pattern: &str, number: usize) -> String {
+        // TODO allow escaping, document
         pattern.replace('#', &number.to_string())
     }
 
