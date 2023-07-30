@@ -311,7 +311,7 @@ impl<'a> Display for ArchiveDisplay<'a> {
             .then(|| (self.archive.data.len() as f64).log10().ceil() as usize);
         let pad = pad_len.map_or_else(String::new, |l| " ".repeat(l + 3));
 
-        for (i, series) in self.archive.data.iter().enumerate() {
+        for (pos, (i, series)) in self.archive.data.iter().enumerate().with_position() {
             if let Some(pad_len) = pad_len {
                 write!(f, "[{:0pad_len$}] ", i + 1)?;
             }
@@ -320,6 +320,10 @@ impl<'a> Display for ArchiveDisplay<'a> {
                 "{}",
                 series.as_display(&format!("{pad}{}", self.indent), self.print_all)
             )?;
+            match pos {
+                itertools::Position::First | itertools::Position::Middle => f.write_char('\n')?,
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -359,7 +363,6 @@ struct SeriesDisplay<'a> {
 impl<'a> Display for SeriesDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.series.name)?;
-        f.write_char('\n')?;
         if self.print_chapters {
             let mut nr_len = 0;
             let mut contains_extra = false;
@@ -368,13 +371,12 @@ impl<'a> Display for SeriesDisplay<'a> {
                 contains_extra |= chapter.nr.is_maybe;
             }
             for chapter in &self.series.chapters {
-                f.write_str(self.indent)?;
                 write!(
                     f,
-                    "{}",
+                    "\n{}{}",
+                    self.indent,
                     chapter.as_display(Some((nr_len, false)), contains_extra)
                 )?;
-                f.write_char('\n')?;
             }
         }
         Ok(())
