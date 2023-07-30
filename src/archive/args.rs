@@ -7,10 +7,10 @@ use crate::args::{Inputs, OutputLevel};
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 pub struct Arguments {
-    #[clap(long, value_name = "FILE", help = "path to folder of archive")]
+    #[clap(value_name = "FILE", help = "path to folder of archive")]
     pub path: PathBuf,
-	#[clap(long, short)]
-	pub interactive: bool,
+    #[clap(long, short)]
+    pub interactive: bool,
 
     #[clap(long)]
     pub dry_run: bool,
