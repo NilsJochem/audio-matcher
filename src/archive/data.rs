@@ -5,6 +5,7 @@ use std::{
     fmt::{Display, Write},
     num::ParseIntError,
     path::Path,
+    str::FromStr,
     time::Duration,
 };
 
@@ -12,15 +13,25 @@ use chrono::NaiveDate;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
+use thiserror::Error;
 
 use crate::matcher::{mp3_reader::SampleType, start_as_duration};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LableParseError {
+    #[error("Missing elements in {0:?}")]
+    MissingElement(String),
+    #[error("Failed to parse {0} Duration in {1:?}")]
+    DuratrionParseError(&'static str, String),
+}
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[display(fmt = "{}\t{}\t{}", "start.as_secs_f64()", "end.as_secs_f64()", name)]
 pub struct TimeLabel {
     start: Duration,
     end: Duration,
     name: String,
 }
+
 impl TimeLabel {
     #[must_use]
     pub fn new_with_pattern(
@@ -30,20 +41,25 @@ impl TimeLabel {
         name_pattern: &str,
     ) -> Self {
         // TODO allow escaping, document
-        let name_convert = |number: usize| name_pattern.replace('#', &number.to_string());
-        Self::new(start, end, name_convert(number))
+        Self::new(start, end, Self::name_convert(name_pattern, number))
     }
     #[must_use]
     pub const fn new(start: Duration, end: Duration, name: String) -> Self {
         Self { start, end, name }
     }
+    pub fn name_convert(pattern: &str, number: usize) -> String {
+        pattern.replace('#', &number.to_string())
+    }
 
-    pub fn from_peaks<'a, Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a>(
+    pub fn from_peaks<'a, Iter>(
         peaks: Iter,
         sr: u16,
         delay_start: Duration,
         name_pattern: &'a str,
-    ) -> impl Iterator<Item = Self> + 'a {
+    ) -> impl Iterator<Item = Self> + 'a
+    where
+        Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a,
+    {
         peaks
             .map(move |p| start_as_duration(p, sr))
             .tuple_windows()
@@ -52,12 +68,16 @@ impl TimeLabel {
                 Self::new_with_pattern(start + delay_start, end, i + 1, name_pattern)
             })
     }
-    pub fn write_text_marks<P: AsRef<std::path::Path>, Iter: Iterator<Item = Self>>(
+    pub fn write_text_marks<P, Iter>(
         lables: Iter,
         path: P,
         dry_run: bool,
-    ) -> Result<(), crate::matcher::errors::CliError> {
-        let out = lables.map_into::<String>().join("\n");
+    ) -> Result<(), crate::matcher::errors::CliError>
+    where
+        P: AsRef<std::path::Path>,
+        Iter: Iterator<Item = Self>,
+    {
+        let out = lables.map(|it| it.to_string()).join("\n");
 
         if dry_run {
             println!(
@@ -70,42 +90,29 @@ impl TimeLabel {
         }
         Ok(())
     }
-}
-impl From<TimeLabel> for String {
-    fn from(value: TimeLabel) -> Self {
-        format!(
-            "{}\t{}\t{}",
-            value.start.as_secs_f64(),
-            value.end.as_secs_f64(),
-            value.name
-        )
+    fn parse_duration(
+        part: &str,
+        name: &'static str,
+        value: &str,
+    ) -> Result<Duration, <TimeLabel as FromStr>::Err> {
+        part.parse::<f64>()
+            .map(Duration::from_secs_f64)
+            .map_err(|_| LableParseError::DuratrionParseError(name, value.to_owned()))
     }
 }
-#[derive(Debug)]
-pub enum LableParseError {
-    MissingElement,
-    NotAnFloat(String, std::num::ParseFloatError),
-}
-fn parse_duration(s: &str) -> Result<Duration, LableParseError> {
-    Ok(Duration::from_secs_f64(s.parse::<f64>().map_err(
-        |err| LableParseError::NotAnFloat(s.to_owned(), err),
-    )?))
-}
-fn next<'a>(
-    splitter: &'_ mut std::str::SplitN<'a, char>,
-) -> Result<&'a str, <TimeLabel as TryFrom<&'a str>>::Error> {
-    splitter.next().ok_or(LableParseError::MissingElement)
-}
+impl FromStr for TimeLabel {
+    type Err = LableParseError;
 
-impl TryFrom<&str> for TimeLabel {
-    type Error = LableParseError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let mut splitter = value.splitn(3, '\t');
-        let start = parse_duration(next(&mut splitter)?)?;
-        let end = parse_duration(next(&mut splitter)?)?;
-        let name = next(&mut splitter)?.to_owned();
-        Ok(Self { start, end, name })
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (start, end, name) = value
+            .splitn(3, '\t')
+            .collect_tuple::<(_, _, _)>()
+            .ok_or_else(|| LableParseError::MissingElement(value.to_owned()))?;
+        Ok(Self {
+            start: Self::parse_duration(start, "start", value)?,
+            end: Self::parse_duration(end, "end", value)?,
+            name: name.to_owned(),
+        })
     }
 }
 
