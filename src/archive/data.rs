@@ -47,6 +47,7 @@ impl TimeLabel {
     pub const fn new(start: Duration, end: Duration, name: String) -> Self {
         Self { start, end, name }
     }
+    #[must_use]
     pub fn name_convert(pattern: &str, number: usize) -> String {
         pattern.replace('#', &number.to_string())
     }
@@ -94,7 +95,7 @@ impl TimeLabel {
         part: &str,
         name: &'static str,
         value: &str,
-    ) -> Result<Duration, <TimeLabel as FromStr>::Err> {
+    ) -> Result<Duration, <Self as FromStr>::Err> {
         part.parse::<f64>()
             .map(Duration::from_secs_f64)
             .map_err(|_| LableParseError::DuratrionParseError(name, value.to_owned()))
@@ -446,33 +447,68 @@ impl std::str::FromStr for ChapterNumber {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, derive_more::Display)]
+#[display(fmt = "{station} - {}", "date.format(Self::DISPLAY_DATE_FMT)")]
 pub struct Source {
     station: String,
     date: NaiveDate,
 }
-impl Source {
-    fn from_path<P: AsRef<Path>>(value: P) -> Result<Self, String> {
-        let path = value.as_ref().with_extension("");
-        let file_name = path.file_name().ok_or("no file referenced")?;
-        let base_name = file_name
-            .to_str()
-            .unwrap_or_else(|| panic!("{} contained invalid unicode", file_name.to_string_lossy()));
 
-        let (station, date) = base_name
-            .splitn(2, '-')
-            .collect_tuple()
-            .ok_or(&format!("{base_name} is invalid Source "))?;
-        Ok(Self {
-            station: station.to_owned(),
-            date: NaiveDate::parse_from_str(date, "%Y_%m_%d")
-                .map_err(|_| format!("couldn't parse date '{date}'"))?,
-        })
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SourceErrorKind {
+    #[error("the path didn't reference a file")]
+    NotAFile,
+    #[error("the name didn't contain a '-'")]
+    InvalidSeperator,
+    #[error("the date couldn't be parsed")]
+    InvalidDate,
+}
+impl Source {
+    const FILE_DATE_FMT: &str = "%Y_%m_%d";
+    const DISPLAY_DATE_FMT: &str = "%Y-%m-%d";
+    pub fn from_path<P: AsRef<Path>>(value: &P) -> Result<Self, SourceErrorKind> {
+        let path = value.as_ref().with_extension("");
+        let file_name = path.file_name().ok_or(SourceErrorKind::NotAFile)?;
+        file_name
+            .to_str()
+            .unwrap_or_else(|| panic!("{file_name:?} contained invalid unicode"))
+            .parse()
+    }
+    #[must_use]
+    pub fn to_file_name(&self) -> String {
+        format!("{}-{}", self.station, self.date.format(Self::FILE_DATE_FMT))
     }
 }
-impl Display for Source {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} - {}", self.station, self.date)
+impl FromStr for Source {
+    type Err = SourceErrorKind;
+
+    /// parses a Source from a string in the form of {station}-{%Y_%m_%d}
+    ///
+    /// # Errors
+    ///  - [`SourceErrorKind::InvalidSeperator`] when no '-' is found in `s`
+    ///  - [`SourceErrorKind::InvalidDate`] when the Date can't be parsed
+    ///
+    /// # Examples
+    /// ```
+    /// use audio_matcher::archive::data::Source;
+    /// use audio_matcher::archive::data::SourceErrorKind;
+    ///
+    /// assert_eq!("abc - 2023-07-13", "abc-2023_07_13".parse::<Source>().unwrap().to_string(), "parse and unparse display");
+    /// assert_eq!("abc-2023_07_13", "abc-2023_07_13".parse::<Source>().unwrap().to_file_name(), "parse and unparse filename");
+    /// assert_eq!(Err(SourceErrorKind::InvalidSeperator), "2023_07_13".parse::<Source>(), "fail without station adn seperator");
+    /// assert_eq!(Err(SourceErrorKind::InvalidDate), "abc-2023-07-13".parse::<Source>(), "fail with wrong date seperator");
+    /// assert_eq!(Err(SourceErrorKind::InvalidDate), "abc-2023_07".parse::<Source>(), "fail with wrong date format");
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (station, date) = s
+            .splitn(2, '-')
+            .collect_tuple()
+            .ok_or(Self::Err::InvalidSeperator)?;
+        Ok(Self {
+            station: station.to_owned(),
+            date: NaiveDate::parse_from_str(date, Self::FILE_DATE_FMT)
+                .map_err(|_| Self::Err::InvalidDate)?,
+        })
     }
 }
 
@@ -506,13 +542,11 @@ mod test {
         #[test]
         fn format_with_parts() {
             let mut ch = Chapter::new(ChapterNumber::new(15, false), None);
-            ch.parts
-                .insert(Source::from_path("station-2023_1_1").unwrap(), 2);
+            ch.parts.insert("station-2023_1_1".parse().unwrap(), 2);
             let mut s = String::new();
             ch.format(&mut s, None, false).unwrap();
             assert_eq!("15 - [station - 2023-01-01]", s);
-            ch.parts
-                .insert(Source::from_path("station-2023_1_2").unwrap(), 2);
+            ch.parts.insert("station-2023_1_2".parse().unwrap(), 2);
 
             s.clear();
             ch.format(&mut s, None, false).unwrap();
@@ -532,31 +566,36 @@ mod test {
     }
 
     mod source_tests {
+        // tests from the inside, more in doctest
         use super::*;
 
         #[test]
         fn parse_source() {
             assert_eq!(
-                Source {
+                Ok(Source {
                     station: "89.0rtl".to_owned(),
                     date: NaiveDate::from_ymd_opt(2023, 6, 17).unwrap()
-                },
-                Source::from_path("/89.0rtl-2023_06_17.mp3").unwrap()
+                }),
+                Source::from_path(&"/89.0rtl-2023_06_17.mp3")
             );
             assert_eq!(
-                Source {
+                Ok(Source {
                     station: "station".to_owned(),
                     date: NaiveDate::from_ymd_opt(2023, 6, 17).unwrap()
-                },
-                Source::from_path("station-2023_06_17").unwrap()
+                }),
+                "station-2023_06_17".parse()
             );
         }
 
         #[test]
         fn format() {
             assert_eq!(
-                "station - 2023-06-17",
-                format!("{}", Source::from_path("station-2023_06_17").unwrap())
+                "89.0rtl - 2023-06-17",
+                Source {
+                    station: "89.0rtl".to_owned(),
+                    date: NaiveDate::from_ymd_opt(2023, 6, 17).unwrap()
+                }
+                .to_string()
             );
         }
     }
