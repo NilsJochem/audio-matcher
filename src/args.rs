@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use clap::Args;
+use confy::ConfyError;
 use log::info;
 
 #[derive(Args, Debug, Clone, Copy)]
@@ -104,6 +105,47 @@ impl From<OutputLevel> for log::Level {
             Self::Warn
         } else {
             Self::Info
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ConfigArgs {
+    #[clap(long, short, value_name = "FILE", help = "use this config file")]
+    pub config: Option<PathBuf>,
+    #[clap(long, help = "writes path into config")]
+    pub overwrite_config: bool,
+}
+impl ConfigArgs {
+    pub fn load_config<C>(&self, sub_config: &str) -> C
+    where
+        C: serde::Serialize + serde::de::DeserializeOwned + Default,
+    {
+        self.try_load_config(sub_config).unwrap()
+    }
+    pub fn try_load_config<C>(&self, sub_config: &str) -> Result<C, ConfyError>
+    where
+        C: serde::Serialize + serde::de::DeserializeOwned + Default,
+    {
+        match self.config.as_ref() {
+            Some(config_path) => confy::load_path(config_path),
+            None => confy::load(crate::APP_NAME, Some(sub_config)),
+        }
+    }
+
+    pub fn save_config<C>(&self, sub_config: &str, config: &C)
+    where
+        C: serde::Serialize + serde::de::DeserializeOwned + Default,
+    {
+        self.try_save_config(sub_config, config).unwrap()
+    }
+    pub fn try_save_config<C>(&self, sub_config: &str, config: &C) -> Result<(), ConfyError>
+    where
+        C: serde::Serialize + serde::de::DeserializeOwned + Default,
+    {
+        match self.config.as_ref() {
+            Some(config_path) => confy::store_path(config_path, &config),
+            None => confy::store(crate::APP_NAME, Some(sub_config), &config),
         }
     }
 }

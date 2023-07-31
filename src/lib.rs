@@ -31,6 +31,8 @@ pub mod worker;
 
 use std::{time::Duration, usize};
 
+pub const APP_NAME: &str = "audio-matcher";
+
 const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
     (range.start + offset)..(range.end + offset)
 }
