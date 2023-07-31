@@ -1,7 +1,7 @@
 use audacity::AudacityApi;
 use clap::Parser;
 use itertools::Itertools;
-use log::trace;
+use log::{debug, trace};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -211,76 +211,6 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn adjust_labels(
-    args: &Arguments,
-    audacity: &mut AudacityApi,
-) -> Result<(), audacity::Error> {
-    let labels = audacity.get_label_info().await?; // get new labels
-
-    for element in labels.values().flatten().open_border_pairs() {
-        let (prev_end, next_start) = match element {
-            crate::iter::State::Start(a) => (a.0, a.0 + 10.0),
-            crate::iter::State::Middle(a, b) => (a.1, b.0),
-            crate::iter::State::End(b) => (b.1, b.1 + 10.0),
-        };
-        audacity
-            .select_time(
-                Some(prev_end - 10.0),
-                Some(next_start + 10.0),
-                Some(audacity::RelativeTo::ProjectStart),
-            )
-            .await?;
-        audacity.zoom_to_selection().await?;
-        let _ = args.always_answer.input(
-            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
-            None,
-        );
-    }
-    audacity.zoom_normal().await?;
-    Ok(())
-}
-
-async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Result<(), MoveError> {
-    if dry_run {
-        println!("create directory '{}'", dir.display());
-        println!("moving {glob_pattern:?} to '{}'", dir.display());
-        return Ok(());
-    }
-    tokio::fs::create_dir_all(&dir).await?;
-    trace!("create directory {}", dir.display());
-
-    let mut handles = JoinSet::new();
-    for f in glob::glob(&glob_pattern)? {
-        let f = f?;
-        let mut target = dir.clone();
-        target.push(f.file_name().unwrap());
-        trace!("moving {} to {}", f.display(), target.display());
-        handles.spawn(async move { tokio::fs::rename(&f, &target).await });
-    }
-    while let Some(result) = handles.join_next().await {
-        result??;
-    }
-    Ok(())
-}
-
-async fn move_results(
-    patterns: Vec<Pattern>,
-    tmp_path: PathBuf,
-    args: &Arguments,
-) -> Result<(), MoveError> {
-    let mut handles = JoinSet::new();
-    for (series, nr, chapter) in patterns {
-        let mut dir = tmp_path.clone();
-        dir.push(format!("{nr} {chapter}"));
-        let glob_pattern = format!("{}/{series} {nr}.* {chapter}.mp3", tmp_path.display());
-        handles.spawn(move_result(dir, glob_pattern, args.dry_run));
-    }
-    while let Some(result) = handles.join_next().await {
-        result??;
-    }
-    Ok(())
-}
-
 async fn prepare_project(
     audacity: &mut AudacityApi,
     args: &Arguments,
@@ -354,6 +284,95 @@ async fn rename_labels(
         patterns.push((series.clone(), chapter_number, chapter_name));
     }
     Ok(patterns)
+}
+
+pub async fn adjust_labels(
+    args: &Arguments,
+    audacity: &mut AudacityApi,
+) -> Result<(), audacity::Error> {
+    let labels = audacity.get_label_info().await?; // get new labels
+
+    for element in labels.values().flatten().open_border_pairs() {
+        let (prev_end, next_start) = match element {
+            crate::iter::State::Start(a) => (a.0, a.0 + 10.0),
+            crate::iter::State::Middle(a, b) => (a.1, b.0),
+            crate::iter::State::End(b) => (b.1, b.1 + 10.0),
+        };
+        audacity
+            .select_time(
+                Some(prev_end - 10.0),
+                Some(next_start + 10.0),
+                Some(audacity::RelativeTo::ProjectStart),
+            )
+            .await?;
+        audacity.zoom_to_selection().await?;
+        let _ = args.always_answer.input(
+            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
+            None,
+        );
+    }
+    audacity.zoom_normal().await?;
+    Ok(())
+}
+
+async fn move_results(
+    patterns: Vec<Pattern>,
+    tmp_path: PathBuf,
+    args: &Arguments,
+) -> Result<(), MoveError> {
+    let mut handles = JoinSet::new();
+    for (series, nr, chapter) in patterns {
+        let mut dir = tmp_path.clone();
+        dir.push("current");
+        dir.push(&series);
+        dir.push(format!("{nr} {chapter}"));
+
+        let mut glob_path = tmp_path.clone();
+        glob_path.push(format!("{series} {nr}.* {chapter}.mp3"));
+        handles.spawn(move_result(
+            dir,
+            glob_path
+                .to_str()
+                .expect("glob_path contained non UTF-8 char")
+                .to_owned(),
+            args.dry_run,
+        ));
+    }
+    while let Some(result) = handles.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Result<(), MoveError> {
+    if dry_run {
+        println!("create directory {dir:?}");
+        println!("moving {glob_pattern:?} to {dir:?}");
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(&dir).await?;
+    trace!("create directory {dir:?}");
+
+    let mut handles = JoinSet::new();
+    for f in glob::glob(&glob_pattern)? {
+        let f = f?;
+        let mut target = dir.clone();
+        target.push(f.file_name().unwrap());
+        trace!("moving {f:?} to {target:?}");
+        handles.spawn(async move {
+            match tokio::fs::rename(&f, &target).await {
+                Ok(()) => Ok(()),
+                Err(_err) => {
+                    debug!("couldn't just rename file, try to copy and remove old");
+                    tokio::fs::copy(&f, &target).await?;
+                    tokio::fs::remove_file(&f).await
+                }
+            }
+        });
+    }
+    while let Some(result) = handles.join_next().await {
+        result??;
+    }
+    Ok(())
 }
 
 fn request_next_chapter_name(args: &Arguments) -> String {
