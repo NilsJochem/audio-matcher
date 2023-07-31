@@ -25,9 +25,11 @@
 
 pub mod archive;
 pub mod args;
-mod iter;
 pub mod matcher;
 pub mod worker;
+
+mod extensions;
+pub use extensions::{iter, option};
 
 use std::{time::Duration, usize};
 

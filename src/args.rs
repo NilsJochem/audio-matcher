@@ -110,6 +110,7 @@ impl From<OutputLevel> for log::Level {
 }
 
 #[derive(Args, Debug, Clone)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ConfigArgs {
     #[clap(long, short, value_name = "FILE", help = "use this config file")]
     pub config: Option<PathBuf>,
@@ -117,6 +118,7 @@ pub struct ConfigArgs {
     pub overwrite_config: bool,
 }
 impl ConfigArgs {
+    #[must_use]
     pub fn load_config<C>(&self, sub_config: &str) -> C
     where
         C: serde::Serialize + serde::de::DeserializeOwned + Default,
@@ -127,26 +129,26 @@ impl ConfigArgs {
     where
         C: serde::Serialize + serde::de::DeserializeOwned + Default,
     {
-        match self.config.as_ref() {
-            Some(config_path) => confy::load_path(config_path),
-            None => confy::load(crate::APP_NAME, Some(sub_config)),
-        }
+        self.config.as_ref().map_or_else(
+            || confy::load(crate::APP_NAME, Some(sub_config)),
+            |config_path| confy::load_path(config_path),
+        )
     }
 
     pub fn save_config<C>(&self, sub_config: &str, config: &C)
     where
         C: serde::Serialize + serde::de::DeserializeOwned + Default,
     {
-        self.try_save_config(sub_config, config).unwrap()
+        self.try_save_config(sub_config, config).unwrap();
     }
     pub fn try_save_config<C>(&self, sub_config: &str, config: &C) -> Result<(), ConfyError>
     where
         C: serde::Serialize + serde::de::DeserializeOwned + Default,
     {
-        match self.config.as_ref() {
-            Some(config_path) => confy::store_path(config_path, &config),
-            None => confy::store(crate::APP_NAME, Some(sub_config), &config),
-        }
+        self.config.as_ref().map_or_else(
+            || confy::store(crate::APP_NAME, Some(sub_config), config),
+            |config_path| confy::store_path(config_path, config),
+        )
     }
 }
 

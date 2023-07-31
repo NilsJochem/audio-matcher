@@ -9,7 +9,7 @@ use crate::args::{ConfigArgs, Inputs, OutputLevel};
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 pub struct Arguments {
     #[clap(value_name = "FILE", help = "path to folder of archive")]
-    pub path: Option<PathBuf>,
+    pub archive: Option<PathBuf>,
     #[clap(long, short)]
     pub interactive: bool,
 
