@@ -131,6 +131,21 @@ impl LaunchError {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Config {
+    launcher: String,
+    audacity_app_name: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            launcher: "gtk4-launch".to_owned(),
+            audacity_app_name: "audacity".to_owned(),
+        }
+    }
+}
+
 #[derive(Debug)]
 #[must_use]
 pub struct AudacityApiGeneric<W: AsyncWrite, R: AsyncRead> {
@@ -172,19 +187,21 @@ pub type AudacityApi =
 #[cfg(unix)]
 impl AudacityApi {
     const BASE_PATH: &str = "/tmp/audacity_script_pipe";
-    const LAUNCHER: &str = "gtk4-launch";
-    const AUDACITY_APP_NAME: &str = "audacity";
 
     /// Launches Audacity.
+    ///
+    /// # Panics
+    /// can panic, when loading of config fails.
     ///
     /// # Errors
     /// - [`LaunchError::IO`] when executing the commant failed
     /// - [`LaunchError::Failed`] when the launcher exited with an statuscode != 0
     /// - [`LaunchError::Terminated`] when the launcher was terminated by a signal
     pub async fn launch_audacity() -> Result<(), LaunchError> {
+        let config = confy::load::<Config>("audio-matcher", "audacity").unwrap();
         LaunchError::from_status_code(
-            tokio::process::Command::new(Self::LAUNCHER)
-                .arg(Self::AUDACITY_APP_NAME)
+            tokio::process::Command::new(config.launcher)
+                .arg(config.audacity_app_name)
                 .output()
                 .await?
                 .status
