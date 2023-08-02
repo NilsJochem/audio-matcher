@@ -69,17 +69,22 @@ pub fn mp3_duration<P>(path: &P, use_parallel: bool) -> Result<Duration, CliErro
 where
     P: AsRef<std::path::Path>,
 {
-    // first try external bibliothek
-    if let Ok(duration) = mp3_duration::from_path(path) {
+    let tag = crate::worker::tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
+    // first try reading from tags or with external bibliothek
+    if let Some(duration) = tag
+        .get::<crate::worker::tagger::Length>()
+        .or_else(|| mp3_duration::from_path(path).ok())
+    {
         return Ok(duration);
     }
+    drop(tag);
     trace!("fallback to own implementation for mp3_duration");
 
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
 
     let decoder = Decoder::new(file);
     let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3(path.into()))?;
-    let seconds: f64 = if use_parallel {
+    let duration = Duration::from_secs_f64(if use_parallel {
         frames
             .par_bridge() // parrallel, but seems half as fast
             .map(|frame| {
@@ -92,8 +97,12 @@ where
                 frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64)
             })
             .sum()
-    };
-    Ok(Duration::from_secs_f64(seconds))
+    });
+    // save duration in tags, read new, in case somthing changed
+    let mut tag = crate::worker::tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
+    tag.set::<crate::worker::tagger::Length>(Some(duration));
+    tag.save_changes(false)?;
+    Ok(duration)
 }
 
 #[cfg(test)]

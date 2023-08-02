@@ -23,6 +23,8 @@ pub enum CliError {
     //     expected: String,
     //     found: String,
     // },
+    #[error(transparent)]
+    ID3(#[from] id3::Error),
 }
 
 // a wrapper for paths, that has display

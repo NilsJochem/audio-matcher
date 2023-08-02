@@ -35,6 +35,7 @@ tokio = { version = "1.29", features = ["full"] }
 
 minimp3 = "0.5"
 mp3-duration = "0.1" # doesn't work very good for usecase
+id3 = "1.7"
 
 realfft = "3.3"
 fftconvolve = "0.1" # maybe remove

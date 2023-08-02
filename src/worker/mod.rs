@@ -15,6 +15,8 @@ use crate::{
     iter::CloneIteratorExt,
 };
 
+pub mod tagger;
+
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 pub struct Arguments {
