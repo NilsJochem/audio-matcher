@@ -639,7 +639,7 @@ mod test {
                 Some("bekannt".to_owned()),
             ));
             assert_eq!(
-                "gute show\n.5? - unbekannt []\n.6  - bekannt []\n",
+                "gute show\n.5? - unbekannt []\n.6  - bekannt []",
                 ser.as_display(".", true).to_string()
             );
         }
