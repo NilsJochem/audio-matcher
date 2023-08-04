@@ -23,6 +23,13 @@ macro_rules! field {
                 tag.$remove_fn();
                 true
             }
+            fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
+                if tag.$get_fn().is_some() {
+                    return false;
+                }
+                tag.$set_fn(value);
+                true
+            }
         }
     };
 }
@@ -50,6 +57,8 @@ pub trait Field<'a> {
     fn set(tag: &'a mut id3::Tag, value: Self::Type) -> bool;
     /// removes the value to `value` and returns, if something changed
     fn remove(tag: &'a mut id3::Tag) -> bool;
+    /// sets the value to `value` if it is currently `None`
+    fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool;
 
     /// updates the value to `value` and returns, if something changed
     fn update(tag: &'a mut id3::Tag, value: Option<Self::Type>) -> bool {
@@ -100,6 +109,13 @@ impl<'a> Field<'a> for Length {
         tag.remove_duration();
         true
     }
+    fn fill(tag: &mut id3::Tag, value: Self::Type) -> bool {
+        if tag.duration().is_some() {
+            return false;
+        }
+        tag.set_duration(value.as_secs() as u32);
+        true
+    }
 }
 
 #[must_use]
@@ -131,8 +147,15 @@ impl TaggedFile {
         self.inner = Tag::read_from_path(&self.path)?;
         Ok(())
     }
+    /// rereads tags and fills all that are currently empty
+    pub fn reload_empty(&mut self) -> Result<(), id3::Error> {
+        self.fill_all_from(&Self::from_path(self.path.clone())?);
+        Ok(())
+    }
 
-    pub fn path(&self) -> &PathBuf {
+    #[must_use]
+    /// a reference to the current path of this file
+    pub const fn path(&self) -> &PathBuf {
         &self.path
     }
     /// changes the internal file path in case the file was moved externally
@@ -164,6 +187,25 @@ impl TaggedFile {
     /// upates the field `F` with `value` or removes it, if `value` is `None`
     pub fn set<'a, F: Field<'a>>(&'a mut self, value: Option<F::Type>) {
         self.was_changed |= F::update(&mut self.inner, value);
+    }
+    /// upates the field `F` with `value` if it is currently `None`
+    pub fn fill_from<'a, F: Field<'a>>(&'a mut self, other: &'a Self) {
+        if let Some(v) = other.get::<F>() {
+            F::fill(&mut self.inner, v);
+        }
+    }
+    /// fills all fields with the values of `other`
+    pub fn fill_all_from(&mut self, other: &Self) {
+        self.fill_from::<Title>(other);
+        self.fill_from::<Artist>(other);
+        self.fill_from::<Album>(other);
+        self.fill_from::<Genre>(other);
+        self.fill_from::<Year>(other);
+        self.fill_from::<Track>(other);
+        self.fill_from::<TotalTracks>(other);
+        self.fill_from::<Disc>(other);
+        self.fill_from::<TotalDiscs>(other);
+        self.fill_from::<Length>(other);
     }
 }
 

@@ -1,5 +1,4 @@
 use audacity::AudacityApi;
-use clap::Parser;
 use itertools::Itertools;
 use log::{debug, trace};
 use std::{
@@ -11,57 +10,16 @@ use tokio::task::JoinSet;
 
 use crate::{
     archive::data::{ChapterNumber, TimeLabel},
-    args::{parse_duration, Inputs, OutputLevel},
+    args::Inputs,
+    extensions::vec::PushReturn,
     iter::CloneIteratorExt,
+    worker::tagger::{Album, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track},
 };
 
+use self::args::Arguments;
+
+pub mod args;
 pub mod tagger;
-
-#[derive(Debug, Parser, Clone)]
-#[clap(version = env!("CARGO_PKG_VERSION"))]
-pub struct Arguments {
-    #[clap(value_name = "FILE", help = "path to audio file")]
-    pub audio_paths: Vec<PathBuf>,
-    #[clap(long, value_name = "FILE", help = "path to index file")]
-    pub index_folder: Option<PathBuf>,
-
-    #[clap(
-        long,
-        value_name = "DURATION",
-        help = "timeout, can be just seconds, or somthing like 3h5m17s"
-    )]
-    #[arg(value_parser = parse_duration)]
-    pub timeout: Option<Duration>,
-
-    #[clap(long, help = "skips loading of data, assumes project is set up")]
-    pub skip_load: bool,
-    #[clap(long, help = "skips naming and exporting of labels")]
-    pub skip_name: bool,
-
-    #[clap(long)]
-    pub dry_run: bool,
-
-    #[command(flatten)]
-    pub always_answer: Inputs,
-    #[command(flatten)]
-    pub output_level: OutputLevel,
-}
-
-impl Arguments {
-    #[allow(dead_code)]
-    fn tmp_path(&self) -> PathBuf {
-        let mut tmp_path = self.audio_paths.first().unwrap().clone(); // TODO find common value
-        tmp_path.pop();
-        tmp_path
-    }
-    #[allow(dead_code)]
-    fn label_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
-        self.audio_paths.iter().cloned().map(|mut label_path| {
-            label_path.set_extension("txt");
-            label_path
-        })
-    }
-}
 
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -69,6 +27,7 @@ pub enum Error {
     Move(#[from] MoveError),
     Launch(#[from] audacity::LaunchError),
     Audacity(#[from] audacity::Error),
+    Tag(#[from] id3::Error),
 }
 
 #[derive(Debug, Error)]
@@ -94,7 +53,7 @@ impl LazyApi {
         }
     }
     pub const fn from_args(args: &Arguments) -> Self {
-        Self::new(args.timeout)
+        Self::new(args.timeout())
     }
     pub async fn get_api_handle(&mut self) -> Result<&mut AudacityApi, Error> {
         let option = &mut self.cache;
@@ -113,11 +72,11 @@ pub struct Index {
 }
 impl Index {
     async fn get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
-        Ok(match &args.index_folder {
+        Ok(match args.index_folder() {
             Some(folder) => Some(Self::read_index(folder.clone(), series).await?),
             None => {
                 let path = args
-                    .always_answer
+                    .always_answer()
                     .try_input(
                         "welche Index Datei m\u{f6}chtest du verwenden?: ",
                         Some(None),
@@ -141,6 +100,14 @@ impl Index {
         base_folder.push("index.txt");
         Self::from_path(base_folder).await
     }
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
 
     pub fn from_slice_iter<'a, Iter: Iterator<Item = &'a str>>(data: Iter) -> Self {
         Self {
@@ -162,18 +129,18 @@ impl Index {
 
 pub async fn run(args: &Arguments) -> Result<(), Error> {
     assert_eq!(
-        args.audio_paths.len(),
+        args.audio_paths().len(),
         1,
         "currently only supporting 1 path at a time"
     );
     let mut audacity_api = LazyApi::from_args(args);
 
-    if !args.skip_load {
+    if !args.skip_load() {
         prepare_project(audacity_api.get_api_handle().await?, args).await?;
     }
 
     let patterns;
-    if args.skip_name {
+    if args.skip_name() {
         assert!(
             log::max_level() >= log::Level::Debug,
             "skip-name only allowed, when log level is Debug or lower"
@@ -193,19 +160,27 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
     } else {
         let audacity_api = audacity_api.get_api_handle().await?;
         let _ = args
-            .always_answer
+            .always_answer()
             .input("press enter when you are ready to start renaming", None);
-        patterns = rename_labels(args, audacity_api).await?;
+        let tags;
+        (patterns, tags) = rename_labels(args, audacity_api).await?;
         adjust_labels(args, audacity_api).await?;
 
         let _ = args
-            .always_answer
+            .always_answer()
             .input("press enter when you are ready to finish", None);
-        if args.dry_run {
+        if args.dry_run() {
             println!("asking to export audio and labels");
+            for tag in tags {
+                tag.drop_changes();
+            }
         } else {
             audacity_api.export_labels().await?;
             audacity_api.export_multiple().await?;
+            for mut tag in tags {
+                tag.reload_empty()?;
+                tag.save_changes(false)?;
+            }
         }
     };
 
@@ -225,7 +200,7 @@ async fn prepare_project(
         trace!("opened new project");
     }
     audacity
-        .import_audio(&args.audio_paths.first().unwrap())
+        .import_audio(&args.audio_paths().first().unwrap())
         .await?;
     trace!("loaded audio");
     audacity.import_labels().await?;
@@ -237,23 +212,25 @@ const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
 async fn rename_labels(
     args: &Arguments,
     audacity: &mut AudacityApi,
-) -> Result<Vec<Pattern>, Error> {
+) -> Result<(Vec<Pattern>, Vec<TaggedFile>), Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
 
     let mut patterns = Vec::new();
+    let mut tags = Vec::new();
     let mut i = 0;
     let series = args
-        .always_answer
+        .always_answer()
         .input("Welche Serie ist heute dran: ", None);
 
     let index = Index::get_index(args, &series).await?;
+    let index_len = index.as_ref().map(Index::len);
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
 
     while i < labels.len() {
         let chapter_number = args
-            .always_answer
+            .always_answer()
             .try_input(
                 &format!(
                     "Welche Nummer hat die n\u{e4}chste Folge{}: ",
@@ -274,18 +251,33 @@ async fn rename_labels(
                 std::borrow::ToOwned::to_owned,
             );
         let number = read_number(
-            args.always_answer,
+            args.always_answer(),
             "Wie viele Teile hat die n\u{e4}chste Folge: ",
             Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i)),
-        );
-        for j in 0..number.min(labels.len() - i) {
+        )
+        .min(labels.len() - i);
+        for j in 0..number {
             let name = TimeLabel::build_name(&series, &chapter_number, j + 1, &chapter_name);
+
+            let mut path = args.tmp_path();
+            path.push(format!("{name}.mp3"));
+            let tag = tags.push_return(TaggedFile::new_empty(path));
+            tag.set::<Title>(Some(&format!("{chapter_name} {}", j + 1)));
+            tag.set::<Album>(Some(&series));
+            tag.set::<Track>(Some((j + 1) as u32));
+            tag.set::<TotalTracks>(Some(number as u32));
+            tag.set::<Genre>(Some(args.genre()));
+            tag.set::<Disc>(Some(chapter_number.nr() as u32));
+            if let Some(l) = index_len {
+                tag.set::<TotalDiscs>(Some(l as u32));
+            }
+
             audacity.set_label(i + j, Some(name), None, None).await?;
         }
         i += number;
         patterns.push((series.clone(), chapter_number, chapter_name));
     }
-    Ok(patterns)
+    Ok((patterns, tags))
 }
 
 pub async fn adjust_labels(
@@ -308,7 +300,7 @@ pub async fn adjust_labels(
             )
             .await?;
         audacity.zoom_to_selection().await?;
-        let _ = args.always_answer.input(
+        let _ = args.always_answer().input(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
             None,
         );
@@ -337,7 +329,7 @@ async fn move_results(
                 .to_str()
                 .expect("glob_path contained non UTF-8 char")
                 .to_owned(),
-            args.dry_run,
+            args.dry_run(),
         ));
     }
     while let Some(result) = handles.join_next().await {
@@ -378,7 +370,7 @@ async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Resul
 }
 
 fn request_next_chapter_name(args: &Arguments) -> String {
-    args.always_answer
+    args.always_answer()
         .input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
 }
 

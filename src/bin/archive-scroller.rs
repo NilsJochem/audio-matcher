@@ -16,7 +16,7 @@ fn main() {
             .as_ref()
             .filter(|path| {
                 args.always_answer
-                    .ask_consent(&format!("should the path {path:?} be saved to the config"))
+                    .ask_consent(format!("should the path {path:?} be saved to the config"))
             })
             .cloned()
             .unwrap_or_else(|| {

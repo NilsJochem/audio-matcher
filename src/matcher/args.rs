@@ -75,7 +75,7 @@ impl Arguments {
     #[must_use]
     pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
         let out = !std::path::Path::new(path).exists() || {
-            self.always_answer.ask_consent(&format!(
+            self.always_answer.ask_consent(format!(
                 "file '{}' already exists, overwrite",
                 path.display()
             ))

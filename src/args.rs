@@ -16,11 +16,11 @@ pub struct Inputs {
 }
 impl Inputs {
     #[must_use]
-    pub fn ask_consent(&self, msg: &str) -> bool {
+    pub fn ask_consent(&self, msg: impl AsRef<str>) -> bool {
         if self.yes || self.no {
             return self.yes;
         }
-        self.try_input(&format!("{msg} [y/n]: "), None, |rin| {
+        self.try_input(format!("{} [y/n]: ", msg.as_ref()), None, |rin| {
             if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
                 return Some(true);
             } else if ["n", "no", "nein"].contains(&rin.as_str()) {
@@ -36,11 +36,11 @@ impl Inputs {
 
     pub fn try_input<T>(
         &self,
-        msg: &str,
+        msg: impl AsRef<str>,
         default: Option<T>,
         mut map: impl FnMut(String) -> Option<T>,
     ) -> Option<T> {
-        print!("{msg}");
+        print!("{}", msg.as_ref());
         for _ in 0..self.trys {
             let rin: String = text_io::read!("{}\n");
             if default.is_some() && rin.is_empty() {
@@ -54,7 +54,7 @@ impl Inputs {
         None
     }
     #[must_use]
-    pub fn input(&self, msg: &str, default: Option<String>) -> String {
+    pub fn input(&self, msg: impl AsRef<str>, default: Option<String>) -> String {
         self.try_input(msg, default, Some)
             .unwrap_or_else(|| unreachable!())
     }

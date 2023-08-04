@@ -1,0 +1,137 @@
+use std::{path::PathBuf, time::Duration};
+
+use crate::args::{parse_duration, ConfigArgs, Inputs, OutputLevel};
+use clap::Parser;
+
+#[derive(Debug, Parser, Clone)]
+#[clap(version = env!("CARGO_PKG_VERSION"))]
+pub struct Parameter {
+    #[clap(value_name = "FILE", help = "path to audio file")]
+    pub audio_paths: Vec<PathBuf>,
+    #[clap(long, value_name = "FILE", help = "path to index file")]
+    pub index_folder: Option<PathBuf>,
+
+    #[clap(
+        long,
+        value_name = "DURATION",
+        help = "timeout, can be just seconds, or somthing like 3h5m17s"
+    )]
+    #[arg(value_parser = parse_duration)]
+    pub timeout: Option<Duration>,
+
+    #[clap(long, help = "skips loading of data, assumes project is set up")]
+    pub skip_load: bool,
+    #[clap(long, help = "skips naming and exporting of labels")]
+    pub skip_name: bool,
+
+    #[clap(long)]
+    pub dry_run: bool,
+
+    #[command(flatten)]
+    pub config: ConfigArgs,
+    #[command(flatten)]
+    pub always_answer: Inputs,
+    #[command(flatten)]
+    pub output_level: OutputLevel,
+}
+
+const SUB_CONFIG: &str = "worker";
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Config {
+    pub genre: String,
+    pub index_folder: Option<PathBuf>,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            genre: "H\u{f6}rbuch".to_owned(),
+            index_folder: None,
+        }
+    }
+}
+
+pub struct Arguments {
+    config: Config,
+    parameter: Parameter,
+}
+impl Arguments {
+    #[must_use]
+    pub const fn from(config: Config, parameter: Parameter) -> Self {
+        Self { config, parameter }
+    }
+    #[must_use]
+    pub fn parse() -> Self {
+        let param = Parameter::parse();
+        param.output_level.init_logger();
+        let mut config = param.config.load_config::<Config>(SUB_CONFIG);
+
+        if config.index_folder.is_none()
+            && param.index_folder.is_some()
+            && param.always_answer.ask_consent(format!(
+                "Willst du die Indexdatei {:?} in der config speichern?",
+                param.index_folder.as_ref().unwrap()
+            ))
+        {
+            config.index_folder = param.index_folder.clone();
+            param.config.save_config(SUB_CONFIG, &config);
+        }
+
+        Self::from(config, param)
+    }
+
+    #[must_use]
+    pub fn genre(&self) -> &str {
+        &self.config.genre
+    }
+    #[must_use]
+    pub fn index_folder(&self) -> Option<&PathBuf> {
+        self.parameter
+            .index_folder
+            .as_ref()
+            .or(self.config.index_folder.as_ref())
+    }
+
+    #[must_use]
+    pub const fn audio_paths(&self) -> &Vec<PathBuf> {
+        &self.parameter.audio_paths
+    }
+    #[must_use]
+    pub const fn timeout(&self) -> Option<Duration> {
+        self.parameter.timeout
+    }
+    #[must_use]
+    pub const fn skip_load(&self) -> bool {
+        self.parameter.skip_load
+    }
+    #[must_use]
+    pub const fn skip_name(&self) -> bool {
+        self.parameter.skip_name
+    }
+    #[must_use]
+    pub const fn dry_run(&self) -> bool {
+        self.parameter.dry_run
+    }
+    #[must_use]
+    pub const fn always_answer(&self) -> Inputs {
+        self.parameter.always_answer
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn tmp_path(&self) -> PathBuf {
+        let mut tmp_path = self.parameter.audio_paths.first().unwrap().clone(); // TODO find common value
+        tmp_path.pop();
+        tmp_path
+    }
+    #[allow(dead_code)]
+    fn label_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.parameter
+            .audio_paths
+            .iter()
+            .cloned()
+            .map(|mut label_path| {
+                label_path.set_extension("txt");
+                label_path
+            })
+    }
+}
