@@ -221,19 +221,26 @@ impl Drop for TaggedFile {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::atomic::AtomicUsize, time::Duration};
 
     use super::*;
-    struct TestFile(PathBuf);
+    static FILE_NR: AtomicUsize = AtomicUsize::new(0);
+    struct TestFile(PathBuf); // a Wrapper, that creates a copy of a file and removes it, when dropped, to allow file write tests with easy setup
     impl TestFile {
         fn new<P: AsRef<std::path::Path>>(file: P) -> Self {
             let mut path = file.as_ref().to_path_buf();
             path.set_file_name(format!(
-                "tmp_{}",
+                "tmp_{}_{}",
+                FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed), // give each call a uniqe number to allow parallel tests
                 path.file_name().unwrap().to_str().unwrap()
             ));
             std::fs::copy(file, &path).unwrap();
             Self(path)
+        }
+    }
+    impl AsRef<std::path::Path> for TestFile {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
         }
     }
     impl Drop for TestFile {
@@ -263,36 +270,22 @@ mod tests {
     }
 
     #[test]
-    fn save_correctly() {
+    fn save_when_needed() {
         let file = TestFile::new("res/id3test.mp3");
         let mut tag = TaggedFile::from_path(file.0.clone()).unwrap();
 
-        assert_eq!(
-            Some(true),
-            tag.save_changes(true).ok(),
+        assert!(
+            tag.save_changes(true).unwrap(),
             "force save without changes"
         );
-        assert_eq!(
-            Some(false),
-            tag.save_changes(false).ok(),
-            "save without changes"
-        );
+        assert!(!tag.save_changes(false).unwrap(), "save without changes");
         tag.set::<Title>(Some("test 1"));
-        assert_eq!(
-            Some(true),
-            tag.save_changes(false).ok(),
-            "save with changes"
-        );
+        assert!(tag.save_changes(false).unwrap(), "save with changes");
         tag.set::<Title>(Some("test 2"));
-        assert_eq!(
-            Some(true),
-            tag.save_changes(true).ok(),
-            "force save with changes"
-        );
+        assert!(tag.save_changes(true).unwrap(), "force save with changes");
         tag.set::<Title>(Some("test 2"));
-        assert_eq!(
-            Some(false),
-            tag.save_changes(false).ok(),
+        assert!(
+            !tag.save_changes(false).unwrap(),
             "save without true changes"
         );
     }
@@ -312,7 +305,7 @@ mod tests {
         assert_eq!(Some(Duration::from_secs(7)), tag.get::<Length>());
     }
     #[test]
-    fn read_empty() {
+    fn new_empty_is_empty() {
         let tag = TaggedFile::new_empty(PathBuf::from("/nofile"));
 
         assert_eq!(None, tag.get::<Title>());
@@ -325,5 +318,27 @@ mod tests {
         assert_eq!(None, tag.get::<Disc>());
         assert_eq!(None, tag.get::<TotalDiscs>());
         assert_eq!(None, tag.get::<Length>());
+    }
+
+    #[test]
+    fn read_saved() {
+        let file = TestFile::new("res/id3test.mp3");
+        let mut tag = TaggedFile::from_path(file.0.clone()).unwrap();
+        let new_title = "example";
+
+        assert_ne!(
+            Some(new_title),
+            tag.get::<Title>(),
+            "title already {new_title:?}"
+        );
+        tag.set::<Title>(Some(new_title));
+        tag.save_changes(false).unwrap();
+
+        let tag = TaggedFile::from_path(file.0.clone()).unwrap();
+        assert_eq!(
+            Some(new_title),
+            tag.get::<Title>(),
+            "after load new title got reset"
+        );
     }
 }
