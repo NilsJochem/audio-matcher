@@ -1,10 +1,6 @@
 use audacity::AudacityApi;
-use itertools::Itertools;
 use log::{debug, trace};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 use thiserror::Error;
 use tokio::task::JoinSet;
 
@@ -13,17 +9,21 @@ use crate::{
     args::Inputs,
     extensions::vec::PushReturn,
     iter::CloneIteratorExt,
-    worker::tagger::{Album, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track},
+    worker::tagger::{
+        Album, Artist, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track,
+    },
 };
 
 use self::args::Arguments;
 
 pub mod args;
+mod index;
 pub mod tagger;
 
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub enum Error {
+    Index(#[from] index::Error),
     Move(#[from] MoveError),
     Launch(#[from] audacity::LaunchError),
     Audacity(#[from] audacity::Error),
@@ -64,66 +64,6 @@ impl LazyApi {
                 audacity::AudacityApiGeneric::new(self.timeout).await?
             }),
         })
-    }
-}
-
-pub struct Index {
-    data: Vec<String>,
-}
-impl Index {
-    async fn get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
-        Ok(match args.index_folder() {
-            Some(folder) => Some(Self::read_index(folder.clone(), series).await?),
-            None => {
-                let path = args
-                    .always_answer()
-                    .try_input(
-                        "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                        Some(None),
-                        |it| Some(Some(PathBuf::from(it))),
-                    )
-                    .unwrap_or_else(|| unreachable!());
-                match path {
-                    Some(path) => Some(Self::from_path(path).await?),
-                    None => None,
-                }
-            }
-        })
-    }
-    pub async fn from_path<P: AsRef<Path> + Send>(path: P) -> Result<Self, MoveError> {
-        Ok(Self::from_slice_iter(
-            tokio::fs::read_to_string(path).await?.lines(),
-        ))
-    }
-    pub async fn read_index(mut base_folder: PathBuf, series: &str) -> Result<Self, MoveError> {
-        base_folder.push(series);
-        base_folder.push("index.txt");
-        Self::from_path(base_folder).await
-    }
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    pub fn from_slice_iter<'a, Iter: Iterator<Item = &'a str>>(data: Iter) -> Self {
-        Self {
-            data: data
-                .filter(|line| !line.starts_with('#'))
-                .map_into()
-                .collect_vec(),
-        }
-    }
-    #[must_use]
-    pub fn get(&self, chapter_number: ChapterNumber) -> &str {
-        &self.data[chapter_number.nr() - 1]
-    }
-    #[must_use]
-    pub fn try_get(&self, chapter_number: ChapterNumber) -> Option<&str> {
-        self.data.get(chapter_number.nr() - 1).map(String::as_str)
     }
 }
 
@@ -224,8 +164,8 @@ async fn rename_labels(
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
 
-    let index = Index::get_index(args, &series).await?;
-    let index_len = index.as_ref().map(Index::len);
+    let index = crate::worker::index::Index::get_index(args, &series).await?;
+    let index_len = index.as_ref().map(index::Index::len);
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
 
     while i < labels.len() {
@@ -243,13 +183,11 @@ async fn rename_labels(
             .expect("gib was vern\u{fc}nftiges ein");
         expected_next_chapter_number = Some(chapter_number.next());
 
-        let chapter_name = index
-            .as_ref()
-            .map(|index| index.get(chapter_number))
-            .map_or_else(
-                || request_next_chapter_name(args),
-                std::borrow::ToOwned::to_owned,
-            );
+        let index_value = index.as_ref().map(|index| index.get(chapter_number));
+        let artist = index_value.and_then(|it| it.1);
+        let chapter_name =
+            index_value.map_or_else(|| request_next_chapter_name(args), |(n, _)| n.to_owned());
+
         let number = read_number(
             args.always_answer(),
             "Wie viele Teile hat die n\u{e4}chste Folge: ",
@@ -270,6 +208,9 @@ async fn rename_labels(
             tag.set::<Disc>(Some(chapter_number.nr() as u32));
             if let Some(l) = index_len {
                 tag.set::<TotalDiscs>(Some(l as u32));
+            }
+            if let Some(artist) = artist {
+                tag.set::<Artist>(Some(artist));
             }
 
             audacity.set_label(i + j, Some(name), None, None).await?;
@@ -378,28 +319,4 @@ fn read_number(input: Inputs, msg: &str, default: Option<usize>) -> usize {
     input
         .try_input(msg, default, |rin| rin.parse().ok())
         .expect("gib was vern\u{fc}nftiges ein")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    mod index {
-        use super::*;
-
-        #[test]
-        fn filter_comments() {
-            let data = [
-                "first element",
-                "second element",
-                "# some comment",
-                "third element",
-            ];
-            let index = Index::from_slice_iter(data.into_iter());
-            assert_eq!(index.get(ChapterNumber::new(1, false)), data[0]);
-            assert_eq!(index.get(ChapterNumber::new(2, false)), data[1]);
-            assert_eq!(index.get(ChapterNumber::new(3, false)), data[3]);
-            assert_eq!(index.try_get(ChapterNumber::new(4, false)), None);
-        }
-    }
 }
