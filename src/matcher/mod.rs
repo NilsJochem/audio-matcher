@@ -6,7 +6,8 @@ pub mod mp3_reader;
 
 use std::time::Duration;
 
-use crate::{archive::data::TimeLabel, iter::IteratorExt};
+use crate::{archive::data::timelabel_from_peaks, iter::IteratorExt};
+use audacity::data::TimeLabel;
 use errors::CliError;
 use log::{debug, info, log, trace};
 
@@ -68,11 +69,12 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
             .filter(|path| args.should_overwrite_if_exists(path))
         {
             trace!("writing result to '{}'", out_path.display());
-            TimeLabel::write_text_marks(
-                TimeLabel::from_peaks(peaks.iter(), sr, Duration::from_secs(7), "Segment #"),
+            TimeLabel::write(
+                timelabel_from_peaks(peaks.iter(), sr, Duration::from_secs(7), "Segment #"),
                 &out_path,
                 args.dry_run,
-            )?;
+            )
+            .map_err(|_| CliError::NoFile(out_path.into()))?;
         }
     }
 

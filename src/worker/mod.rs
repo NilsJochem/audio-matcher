@@ -5,7 +5,7 @@ use thiserror::Error;
 use tokio::task::JoinSet;
 
 use crate::{
-    archive::data::{ChapterNumber, TimeLabel},
+    archive::data::{build_timelabel_name, ChapterNumber},
     args::Inputs,
     extensions::vec::PushReturn,
     iter::CloneIteratorExt,
@@ -195,7 +195,7 @@ async fn rename_labels(
         )
         .min(labels.len() - i);
         for j in 0..number {
-            let name = TimeLabel::build_name(&series, &chapter_number, j + 1, &chapter_name);
+            let name = build_timelabel_name(&series, &chapter_number, j + 1, &chapter_name);
 
             let mut path = args.tmp_path();
             path.push(format!("{name}.mp3"));

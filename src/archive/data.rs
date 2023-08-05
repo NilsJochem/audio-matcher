@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use audacity::data::TimeLabel;
 use chrono::NaiveDate;
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -17,115 +18,33 @@ use thiserror::Error;
 
 use crate::matcher::{mp3_reader::SampleType, start_as_duration};
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum LableParseError {
-    #[error("Missing elements in {0:?}")]
-    MissingElement(String),
-    #[error("Failed to parse {0} Duration in {1:?}")]
-    DuratrionParseError(&'static str, String),
-}
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
-#[display(fmt = "{}\t{}\t{}", "start.as_secs_f64()", "end.as_secs_f64()", name)]
-pub struct TimeLabel {
-    start: Duration,
-    end: Duration,
-    name: String,
+#[must_use]
+pub fn build_timelabel_name(
+    series_name: &str,
+    nr: &ChapterNumber,
+    part: usize,
+    chapter_name: &str,
+) -> String {
+    format!("{series_name} {nr}.{part} {chapter_name}")
 }
 
-impl TimeLabel {
-    #[must_use]
-    pub fn new_with_pattern(
-        start: Duration,
-        end: Duration,
-        number: usize,
-        name_pattern: &str,
-    ) -> Self {
-        Self::new(start, end, Self::name_convert(name_pattern, number))
-    }
-    #[must_use]
-    pub const fn new(start: Duration, end: Duration, name: String) -> Self {
-        Self { start, end, name }
-    }
-    #[must_use]
-    pub fn build_name(
-        series_name: &str,
-        nr: &ChapterNumber,
-        part: usize,
-        chapter_name: &str,
-    ) -> String {
-        format!("{series_name} {nr}.{part} {chapter_name}")
-    }
-    #[must_use]
-    fn name_convert(pattern: &str, number: usize) -> String {
-        // TODO allow escaping, document
-        pattern.replace('#', &number.to_string())
-    }
-
-    pub fn from_peaks<'a, Iter>(
-        peaks: Iter,
-        sr: u16,
-        delay_start: Duration,
-        name_pattern: &'a str,
-    ) -> impl Iterator<Item = Self> + 'a
-    where
-        Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a,
-    {
-        peaks
-            .map(move |p| start_as_duration(p, sr))
-            .tuple_windows()
-            .enumerate()
-            .map(move |(i, (start, end))| {
-                Self::new_with_pattern(start + delay_start, end, i + 1, name_pattern)
-            })
-    }
-    pub fn write_text_marks<P, Iter>(
-        lables: Iter,
-        path: P,
-        dry_run: bool,
-    ) -> Result<(), crate::matcher::errors::CliError>
-    where
-        P: AsRef<std::path::Path>,
-        Iter: Iterator<Item = Self>,
-    {
-        let out = lables.map(|it| it.to_string()).join("\n");
-
-        if dry_run {
-            println!(
-                "writing: \"\"\"\n{out}\n\"\"\" > {}",
-                path.as_ref().display()
-            );
-        } else {
-            std::fs::write(&path, out)
-                .map_err(|_| crate::matcher::errors::CliError::CantCreateFile(path.into()))?;
-        }
-        Ok(())
-    }
-    fn parse_duration(
-        part: &str,
-        name: &'static str,
-        value: &str,
-    ) -> Result<Duration, <Self as FromStr>::Err> {
-        part.parse::<f64>()
-            .map(Duration::from_secs_f64)
-            .map_err(|_| LableParseError::DuratrionParseError(name, value.to_owned()))
-    }
-}
-impl FromStr for TimeLabel {
-    type Err = LableParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (start, end, name) = value
-            .splitn(3, '\t')
-            .collect_tuple::<(_, _, _)>()
-            .ok_or_else(|| LableParseError::MissingElement(value.to_owned()))?;
-        Ok(Self {
-            start: Self::parse_duration(start, "start", value)?,
-            end: Self::parse_duration(end, "end", value)?,
-            name: name.to_owned(),
+pub fn timelabel_from_peaks<'a, Iter>(
+    peaks: Iter,
+    sr: u16,
+    delay_start: Duration,
+    name_pattern: &'a str,
+) -> impl Iterator<Item = TimeLabel> + 'a
+where
+    Iter: Iterator<Item = &'a find_peaks::Peak<SampleType>> + 'a,
+{
+    peaks
+        .map(move |p| start_as_duration(p, sr))
+        .tuple_windows()
+        .enumerate()
+        .map(move |(i, (start, end))| {
+            TimeLabel::new_with_pattern(start + delay_start, end, i + 1, name_pattern)
         })
-    }
 }
-
 #[derive(Debug, Clone)]
 pub struct Archive {
     data: Vec<Series>,
@@ -148,32 +67,7 @@ impl Archive {
                         return None;
                     }
                 };
-                let read_to_string = match std::fs::read_to_string(&entry) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        warn!("couldn't read {entry:?}, because {err:?}");
-                        return None;
-                    }
-                };
-                let time_labels = read_to_string
-                    .lines()
-                    .filter(|it| {
-                        let is_comment = it.trim_start().starts_with('#');
-                        if is_comment {
-                            debug!("found comment {it:?} in {source}");
-                        }
-                        !is_comment
-                    })
-                    .filter_map(|line| match line.parse() {
-                        Ok(label) => Some(label),
-                        Err(err) => {
-                            warn!("couldn't parse lable {line:?} because {err:?}");
-                            None
-                        }
-                    })
-                    .collect_vec()
-                    .into_iter();
-                Some((source, time_labels))
+                Some((source, TimeLabel::read(&entry).ok()?.into_iter()))
             });
 
         Self::from(tmp)
