@@ -46,11 +46,11 @@ mod command {
     use crate::RelativeTo;
 
     #[derive(Debug, PartialEq, Clone, derive_more::From)]
-    pub enum Any {
-        WithOutput(Out),
-        WithoutOutput(NoOut),
+    pub enum Any<'a> {
+        WithOutput(Out<'a>),
+        WithoutOutput(NoOut<'a>),
     }
-    impl ToString for Any {
+    impl<'a> ToString for Any<'a> {
         fn to_string(&self) -> String {
             match self {
                 Self::WithOutput(x) => x.to_string(),
@@ -59,9 +59,9 @@ mod command {
         }
     }
     #[derive(Debug, PartialEq, Eq, Clone, command_derive::ToString)]
-    pub enum Out {
+    pub enum Out<'a> {
         Message {
-            text: String,
+            text: &'a str,
         },
         // workaround until custom attribute parsing works
         #[allow(non_snake_case)]
@@ -71,7 +71,7 @@ mod command {
         },
     }
     #[derive(Debug, PartialEq, Clone, command_derive::ToString)]
-    pub enum NoOut {
+    pub enum NoOut<'a> {
         SelectTracks {
             mode: SelectMode,
             track: usize,
@@ -79,12 +79,12 @@ mod command {
         MuteTracks,
         UnmuteTracks,
         Import2 {
-            filename: String,
+            filename: &'a str,
         },
         ExportMultiple,
         NewLabelTrack,
         SetTrackStatus {
-            name: Option<String>,
+            name: Option<&'a str>,
             selected: Option<bool>,
             focused: Option<bool>,
         },
@@ -92,7 +92,7 @@ mod command {
         ExportLabels,
         SetLabel {
             nr: usize,
-            text: Option<String>,
+            text: Option<&'a str>,
             start: Option<f64>,
             end: Option<f64>,
         },
@@ -386,7 +386,10 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     /// writes `command` to audacity and waits for a result
     /// applys timeout if `self.timer` is Some
     /// this errors when either `self.write` or `self.read` errors, or the timeout occures
-    async fn write(&mut self, command: impl Into<command::Any> + Send) -> Result<String, Error> {
+    async fn write<'a>(
+        &mut self,
+        command: impl Into<command::Any<'a>> + Send,
+    ) -> Result<String, Error> {
         let timer = self.timer;
         let future = async {
             self.just_write(command.into()).await?;
@@ -395,9 +398,9 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
 
         Self::maybe_timeout(timer, future).await?
     }
-    async fn write_assume_empty(
+    async fn write_assume_empty<'a>(
         &mut self,
-        command: impl Into<command::NoOut> + Send,
+        command: impl Into<command::NoOut<'a>> + Send,
     ) -> Result<(), Error> {
         let result = self.write(command.into()).await?;
         assert_eq!(result, "", "expecting empty result");
@@ -412,13 +415,8 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
         let timer = self.timer;
         let future = async {
-            self.just_write(
-                command::Message {
-                    text: msg.to_owned(),
-                }
-                .into(),
-            )
-            .await?;
+            self.just_write(command::Message { text: msg }.into())
+                .await?;
             self.read(allow_empty_result).await
         };
 
@@ -428,7 +426,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// # Errors
     /// this will Error with [`Error::PipeBroken`] when the `command` couldn't be written to audacity
-    async fn just_write(&mut self, command: command::Any) -> Result<(), Error> {
+    async fn just_write<'a>(&mut self, command: command::Any<'a>) -> Result<(), Error> {
         let command = command.to_string();
         debug!("writing '{command}' to audacity");
         self.write_pipe
@@ -624,7 +622,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .map_err(|e| Error::PathErr(path.as_ref().to_path_buf(), e))?;
 
         self.write_assume_empty(command::Import2 {
-            filename: path.to_string_lossy().to_string(),
+            filename: path.to_string_lossy().to_string().as_str(),
         })
         .await
     }
@@ -667,7 +665,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ) -> Result<usize, Error> {
         self.write_assume_empty(command::NewLabelTrack).await?;
         if let Some(name) = name {
-            let name = Some(name.as_ref().to_owned());
+            let name = Some(name.as_ref());
             self.write_assume_empty(command::SetTrackStatus {
                 name,
                 selected: None,
@@ -742,7 +740,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn set_label(
         &mut self,
         i: usize,
-        text: Option<String>,
+        text: Option<impl AsRef<str> + Send>,
         start: Option<Duration>,
         end: Option<Duration>,
     ) -> Result<(), Error> {
@@ -751,6 +749,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             return Ok(());
         }
 
+        let text = text.as_ref().map(std::convert::AsRef::as_ref);
         self.write_assume_empty(command::SetLabel {
             nr: i,
             text,

@@ -11,15 +11,21 @@ struct Opts {
 
 #[proc_macro_derive(ToString)]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let DeriveInput { ident, data, .. } = parse_macro_input!(input);
+    let DeriveInput {
+        ident,
+        generics,
+        data,
+        ..
+    } = parse_macro_input!(input);
 
     let match_variants = match data {
         syn::Data::Struct(_data) => unimplemented!(),
         syn::Data::Union(_data) => unimplemented!(),
         syn::Data::Enum(data) => match_enum(data),
     };
+
     let output = quote! {
-        impl ToString for #ident {
+        impl #generics ToString for #ident #generics {
             fn to_string(&self) -> String {
                 let mut s = String::new();
                 match self {
