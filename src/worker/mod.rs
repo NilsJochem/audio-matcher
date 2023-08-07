@@ -213,7 +213,9 @@ async fn rename_labels(
                 tag.set::<Artist>(Some(artist));
             }
 
-            audacity.set_label(i + j, Some(name), None, None).await?;
+            audacity
+                .set_label(i + j, Some(name), None, None, Some(false))
+                .await?;
         }
         i += number;
         patterns.push((series.clone(), chapter_number, chapter_name));

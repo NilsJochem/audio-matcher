@@ -67,13 +67,7 @@ fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
     let name = Opts::from_field(field)
         .expect("wrong Options")
         .name
-        .unwrap_or_else(|| {
-            let name_full = ident.to_string();
-            let name_trunc = name_full.trim_start_matches('_');
-            let mut name = name_trunc[..1].to_ascii_uppercase();
-            name.push_str(&name_trunc[1..].to_ascii_lowercase());
-            name
-        }); // TODO find out how darling works
+        .unwrap_or_else(|| format_name(ident.to_string())); // TODO find out how darling works
 
     match extract_type_from_option(&field.ty) {
         Some(_) => quote! {
@@ -83,6 +77,20 @@ fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
             push(&mut s, #name, #ident);
         },
     }
+}
+
+fn format_name(name_full: impl AsRef<str>) -> String {
+    name_full
+        .as_ref()
+        .split('_')
+        .filter(|it| !it.is_empty())
+        .map(|name_trunc| {
+            let mut name = name_trunc[..1].to_ascii_uppercase();
+            name.push_str(&name_trunc[1..].to_ascii_lowercase());
+            name
+        })
+        .collect::<Box<[_]>>()
+        .join("")
 }
 
 fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
@@ -125,4 +133,18 @@ fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
         return inner_type;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn format_name() {
+        assert_eq!("Abc", super::format_name("abc"));
+        assert_eq!("Abc", super::format_name("Abc"));
+        assert_eq!("Abc", super::format_name("ABC"));
+        assert_eq!("Abc", super::format_name("aBC"));
+        assert_eq!("Abc", super::format_name("_aBc"));
+        assert_eq!("AbCd", super::format_name("aB_CD"));
+    }
 }
