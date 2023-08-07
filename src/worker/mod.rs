@@ -229,14 +229,14 @@ pub async fn adjust_labels(
 
     for element in labels.values().flatten().open_border_pairs() {
         let (prev_end, next_start) = match element {
-            crate::iter::State::Start(a) => (a.0, a.0 + 10.0),
-            crate::iter::State::Middle(a, b) => (a.1, b.0),
-            crate::iter::State::End(b) => (b.1, b.1 + 10.0),
+            crate::iter::State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
+            crate::iter::State::Middle(a, b) => (a.end, b.start),
+            crate::iter::State::End(b) => (b.end, b.end + Duration::from_secs(10)),
         };
         audacity
             .select_time(
-                Some(prev_end - 10.0),
-                Some(next_start + 10.0),
+                Some(prev_end - Duration::from_secs(10)),
+                Some(next_start + Duration::from_secs(10)),
                 Some(audacity::RelativeTo::ProjectStart),
             )
             .await?;

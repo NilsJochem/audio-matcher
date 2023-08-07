@@ -11,18 +11,22 @@ pub enum LableParseError {
     DuratrionParseError(&'static str, String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
-#[display(fmt = "{}\t{}\t{}", "start.as_secs_f64()", "end.as_secs_f64()", name)]
+#[display(fmt = "{}\t{}\t{:?}", "start.as_secs_f64()", "end.as_secs_f64()", name)]
 pub struct TimeLabel {
     pub start: Duration,
     pub end: Duration,
-    pub name: String,
+    pub name: Option<String>,
 }
 
 impl TimeLabel {
     /// creates a new [`Timelabel`] with the given values
     #[must_use]
-    pub const fn new(start: Duration, end: Duration, name: String) -> Self {
-        Self { start, end, name }
+    pub fn new(start: Duration, end: Duration, name: Option<String>) -> Self {
+        Self {
+            start,
+            end,
+            name: name.filter(|it| !it.is_empty()),
+        }
     }
     /// creates a new [`Timelabel`] with a name build from pattern
     /// // TODO doc how pattern works
@@ -33,7 +37,7 @@ impl TimeLabel {
         number: usize,
         name_pattern: &str,
     ) -> Self {
-        Self::new(start, end, Self::name_convert(name_pattern, number))
+        Self::new(start, end, Some(Self::name_convert(name_pattern, number)))
     }
     #[must_use]
     fn name_convert(pattern: &str, number: usize) -> String {
@@ -105,7 +109,16 @@ impl FromStr for TimeLabel {
         Ok(Self {
             start: Self::parse_duration(start, "start", value)?,
             end: Self::parse_duration(end, "end", value)?,
-            name: name.to_owned(),
+            name: Some(name.to_owned()),
         })
+    }
+}
+impl From<(f64, f64, String)> for TimeLabel {
+    fn from(value: (f64, f64, String)) -> Self {
+        Self::new(
+            Duration::from_secs_f64(value.0),
+            Duration::from_secs_f64(value.1),
+            Some(value.2),
+        )
     }
 }

@@ -24,6 +24,8 @@
     // clippy::missing_panics_doc
 )]
 
+use data::TimeLabel;
+use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use std::{
     collections::HashMap,
@@ -500,20 +502,32 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     /// # Errors
     ///  - when write/send errors
     ///  - [`Error::MalformedResult`] when the result can't be parsed
-    pub async fn get_label_info(
-        &mut self,
-    ) -> Result<HashMap<usize, Vec<(f64, f64, String)>>, Error> {
+    pub async fn get_label_info(&mut self) -> Result<HashMap<usize, Vec<TimeLabel>>, Error> {
+        type RawTimeLabel = (f64, f64, String);
         let json = self.write("GetInfo: Type=Labels Format=JSON").await?;
         serde_json::from_str(&json)
             .map_err(|e| Error::MalformedResult(json, e.into()))
-            .map(|list: Vec<(usize, Vec<_>)>| list.into_iter().collect())
+            .map(|list: Vec<(usize, Vec<RawTimeLabel>)>| {
+                list.into_iter()
+                    .map(|(nr, labels)| (nr, labels.into_iter().map_into().collect_vec()))
+                    .collect()
+            })
     }
     /// Adds a new label track to the currently open Project.
     ///
     /// # Errors
     ///  - when write/send errors
-    pub async fn add_label_track(&mut self) -> Result<(), Error> {
-        self.write_assume_empty("NewLabelTrack:").await
+    pub async fn add_label_track(
+        &mut self,
+        name: Option<impl AsRef<str> + Send>,
+    ) -> Result<usize, Error> {
+        self.write_assume_empty("NewLabelTrack:").await?;
+        if let Some(name) = name {
+            self.write_assume_empty(&format!("SetTrackStatus: Name\"{}\"", name.as_ref()))
+                .await?;
+        }
+
+        Ok(self.get_track_info().await?.len() - 1)
     }
     /// Opens the dialoge for import labels.
     ///
@@ -522,12 +536,50 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn import_labels(&mut self) -> Result<(), Error> {
         self.write_assume_empty("ImportLabels:").await
     }
+    /// imports labels from the file at `path`
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::PathErr`] when the file at `path` can't be read
+    pub async fn import_labels_from(
+        &mut self,
+        path: impl AsRef<Path> + Send + Sync,
+        track_name: Option<impl AsRef<str> + Send>,
+    ) -> Result<(), Error> {
+        let nr = self.add_label_track(track_name).await?;
+        for label in TimeLabel::read(&path)
+            .map_err(|err| Error::PathErr(path.as_ref().to_path_buf(), err))?
+        {
+            let _ = self.add_label(label, Some(nr)).await?;
+        }
+        Ok(())
+    }
     /// Opens the dialoge for export labels
     ///
     /// # Errors
     ///  - when write/send errors
     pub async fn export_labels(&mut self) -> Result<(), Error> {
         self.write_assume_empty("ExportLabels:").await
+    }
+    /// Export all labels to the file at `path`.
+    ///
+    /// Uses the format of audacitys marks file, with all tracks concatinated,
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    ///  - [`Error::PathErr`] when the file at `path` can't be written to
+    pub async fn export_all_labels_to(
+        &mut self,
+        path: impl AsRef<Path> + Send,
+        dry_run: bool,
+    ) -> Result<(), Error> {
+        TimeLabel::write(
+            self.get_label_info().await?.into_values().flatten(),
+            &path,
+            dry_run,
+        )
+        .map_err(|err| Error::PathErr(path.as_ref().to_path_buf(), err))?;
+        Ok(())
     }
     /// Sets the `text`, `start`, `end` of the label at position `i`.
     ///
@@ -542,18 +594,36 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         &mut self,
         i: usize,
         text: Option<String>,
-        start: Option<f64>,
-        end: Option<f64>,
+        start: Option<Duration>,
+        end: Option<Duration>,
     ) -> Result<(), Error> {
         if text.is_none() && start.is_none() && end.is_none() {
             warn!("attempted to set_label with no values");
             return Ok(());
         }
         let mut command = format!("SetLabel: Label={i}");
-        push_if_some(&mut command, "Text", text, true);
-        push_if_some(&mut command, "Start", start, false);
-        push_if_some(&mut command, "End", end, false);
+        push_if_some(&mut command, "Text", text);
+        push_if_some(&mut command, "Start", start.map(|it| it.as_secs_f64()));
+        push_if_some(&mut command, "End", end.map(|it| it.as_secs_f64()));
         self.write_assume_empty(&command).await
+    }
+
+    #[allow(
+        unreachable_code,
+        unused_variables,
+        clippy::missing_errors_doc,
+        clippy::missing_panics_doc
+    )]
+    pub async fn add_label_to(
+        &mut self,
+        track_nr: usize,
+        label: TimeLabel,
+    ) -> Result<usize, Error> {
+        unimplemented!("fix select track");
+        self.select_tracks(std::iter::once(track_nr)).await?;
+        self.write_assume_empty("SetTrackStatus: Focused=true")
+            .await?;
+        self.add_label(label, Some(track_nr)).await
     }
     /// Creates a new label on track `track_nr` from `start` to `end` with Some(text).
     ///
@@ -567,28 +637,58 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///  - when write/send errors
     pub async fn add_label(
         &mut self,
-        track_nr: usize,
-        text: Option<String>,
-        start: f64,
-        end: f64,
+        label: TimeLabel,
+        track_hint: Option<usize>,
     ) -> Result<usize, Error> {
-        self.select_tracks(std::iter::once(track_nr)).await?;
-        self.select_time(Some(start), Some(end), Some(RelativeTo::ProjectStart))
-            .await?;
+        self.select_time(
+            Some(label.start),
+            Some(label.end),
+            Some(RelativeTo::ProjectStart),
+        )
+        .await?;
         self.write_assume_empty("AddLabel:").await?;
-        let new_labels = self.get_label_info().await?.remove(&track_nr).unwrap();
 
-        let mut new_candidates = new_labels.into_iter().enumerate().filter(|(_, (s, e, t))| {
-            t.is_empty() && compare_times(*s, start) && compare_times(*e, end)
-        });
-        let new_id = new_candidates.next().expect("not enought labels").0;
-        assert!(new_candidates.next().is_none(), "to many labels");
-        //TODO check if new_id needs to be offset for non first tracks
+        let track_hint = match track_hint {
+            Some(v) => v,
+            None => self.get_focused_track().await?,
+        };
 
-        if let Some(text) = text.filter(|it| !it.is_empty()) {
+        let labels = self.get_label_info().await?;
+        let id_offset: usize = labels
+            .iter()
+            .filter(|(t_nr, _)| t_nr < &&track_hint)
+            .map(|(_, l)| l.len())
+            .sum();
+
+        let new_labels = labels.get(&track_hint).unwrap();
+        let new_id = id_offset
+            + new_labels
+                .iter()
+                .enumerate()
+                .find(|(_, candidate)| {
+                    candidate.name.is_none()
+                        && is_near_to(candidate.start, label.start, Duration::from_millis(10))
+                        && is_near_to(candidate.end, label.end, Duration::from_millis(10))
+                })
+                .unwrap_or_else(|| panic!("not enought labels in track {track_hint}"))
+                .0;
+
+        if let Some(text) = label.name {
             self.set_label(new_id, Some(text), None, None).await?;
         }
         Ok(new_id)
+    }
+
+    async fn get_focused_track(&mut self) -> Result<usize, Error> {
+        Ok(self
+            .get_track_info()
+            .await?
+            .into_iter()
+            .enumerate()
+            .filter(|(_, t)| t.focused)
+            .exactly_one()
+            .expect("no track focused")
+            .0)
     }
 
     /// opens a new project.
@@ -614,8 +714,8 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///  - when write/send errors
     pub async fn select_time(
         &mut self,
-        start: Option<f64>,
-        end: Option<f64>,
+        start: Option<Duration>,
+        end: Option<Duration>,
         relative_to: Option<RelativeTo>,
     ) -> Result<(), Error> {
         if start.is_none() && end.is_none() {
@@ -623,9 +723,9 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             return Ok(());
         }
         let mut command = "SelectTime:".to_owned();
-        push_if_some(&mut command, "Start", start, false);
-        push_if_some(&mut command, "End", end, false);
-        push_if_some(&mut command, "RelativeTo", relative_to, false);
+        push_if_some(&mut command, "Start", start.map(|it| it.as_secs_f64()));
+        push_if_some(&mut command, "End", end.map(|it| it.as_secs_f64()));
+        push_if_some(&mut command, "RelativeTo", relative_to);
         self.write_assume_empty(&command).await
     }
     /// Removes the selected audio data and/or labels without copying these to the Audacity clipboard. Any audio or labels to right of the selection are shifted to the left.
@@ -678,26 +778,21 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     }
 }
 
-fn push_if_some<T: ToString>(s: &mut String, cmd: &str, param: Option<T>, escape: bool) {
-    if let Some(value) = param {
-        let value = value.to_string();
-        s.reserve(4 + cmd.len() + value.len());
-        s.push(' ');
-        s.push_str(cmd);
-        s.push('=');
-        if escape {
-            s.push('"');
-        }
-        s.push_str(&value);
-        if escape {
-            s.push('"');
-        }
-    }
+#[inline]
+fn is_near_to(a: Duration, b: Duration, delta: Duration) -> bool {
+    (if a >= b { a - b } else { b - a }) < delta
 }
 
-#[inline]
-fn compare_times(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-5
+fn push_if_some(mut s: impl std::fmt::Write, cmd: impl AsRef<str>, param: Option<impl ToString>) {
+    if let Some(value) = param {
+        write!(s, " {}=", cmd.as_ref()).expect("failed to build command");
+        let value = value.to_string();
+        if value.contains(' ') {
+            write!(s, "\"{value}\"").expect("failed to build escaped command");
+        } else {
+            write!(s, "{value}").expect("failed to build non-escaped command");
+        }
+    }
 }
 
 async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
@@ -764,12 +859,18 @@ pub mod result {
     #[derive(Debug)]
     #[allow(dead_code)]
     pub struct TrackInfo {
-        name: String,
-        focused: bool,
-        selected: bool,
-        kind: Kind,
+        pub name: String,
+        pub focused: bool,
+        pub selected: bool,
+        pub kind: Kind,
     }
-    #[derive(Debug)]
+    impl PartialEq for TrackInfo {
+        fn eq(&self, other: &Self) -> bool {
+            self.name == other.name && self.kind == other.kind
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
     #[allow(dead_code)]
     pub enum Kind {
         Wave {

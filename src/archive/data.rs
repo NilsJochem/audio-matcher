@@ -84,7 +84,7 @@ impl Archive {
         }
         for (source, labels) in value {
             for label in labels {
-                let Some(captures) = RE.captures(&label.name) else {
+                let Some(captures) = RE.captures(label.name.as_ref().map_or("", |it| it.as_str())) else {
                     warn!("name of {label:?} couldn't be parsed to Series");
                     continue;
                 };
