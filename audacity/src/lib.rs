@@ -29,6 +29,7 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use std::{
     collections::HashMap,
+    fmt::Debug,
     marker::Send,
     path::{Path, PathBuf},
     time::Duration,
@@ -39,7 +40,7 @@ use tokio::{
     time::{error::Elapsed, interval, timeout},
 };
 
-mod command;
+pub mod command;
 
 #[cfg(windows)]
 const LINE_ENDING: &str = "\r\n";
@@ -274,69 +275,61 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         Ok(audacity_api)
     }
 
-    /// writes `command` to audacity and waits for a result
-    /// applys timeout if `self.timer` is Some
+    /// writes `command` directly to audacity, waits for a result but asserts it is empty.
+    ///
+    /// for commands with output use its dedicated Method. Also prefer a dedicated method it one is available
+    ///
+    /// # Errors
+    /// when either `self.write` or `self.read` errors, or the timeout occures
+    ///
+    /// # Panics
+    /// when a non empty result is recieved
+    pub async fn write_assume_empty<'a>(
+        &mut self,
+        command: command::NoOut<'a>,
+    ) -> Result<(), Error> {
+        let result = self.write_any(command.clone(), false).await?;
+        assert_eq!(result, "", "expecting empty result for {command:?}");
+        Ok(())
+    }
+    async fn write_assume_result<'a>(
+        &mut self,
+        command: command::Out<'a>,
+    ) -> Result<String, Error> {
+        self.write_any(command, false).await
+    }
+    /// writes `command` to audacity and waits for a result.
+    ///
+    /// applys timeout if `self.timer` is Some.
+    ///
+    /// forwarts `allow_no_ok` to read. This is only intendet to ping until ready
     ///
     /// one should use `write_assume_empty` or `write_assume_result`
     /// this errors when either `self.write` or `self.read` errors, or the timeout occures
     async fn write_any<'a>(
         &mut self,
-        command: impl Into<command::Any<'a>> + Send,
+        command: impl command::Command + Debug + Send + Sync,
+        allow_no_ok: bool,
     ) -> Result<String, Error> {
         let timer = self.timer;
         let future = async {
-            self.just_write(command.into()).await?;
-            self.read(false).await
+            let command_str = command.to_string().replace('\n', LINE_ENDING);
+            debug!("writing {command_str:?} to audacity");
+            self.write_pipe
+                .write_all(format!("{command_str}{LINE_ENDING}").as_bytes())
+                .await
+                .map_err(|err| {
+                    Error::PipeBroken(format!("failed to send {command:?}"), Some(err))
+                })?;
+
+            self.read(allow_no_ok).await
         };
 
         Self::maybe_timeout(timer, future).await?
     }
-    async fn write_assume_empty<'a>(
-        &mut self,
-        command: impl Into<command::NoOut<'a>> + Send,
-    ) -> Result<(), Error> {
-        let result = self.write_any(command.into()).await?;
-        assert_eq!(result, "", "expecting empty result");
-        Ok(())
-    }
-    async fn write_assume_result<'a>(
-        &mut self,
-        command: impl Into<command::Out<'a>> + Send,
-    ) -> Result<String, Error> {
-        self.write_any(command.into()).await
-    }
-    /// sends `msg` to audacity and waits for a result, which should always be Ok(msg).
-    /// used for ping
-    /// applys timeout if `self.timer` is Some
-    ///
-    /// # Errors
-    /// this errors when either `self.write` or `self.read` errors, or the timeout occures
-    async fn send_msg(&mut self, msg: &str, allow_empty_result: bool) -> Result<String, Error> {
-        let timer = self.timer;
-        let future = async {
-            self.just_write(command::Message { text: msg }.into())
-                .await?;
-            self.read(allow_empty_result).await
-        };
 
-        Self::maybe_timeout(timer, future).await?
-    }
-    /// sends `command` to audacity, but doesn't wait for a result.
-    ///
-    /// # Errors
-    /// this will Error with [`Error::PipeBroken`] when the `command` couldn't be written to audacity
-    async fn just_write<'a>(&mut self, command: command::Any<'a>) -> Result<(), Error> {
-        let command = command.to_string();
-        debug!("writing '{command}' to audacity");
-        self.write_pipe
-            .write_all(format!("{}{LINE_ENDING}", command.replace('\n', LINE_ENDING)).as_bytes())
-            .await
-            .map_err(|err| Error::PipeBroken(format!("failed to send {command:?}"), Some(err)))?;
-
-        Ok(())
-    }
     /// Reads the next answer from audacity.
-    /// When not `allow_empty` reads lines until {[`Self::ACK_START`]}+\["OK"|"Failed!"\]+"\n\n" is reached and returns everything before.
+    /// When not `allow_no_ok` reads lines until {[`Self::ACK_START`]}+\["OK"|"Failed!"\]+"\n\n" is reached and returns everything before.
     /// Else will also accept just "\n".
     ///
     /// # Errors
@@ -346,11 +339,11 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// # Panics
     /// This can panic, when after {[`Self::ACK_START`]} somthing unexpected appears
-    async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
+    async fn read(&mut self, allow_no_ok: bool) -> Result<String, Error> {
         let mut result = Vec::new();
         loop {
             let mut line = String::new();
-            if !allow_empty {
+            if !allow_no_ok {
                 trace!("reading next line from audacity");
             }
             self.read_pipe.read_line(&mut line).await.map_err(|err| {
@@ -362,7 +355,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
                     Some(err),
                 )
             })?;
-            if !allow_empty {
+            if !allow_no_ok {
                 trace!("read line {line:?} from audacity");
             }
 
@@ -378,7 +371,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             if line.is_empty() {
                 return if !result.is_empty() {
                     Err(Error::MissingOK(result.join("\n")))
-                } else if allow_empty {
+                } else if allow_no_ok {
                     Ok(String::new())
                 } else {
                     trace!("skipping empty line");
@@ -433,7 +426,9 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///  - when write/send errors
     ///  - [`Error::MalformedResult`] when something other then ping is answered
     pub async fn ping(&mut self) -> Result<bool, Error> {
-        let result = self.send_msg("ping", true).await?;
+        let result = self
+            .write_any(command::Message { text: "ping" }, true)
+            .await?;
 
         if result.is_empty() {
             Ok(false)
@@ -483,28 +478,18 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         self.write_assume_empty(command::SelectTracks {
             mode: command::SelectMode::Set,
             track: tracks.next().unwrap(),
+            track_count: Some(1),
         })
         .await?;
         for track in tracks {
             self.write_assume_empty(command::SelectTracks {
                 mode: command::SelectMode::Add,
                 track,
+                track_count: Some(1),
             })
             .await?;
         }
         Ok(())
-    }
-    /// Mutes the selected tracks.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn mute_selected_tracks(&mut self, mute: bool) -> Result<(), Error> {
-        let command = if mute {
-            command::MuteTracks
-        } else {
-            command::UnmuteTracks
-        };
-        self.write_assume_empty(command).await
     }
     //TODO align tracks
 
@@ -523,13 +508,6 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             filename: path.to_string_lossy().to_string().as_str(),
         })
         .await
-    }
-    /// Opens the dialoge for export multiple.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn export_multiple(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::ExportMultiple).await
     }
 
     /// Gets Infos of the lables in the currently open Project.
@@ -574,13 +552,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
 
         Ok(self.get_track_info().await?.len() - 1)
     }
-    /// Opens the dialoge for import labels.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn import_labels(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::ImportLabels).await
-    }
+
     /// imports labels from the file at `path`
     ///
     /// # Errors
@@ -599,13 +571,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         }
         Ok(())
     }
-    /// Opens the dialoge for export labels
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn export_labels(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::ExportLabels).await
-    }
+
     /// Export all labels to the file at `path`.
     ///
     /// Uses the format of audacitys marks file, with all tracks concatinated,
@@ -752,21 +718,6 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .0)
     }
 
-    /// opens a new project.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn new_project(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::New).await
-    }
-    /// closes the current project. May ask the User what to do with unsaved changes.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn close_projext(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::Close).await
-    }
-
     /// selects time from `start` to `end` in the selected track. If one is None keeps the current selection for it.
     ///
     /// Only logs a warning if all parameters are [`None`], buts returns [`Ok`]
@@ -789,54 +740,6 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             reative_to: relative_to,
         })
         .await
-    }
-    /// Removes the selected audio data and/or labels without copying these to the Audacity clipboard. Any audio or labels to right of the selection are shifted to the left.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn delete_selection(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::Delete).await
-    }
-    /// Removes the selected audio data and/or labels without copying these to the Audacity clipboard. None of the audio data or labels to right of the selection are shifted.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn split_delete_selection(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::SplitDelete).await
-    }
-    /// Creates a new track containing only the current selection as a new clip.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn duplicate_selection(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::Duplicate).await
-    }
-
-    /// Does a Split Cut on the current selection in the current track, then creates a new track and pastes the selection into the new track.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn split_new(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::SplitNew).await
-    }
-    // pub async fn edit_metadate(&mut self) -> Result<(), Error> {
-    //     let _result = self.write("EditMetaData:").await?;
-    //     Ok(())
-    // }
-
-    /// Zooms in or out so that the selected audio fills the width of the window.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn zoom_to_selection(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::ZoomSel).await
-    }
-    /// Zooms to the default view which displays about one inch per second.
-    ///
-    /// # Errors
-    ///  - when write/send errors
-    pub async fn zoom_normal(&mut self) -> Result<(), Error> {
-        self.write_assume_empty(command::ZoomNormal).await
     }
 }
 

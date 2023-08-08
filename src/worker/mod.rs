@@ -115,8 +115,12 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 tag.drop_changes();
             }
         } else {
-            audacity_api.export_labels().await?;
-            audacity_api.export_multiple().await?;
+            audacity_api
+                .write_assume_empty(audacity::command::ExportLabels)
+                .await?;
+            audacity_api
+                .write_assume_empty(audacity::command::ExportMultiple)
+                .await?;
             for mut tag in tags {
                 tag.reload_empty()?;
                 tag.save_changes(false)?;
@@ -136,14 +140,16 @@ async fn prepare_project(
     if audacity.get_track_info().await?.is_empty() {
         trace!("no need to open new project");
     } else {
-        audacity.new_project().await?;
+        audacity.write_assume_empty(audacity::command::New).await?;
         trace!("opened new project");
     }
     audacity
         .import_audio(&args.audio_paths().first().unwrap())
         .await?;
     trace!("loaded audio");
-    audacity.import_labels().await?;
+    audacity
+        .write_assume_empty(audacity::command::ImportLabels)
+        .await?;
     Ok(())
 }
 
@@ -242,13 +248,18 @@ pub async fn adjust_labels(
                 Some(audacity::RelativeTo::ProjectStart),
             )
             .await?;
-        audacity.zoom_to_selection().await?;
+
+        audacity
+            .write_assume_empty(audacity::command::ZoomSel)
+            .await?;
         let _ = args.always_answer().input(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
             None,
         );
     }
-    audacity.zoom_normal().await?;
+    audacity
+        .write_assume_empty(audacity::command::ZoomNormal)
+        .await?;
     Ok(())
 }
 

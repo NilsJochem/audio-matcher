@@ -9,7 +9,7 @@ struct Opts {
     name: Option<String>,
 }
 
-#[proc_macro_derive(ToString)]
+#[proc_macro_derive(Command)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let DeriveInput {
         ident,
@@ -19,47 +19,53 @@ pub fn derive(input: TokenStream) -> TokenStream {
     } = parse_macro_input!(input);
 
     let match_variants = match data {
-        syn::Data::Struct(_data) => unimplemented!(),
-        syn::Data::Union(_data) => unimplemented!(),
-        syn::Data::Enum(data) => match_enum(data),
-    };
-
-    let output = quote! {
-        impl #generics ToString for #ident #generics {
-            fn to_string(&self) -> String {
-                let mut s = String::new();
+        syn::Data::Enum(data) => {
+            let mut tokens = quote!();
+            for variant in data.variants {
+                tokens.append_all(match_enum_variant(variant));
+            }
+            quote! {
                 match self {
-                    #match_variants
-                };
-                s
+                    #tokens
+                }
             }
         }
+        syn::Data::Struct(_data) => unimplemented!(),
+        syn::Data::Union(_data) => unimplemented!(),
     };
-    output.into()
-}
 
-fn match_enum(data: syn::DataEnum) -> proc_macro2::TokenStream {
-    let mut tokens = quote!();
-    for variant in data.variants {
-        tokens.append_all(match_enum_variant(variant));
+    quote! {
+        impl #generics Command for #ident #generics {
+            fn to_string(&self) -> String {
+                #match_variants
+            }
+        }
     }
-    tokens
+    .into()
 }
 
 fn match_enum_variant(variant: syn::Variant) -> proc_macro2::TokenStream {
-    let mut sub_tokens = quote!();
-    for field in &variant.fields {
-        sub_tokens.append_all(match_field(field))
-    }
-    let variant_name = variant.ident.to_string();
+    let variant_name = format!("{}:", variant.ident);
     let variant_ident = &variant.ident;
-    let fields = variant.fields.iter().map(|f| f.ident.as_ref().unwrap());
-    quote! {
-        #variant_ident{#(#fields),*} => {
-            s.push_str(#variant_name);
-            s.push(':');
-            #sub_tokens
-        },
+    let fields = variant
+        .fields
+        .iter()
+        .map(|f| f.ident.as_ref().unwrap())
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        quote!(#variant_ident => #variant_name.to_owned(),)
+    } else {
+        let mut push_fields = quote!();
+        for field in &variant.fields {
+            push_fields.append_all(match_field(field))
+        }
+        quote! {
+            #variant_ident{#(#fields),*} => {
+                let mut s = #variant_name.to_owned();
+                #push_fields
+                s
+            },
+        }
     }
 }
 fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {

@@ -1,23 +1,26 @@
 pub use NoOut::*;
 pub use Out::*;
 
-use crate::RelativeTo;
-
-#[derive(Debug, PartialEq, Clone, derive_more::From)]
-pub enum Any<'a> {
-    WithOutput(Out<'a>),
-    WithoutOutput(NoOut<'a>),
+pub trait Command {
+    fn to_string(&self) -> String;
 }
-impl<'a> ToString for Any<'a> {
-    fn to_string(&self) -> String {
-        match self {
-            Self::WithOutput(x) => x.to_string(),
-            Self::WithoutOutput(x) => x.to_string(),
-        }
+fn push_if_some(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, param: &Option<impl ToString>) {
+    if let Some(value) = param {
+        push(s, cmd, value);
     }
 }
+fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &impl ToString) {
+    let value = value.to_string();
+    let cmd = cmd.as_ref();
+    if value.contains(' ') {
+        write!(s, " {cmd}=\"{value}\"").expect("failed to build escaped command");
+    } else {
+        write!(s, " {cmd}={value}").expect("failed to build non-escaped command");
+    }
+}
+
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Eq, Clone, command_derive::ToString)]
+#[derive(Debug, PartialEq, Eq, Clone, command_derive::Command)]
 pub enum Out<'a> {
     /// Used in testing. Sends the Text string back to you.
     Message { text: &'a str },
@@ -35,7 +38,7 @@ pub enum Out<'a> {
     },
 }
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone, command_derive::ToString)]
+#[derive(Debug, PartialEq, Clone, command_derive::Command)]
 pub enum NoOut<'a> {
     /// Creates a new empty mono audio track.
     NewMonoTrack,
@@ -52,12 +55,13 @@ pub enum NoOut<'a> {
     SelectTime {
         start: Option<f64>,
         end: Option<f64>,
-        reative_to: Option<RelativeTo>,
+        reative_to: Option<crate::RelativeTo>,
     },
     /// Modifies which tracks are selected. First and Last are track numbers. High and Low are for spectral selection. The Mode parameter allows complex selections, e.g adding or removing tracks from the current selection.
     SelectTracks {
         mode: SelectMode,
         track: usize,
+        track_count: Option<usize>,
     },
     /// Sets properties for a track or channel (or both).Name is used to set the name. It is not used in choosing the track.
     SetTrackStatus {
@@ -257,19 +261,4 @@ pub enum Channels {
     Mono,
     #[display(fmt = "2")]
     Stereo,
-}
-
-fn push_if_some(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, param: &Option<impl ToString>) {
-    if let Some(value) = param {
-        push(s, cmd, value);
-    }
-}
-fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &impl ToString) {
-    write!(s, " {}=", cmd.as_ref()).expect("failed to build command");
-    let value = value.to_string();
-    if value.contains(' ') {
-        write!(s, "\"{value}\"").expect("failed to build escaped command");
-    } else {
-        write!(s, "{value}").expect("failed to build non-escaped command");
-    }
 }
