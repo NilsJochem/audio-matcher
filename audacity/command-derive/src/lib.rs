@@ -1,15 +1,23 @@
-use darling::FromField;
+use darling::{FromField, FromVariant};
 use proc_macro::{self, TokenStream};
 use quote::{quote, TokenStreamExt};
 use syn::{parse_macro_input, DeriveInput};
 
-#[derive(FromField)]
-#[darling(attributes(my_trait))]
-struct Opts {
+#[derive(FromVariant)]
+#[darling(attributes(command))]
+struct VOpts {
     name: Option<String>,
 }
 
-#[proc_macro_derive(Command)]
+#[derive(FromField)]
+#[darling(attributes(command))]
+struct FOpts {
+    name: Option<String>,
+    // required: Flag,
+    // defaults: Option<String>,
+}
+
+#[proc_macro_derive(Command, attributes(command))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let DeriveInput {
         ident,
@@ -21,7 +29,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let match_variants = match data {
         syn::Data::Enum(data) => {
             let mut tokens = quote!();
-            for variant in data.variants {
+            for variant in &data.variants {
                 tokens.append_all(match_enum_variant(variant));
             }
             quote! {
@@ -30,8 +38,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
         }
-        syn::Data::Struct(_data) => unimplemented!(),
-        syn::Data::Union(_data) => unimplemented!(),
+        syn::Data::Struct(_) | syn::Data::Union(_) => {
+            unimplemented!("currently only support for Enums")
+        }
     };
 
     quote! {
@@ -44,14 +53,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn match_enum_variant(variant: syn::Variant) -> proc_macro2::TokenStream {
-    let variant_name = format!("{}:", variant.ident);
+fn match_enum_variant(variant: &syn::Variant) -> proc_macro2::TokenStream {
+    let name = VOpts::from_variant(variant).expect("wrong Options").name;
+    let variant_name = format!("{}:", name.unwrap_or_else(|| variant.ident.to_string()));
     let variant_ident = &variant.ident;
     let fields = variant
         .fields
         .iter()
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect::<Vec<_>>();
+        .map(|f| f.ident.as_ref())
+        .collect::<Option<Vec<_>>>()
+        .expect("only support for named structs");
     if fields.is_empty() {
         quote!(#variant_ident => #variant_name.to_owned(),)
     } else {
@@ -68,20 +79,22 @@ fn match_enum_variant(variant: syn::Variant) -> proc_macro2::TokenStream {
         }
     }
 }
+
 fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
     let ident = field.ident.as_ref().expect("no Tuple structs");
-    let name = Opts::from_field(field)
-        .expect("wrong Options")
-        .name
-        .unwrap_or_else(|| format_name(ident.to_string())); // TODO find out how darling works
+    let opts = FOpts::from_field(field).expect("wrong Options");
+    let name = opts.name.unwrap_or_else(|| format_name(ident.to_string()));
 
     match extract_type_from_option(&field.ty) {
         Some(_) => quote! {
-            push_if_some(&mut s, #name, #ident);
+            push_if_some(&mut s, #name, #ident.as_ref());
         },
-        None => quote! {
-            push(&mut s, #name, #ident);
-        },
+        None => {
+            // assert!(!opts.required.is_present(), "can't require non Optional");
+            quote! {
+                push(&mut s, #name, #ident);
+            }
+        }
     }
 }
 

@@ -450,7 +450,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn get_track_info(&mut self) -> Result<Vec<result::TrackInfo>, Error> {
         let json = self
             .write_assume_result(command::GetInfo {
-                Type: command::InfoTarget::Tracks,
+                type_info: command::InfoType::Tracks,
                 format: command::OutputFormat::Json,
             })
             .await?;
@@ -519,7 +519,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         type RawTimeLabel = (f64, f64, String);
         let json = self
             .write_assume_result(command::GetInfo {
-                Type: command::InfoTarget::Labels,
+                type_info: command::InfoType::Labels,
                 format: command::OutputFormat::Json,
             })
             .await?;

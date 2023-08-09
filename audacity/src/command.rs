@@ -4,7 +4,7 @@ pub use Out::*;
 pub trait Command {
     fn to_string(&self) -> String;
 }
-fn push_if_some(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, param: &Option<impl ToString>) {
+fn push_if_some(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, param: Option<&impl ToString>) {
     if let Some(value) = param {
         push(s, cmd, value);
     }
@@ -25,14 +25,14 @@ pub enum Out<'a> {
     /// Used in testing. Sends the Text string back to you.
     Message { text: &'a str },
     /// Gets information in a list in one of three formats.
-    // workaround until custom attribute parsing works
-    #[allow(non_snake_case)]
     GetInfo {
-        Type: InfoTarget,
+        #[command(name = "Type")]
+        type_info: InfoType,
         format: OutputFormat,
     },
     /// This is an extract from GetInfo Commands, with just one command.
     Help {
+        // #[command(defaults = "Help")]
         command: Option<&'a str>, // default Help
         format: OutputFormat,
     },
@@ -227,7 +227,7 @@ pub enum Background {
 }
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, derive_more::Display)]
-pub enum InfoTarget {
+pub enum InfoType {
     Commands,
     Menus,
     Preferences,
