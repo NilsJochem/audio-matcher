@@ -13,9 +13,9 @@ struct VOpts {
 #[darling(attributes(command))]
 struct FOpts {
     name: Option<String>,
-    display_with: Option<syn::Ident>,
-    // required: Flag,
-    // defaults: Option<String>,
+    display_with: Option<syn::Expr>,
+    defaults: Option<syn::Expr>,
+    defaults_lit: Option<syn::Lit>,
 }
 
 #[proc_macro_derive(Command, attributes(command))]
@@ -86,14 +86,25 @@ fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
     let ident = field.ident.as_ref().expect("no Tuple structs");
     let name = opts.name.unwrap_or_else(|| format_name(ident.to_string()));
 
-    let ident_map = match opts.display_with {
-        Some(map) => quote!(& #ident.#map()),
-        None => quote!(#ident),
-    };
+    let ident_map = opts.display_with.map_or(quote!(#ident), |map| quote!(#map));
     let push = quote!(push(&mut s, #name, #ident_map););
-    match extract_type_from_option(&field.ty) {
-        Some(_) => quote!(if let Some(#ident) = #ident { #push }),
-        _ => push,
+
+    let default = match (opts.defaults, opts.defaults_lit) {
+        (None, None) => None,
+        (Some(expr), None) => Some(quote!(&#expr)),
+        (None, Some(lit)) => Some(quote!(#lit)),
+        (Some(_), Some(_)) => panic!("only one default allowed"),
+    };
+
+    match (extract_type_from_option(&field.ty), default) {
+        (None, None) => push,
+        (Some(_), None) => quote!(if let Some(#ident) = #ident { #push }),
+        (Some(_), Some(default)) => {
+            quote!(if let Some(#ident) = #ident.filter(|it| it != &#default) { #push })
+        }
+        (None, Some(default)) => {
+            quote!(if let Some(#ident) = Some(#ident).filter(|it| it != &#default)  { #push })
+        }
     }
 }
 

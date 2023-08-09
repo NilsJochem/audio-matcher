@@ -6,7 +6,7 @@ pub use Out::*;
 pub trait Command {
     fn to_string(&self) -> String;
 }
-fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &impl ToString) {
+fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &(impl ToString + ?Sized)) {
     let value = value.to_string();
     let cmd = cmd.as_ref();
     if value.contains(' ') {
@@ -23,14 +23,16 @@ pub enum Out<'a> {
     Message { text: &'a str },
     /// Gets information in a list in one of three formats.
     GetInfo {
-        #[command(name = "Type")]
+        #[command(name = "Type", defaults = "InfoType::Commands")]
         type_info: InfoType,
+        #[command(defaults = "OutputFormat::Json")]
         format: OutputFormat,
     },
     /// This is an extract from GetInfo Commands, with just one command.
     Help {
-        // #[command(defaults = "Help")]
-        command: Option<&'a str>, // default Help
+        #[command(defaults_lit = "Help")]
+        command: Option<&'a str>,
+        #[command(defaults = "OutputFormat::Json")]
         format: OutputFormat,
     },
 }
@@ -94,6 +96,7 @@ pub enum NoOut<'a> {
     SetPreference {
         name: &'a str,
         value: &'a str,
+        #[command(defaults = "false")]
         reload: bool,
     },
 
@@ -149,10 +152,13 @@ pub enum NoOut<'a> {
     ToggleAlt,
 
     Screenshot {
-        #[command(display_with = "display")]
+        #[command(display_with = "&path.display()")]
         path: &'a PathBuf,
+        #[command(defaults = "CaptureWhat::Window")]
         capture_what: CaptureWhat,
+        #[command(defaults = "Background::None")]
         background: Background,
+        #[command(defaults = "true")]
         to_top: bool,
     },
 
@@ -168,12 +174,16 @@ pub enum NoOut<'a> {
     ExportLabels,
     ExportMultiple,
     Import2 {
-        #[command(display_with = "display")]
+        #[command(display_with = "&filename.display()")]
         filename: &'a PathBuf,
     },
     Export2 {
-        #[command(display_with = "display")]
+        #[command(
+            display_with = "&filename.display()",
+            defaults = "&PathBuf::from(\"exported.wav\")"
+        )]
         filename: &'a PathBuf,
+        #[command(defaults = "Channels::Mono")]
         num_channels: Channels,
     },
 
@@ -261,4 +271,57 @@ pub enum Channels {
     Mono,
     #[display(fmt = "2")]
     Stereo,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_defaulted() {
+        assert_eq!(
+            "Help: Format=Brief",
+            Help {
+                command: Some("Help"),
+                format: OutputFormat::Brief
+            }
+            .to_string()
+        );
+        assert_eq!(
+            "Help:",
+            Help {
+                command: Some("Help"),
+                format: OutputFormat::Json
+            }
+            .to_string()
+        );
+    }
+    #[test]
+    fn escape_spaces() {
+        assert_eq!(
+            "Message: Text=\"text with spaces\"",
+            Message {
+                text: "text with spaces"
+            }
+            .to_string()
+        );
+        assert_eq!(
+            "Message: Text=text_without_spaces",
+            Message {
+                text: "text_without_spaces"
+            }
+            .to_string()
+        );
+    }
+    #[test]
+    fn custom_display() {
+        assert_eq!(
+            "Export2: Filename=\"/test path.exe\" NumChannels=2",
+            Export2 {
+                filename: &PathBuf::from("/test path.exe"),
+                num_channels: Channels::Stereo
+            }
+            .to_string()
+        );
+    }
 }
