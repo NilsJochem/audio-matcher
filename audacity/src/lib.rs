@@ -504,9 +504,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .canonicalize()
             .map_err(|e| Error::PathErr(path.as_ref().to_path_buf(), e))?;
 
-        self.write_assume_empty(command::Import2 {
-            filename: path.to_string_lossy().to_string().as_str(),
-        })
+        self.write_assume_empty(command::Import2 { filename: &path })
         .await
     }
 

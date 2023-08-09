@@ -13,6 +13,7 @@ struct VOpts {
 #[darling(attributes(command))]
 struct FOpts {
     name: Option<String>,
+    display_with: Option<syn::Ident>,
     // required: Flag,
     // defaults: Option<String>,
 }
@@ -81,20 +82,18 @@ fn match_enum_variant(variant: &syn::Variant) -> proc_macro2::TokenStream {
 }
 
 fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
-    let ident = field.ident.as_ref().expect("no Tuple structs");
     let opts = FOpts::from_field(field).expect("wrong Options");
+    let ident = field.ident.as_ref().expect("no Tuple structs");
     let name = opts.name.unwrap_or_else(|| format_name(ident.to_string()));
 
+    let ident_map = match opts.display_with {
+        Some(map) => quote!(& #ident.#map()),
+        None => quote!(#ident),
+    };
+    let push = quote!(push(&mut s, #name, #ident_map););
     match extract_type_from_option(&field.ty) {
-        Some(_) => quote! {
-            push_if_some(&mut s, #name, #ident.as_ref());
-        },
-        None => {
-            // assert!(!opts.required.is_present(), "can't require non Optional");
-            quote! {
-                push(&mut s, #name, #ident);
-            }
-        }
+        Some(_) => quote!(if let Some(#ident) = #ident { #push }),
+        _ => push,
     }
 }
 

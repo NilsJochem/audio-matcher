@@ -1,13 +1,10 @@
+use std::path::PathBuf;
+
 pub use NoOut::*;
 pub use Out::*;
 
 pub trait Command {
     fn to_string(&self) -> String;
-}
-fn push_if_some(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, param: Option<&impl ToString>) {
-    if let Some(value) = param {
-        push(s, cmd, value);
-    }
 }
 fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &impl ToString) {
     let value = value.to_string();
@@ -152,7 +149,8 @@ pub enum NoOut<'a> {
     ToggleAlt,
 
     Screenshot {
-        path: &'a str,
+        #[command(display_with = "display")]
+        path: &'a PathBuf,
         capture_what: CaptureWhat,
         background: Background,
         to_top: bool,
@@ -170,10 +168,12 @@ pub enum NoOut<'a> {
     ExportLabels,
     ExportMultiple,
     Import2 {
-        filename: &'a str,
+        #[command(display_with = "display")]
+        filename: &'a PathBuf,
     },
     Export2 {
-        filename: &'a str,
+        #[command(display_with = "display")]
+        filename: &'a PathBuf,
         num_channels: Channels,
     },
 
