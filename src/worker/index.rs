@@ -37,9 +37,9 @@ pub struct Index {
     data: Vec<(String, Option<String>)>,
 }
 impl Index {
-    pub async fn get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
+    pub async fn try_get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
         Ok(match args.index_folder() {
-            Some(folder) => Some(Self::read_index(folder.clone(), series).await?),
+            Some(folder) => Self::try_read_index(folder.clone(), series).await?,
             None => {
                 let path = args
                     .always_answer()
@@ -56,17 +56,24 @@ impl Index {
             }
         })
     }
-    async fn read_index(mut base_folder: PathBuf, series: &str) -> Result<Self, Error> {
+    #[allow(clippy::doc_markdown)]
+    /// returns None if neither "index.txt", nor "index_full.txt" exists in `base_folder`
+    async fn try_read_index(mut base_folder: PathBuf, series: &str) -> Result<Option<Self>, Error> {
         base_folder.push(series);
         base_folder.push("index_full.txt");
-        if tokio::fs::try_exists(&base_folder)
-            .await
-            .map_err(|err| Error::IO(base_folder.clone(), err.kind()))?
-        {
-            Self::from_path(base_folder, Parser::WithArtist).await
+        if file_exists(&base_folder).await? {
+            Self::from_path(base_folder, Parser::WithArtist)
+                .await
+                .map(Some)
         } else {
             base_folder.set_file_name("index.txt");
-            Self::from_path(base_folder, Parser::WithoutArtist).await
+            if file_exists(&base_folder).await? {
+                Self::from_path(base_folder, Parser::WithoutArtist)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
         }
     }
     async fn from_path<P>(path: P, parser: Parser) -> Result<Self, Error>
@@ -121,6 +128,12 @@ impl Index {
             .get(chapter_number.nr() - 1)
             .map(|(n, a)| (n.as_str(), a.as_ref().map(std::string::String::as_str)))
     }
+}
+
+async fn file_exists(base_folder: &PathBuf) -> Result<bool, Error> {
+    tokio::fs::try_exists(base_folder)
+        .await
+        .map_err(|err| Error::IO(base_folder.clone(), err.kind()))
 }
 
 #[cfg(test)]

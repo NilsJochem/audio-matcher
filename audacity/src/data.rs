@@ -11,7 +11,12 @@ pub enum LableParseError {
     DuratrionParseError(&'static str, String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
-#[display(fmt = "{}\t{}\t{:?}", "start.as_secs_f64()", "end.as_secs_f64()", name)]
+#[display(
+    fmt = "{}\t{}\t{:?}",
+    "start.as_secs_f64()",
+    "end.as_secs_f64()",
+    "name.as_ref().map_or(\"\", String::as_str)"
+)]
 pub struct TimeLabel {
     pub start: Duration,
     pub end: Duration,

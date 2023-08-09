@@ -68,56 +68,38 @@ impl LazyApi {
 }
 
 pub async fn run(args: &Arguments) -> Result<(), Error> {
-    assert_eq!(
-        args.audio_paths().len(),
-        1,
-        "currently only supporting 1 path at a time"
+    assert!(
+        !args.skip_load() || args.audio_paths().len() == 1,
+        "skipping only allowed with single audio"
     );
     let mut audacity_api = LazyApi::from_args(args);
 
-    if !args.skip_load() {
-        prepare_project(audacity_api.get_api_handle().await?, args).await?;
-    }
-
-    let patterns;
-    if args.skip_name() {
-        assert!(
-            log::max_level() >= log::Level::Debug,
-            "skip-name only allowed, when log level is Debug or lower"
-        );
-        patterns = vec![
-            (
-                "Gruselkabinett".to_owned(),
-                ChapterNumber::new(142, false),
-                "Das Zeichen der Bestie".to_owned(),
-            ),
-            (
-                "Gruselkabinett".to_owned(),
-                ChapterNumber::new(143, false),
-                "Der Wolverden-Turm".to_owned(),
-            ),
-        ];
-    } else {
+    for audio_path in args.audio_paths() {
+        let label_path = audio_path.with_extension("txt");
         let audacity_api = audacity_api.get_api_handle().await?;
+
+        if !args.skip_load() {
+            prepare_project(audacity_api, audio_path, &label_path).await?;
+        }
         let _ = args
             .always_answer()
             .input("press enter when you are ready to start renaming", None);
-        let tags;
-        (patterns, tags) = rename_labels(args, audacity_api).await?;
+
+        let (patterns, tags) = rename_labels(args, audacity_api).await?;
         adjust_labels(args, audacity_api).await?;
 
         let _ = args
             .always_answer()
             .input("press enter when you are ready to finish", None);
+        audacity_api
+            .export_all_labels_to(label_path, args.dry_run())
+            .await?;
         if args.dry_run() {
             println!("asking to export audio and labels");
             for tag in tags {
                 tag.drop_changes();
             }
         } else {
-            audacity_api
-                .write_assume_empty(audacity::command::ExportLabels)
-                .await?;
             audacity_api
                 .write_assume_empty(audacity::command::ExportMultiple)
                 .await?;
@@ -126,15 +108,22 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 tag.save_changes(false)?;
             }
         }
-    };
+        move_results(patterns, args.tmp_path(), args).await?;
 
-    move_results(patterns, args.tmp_path(), args).await?;
+        if !args.skip_load() {
+            audacity_api
+                .write_assume_empty(audacity::command::Close)
+                .await?;
+        }
+    }
+
     Ok(())
 }
 
 async fn prepare_project(
     audacity: &mut AudacityApi,
-    args: &Arguments,
+    audio_path: &PathBuf,
+    label_path: &PathBuf,
 ) -> Result<(), audacity::Error> {
     trace!("opened audacity");
     if audacity.get_track_info().await?.is_empty() {
@@ -143,12 +132,10 @@ async fn prepare_project(
         audacity.write_assume_empty(audacity::command::New).await?;
         trace!("opened new project");
     }
-    audacity
-        .import_audio(&args.audio_paths().first().unwrap())
-        .await?;
+    audacity.import_audio(audio_path).await?;
     trace!("loaded audio");
     audacity
-        .write_assume_empty(audacity::command::ImportLabels)
+        .import_labels_from(label_path, None::<&str>)
         .await?;
     Ok(())
 }
@@ -170,7 +157,7 @@ async fn rename_labels(
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
 
-    let index = crate::worker::index::Index::get_index(args, &series).await?;
+    let index = crate::worker::index::Index::try_get_index(args, &series).await?;
     let index_len = index.as_ref().map(index::Index::len);
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
 
@@ -194,10 +181,14 @@ async fn rename_labels(
         let chapter_name =
             index_value.map_or_else(|| request_next_chapter_name(args), |(n, _)| n.to_owned());
 
+        let expected_number = Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i));
         let number = read_number(
             args.always_answer(),
-            "Wie viele Teile hat die n\u{e4}chste Folge: ",
-            Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i)),
+            &format!(
+                "Wie viele Teile hat die n\u{e4}chste Folge{}: ",
+                expected_number.map_or_else(String::new, |next| format!(", erwarte {next}"))
+            ),
+            expected_number,
         )
         .min(labels.len() - i);
         for j in 0..number {

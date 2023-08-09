@@ -69,7 +69,7 @@ pub enum NoOut<'a> {
 
     /// Modifies an existing label. You must give it the label number.
     SetLabel {
-        nr: usize,
+        label: usize,
         text: Option<&'a str>,
         start: Option<f64>,
         end: Option<f64>,

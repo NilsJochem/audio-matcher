@@ -505,7 +505,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .map_err(|e| Error::PathErr(path.as_ref().to_path_buf(), e))?;
 
         self.write_assume_empty(command::Import2 { filename: &path })
-        .await
+            .await
     }
 
     /// Gets Infos of the lables in the currently open Project.
@@ -614,7 +614,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
 
         let text = text.as_ref().map(std::convert::AsRef::as_ref);
         self.write_assume_empty(command::SetLabel {
-            nr: i,
+            label: i,
             text,
             start: start.map(|it| it.as_secs_f64()),
             end: end.map(|it| it.as_secs_f64()),
