@@ -69,10 +69,12 @@ pub fn mp3_duration<P>(path: &P, use_parallel: bool) -> Result<Duration, CliErro
 where
     P: AsRef<std::path::Path>,
 {
-    let tag = crate::worker::tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
+    use crate::worker::tagger;
+    let tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf()).ok();
     // first try reading from tags or with external bibliothek
     if let Some(duration) = tag
-        .get::<crate::worker::tagger::Length>()
+        .as_ref()
+        .and_then(tagger::TaggedFile::get::<tagger::Length>)
         .or_else(|| mp3_duration::from_path(path).ok())
     {
         return Ok(duration);
@@ -99,8 +101,8 @@ where
             .sum()
     });
     // save duration in tags, read new, in case somthing changed
-    let mut tag = crate::worker::tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
-    tag.set::<crate::worker::tagger::Length>(Some(duration));
+    let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
+    tag.set::<tagger::Length>(Some(duration));
     tag.save_changes(false)?;
     Ok(duration)
 }

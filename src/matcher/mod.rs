@@ -48,7 +48,7 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
         }
 
         trace!("collecting main duration");
-        let m_duration = mp3_reader::mp3_duration(&main_file, false)?;
+        let m_duration = mp3_reader::mp3_duration(main_file, false)?;
         trace!("calculation chunks");
         let peaks = audio_matcher::calc_chunks(
             sr,

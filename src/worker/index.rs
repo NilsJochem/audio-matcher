@@ -10,6 +10,14 @@ pub enum Error {
     #[error("cant read {0:?} because {1:?}")]
     IO(PathBuf, std::io::ErrorKind),
 }
+impl Error {
+    fn io_err(path: impl AsRef<Path>, err: &std::io::Error) -> Self {
+        Self::IO(path.as_ref().to_path_buf(), err.kind())
+    }
+    fn parse_err(line: impl AsRef<str>, parser: Parser) -> Self {
+        Self::ParseError(line.as_ref().to_owned(), parser)
+    }
+}
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -19,15 +27,16 @@ pub enum Parser {
     TryWithArtist,
 }
 impl Parser {
-    fn parse_line(self, line: &str) -> Option<(String, Option<String>)> {
+    fn parse_line(self, line: &str) -> Result<(String, Option<String>), Error> {
         match self {
-            Self::WithoutArtist => Some((line.to_owned(), None)),
+            Self::WithoutArtist => Ok((line.to_owned(), None)),
             Self::WithArtist => line
                 .rsplit_once(" - ")
-                .map(|(name, author)| (name.to_owned(), Some(author.to_owned()))),
+                .map(|(name, author)| (name.to_owned(), Some(author.to_owned())))
+                .ok_or_else(|| Error::parse_err(line, self)),
             Self::TryWithArtist => Self::WithArtist
                 .parse_line(line)
-                .or_else(|| Self::WithoutArtist.parse_line(line)),
+                .or_else(|_| Self::WithoutArtist.parse_line(line)),
         }
     }
 }
@@ -37,7 +46,10 @@ pub struct Index {
     data: Vec<(String, Option<String>)>,
 }
 impl Index {
-    pub async fn try_get_index(args: &Arguments, series: &str) -> Result<Option<Self>, Error> {
+    pub async fn try_get_index<A>(args: &Arguments, series: A) -> Result<Option<Self>, Error>
+    where
+        A: AsRef<str> + Send,
+    {
         Ok(match args.index_folder() {
             Some(folder) => Self::try_read_index(folder.clone(), series).await?,
             None => {
@@ -50,7 +62,7 @@ impl Index {
                     )
                     .unwrap_or_else(|| unreachable!());
                 match path {
-                    Some(path) => Some(Self::from_path(path, Parser::WithoutArtist).await?),
+                    Some(path) => Self::try_from_path(&path, Parser::WithoutArtist).await?,
                     None => None,
                 }
             }
@@ -58,52 +70,49 @@ impl Index {
     }
     #[allow(clippy::doc_markdown)]
     /// returns None if neither "index.txt", nor "index_full.txt" exists in `base_folder`
-    async fn try_read_index(mut base_folder: PathBuf, series: &str) -> Result<Option<Self>, Error> {
-        base_folder.push(series);
-        base_folder.push("index_full.txt");
-        if file_exists(&base_folder).await? {
-            Self::from_path(base_folder, Parser::WithArtist)
-                .await
-                .map(Some)
-        } else {
-            base_folder.set_file_name("index.txt");
-            if file_exists(&base_folder).await? {
-                Self::from_path(base_folder, Parser::WithoutArtist)
-                    .await
-                    .map(Some)
-            } else {
-                Ok(None)
+    async fn try_read_index<A>(mut folder: PathBuf, series: A) -> Result<Option<Self>, Error>
+    where
+        A: AsRef<str> + Send,
+    {
+        folder.push(series.as_ref());
+        folder.push("index_full.txt");
+        match Self::try_from_path(&folder, Parser::WithArtist).await? {
+            Some(index) => Ok(Some(index)),
+            None => {
+                folder.set_file_name("index.txt");
+                Self::try_from_path(&folder, Parser::WithoutArtist).await
             }
         }
     }
-    async fn from_path<P>(path: P, parser: Parser) -> Result<Self, Error>
+    async fn try_from_path<P>(path: P, parser: Parser) -> Result<Option<Self>, Error>
     where
-        P: AsRef<Path> + Send + Clone,
+        P: AsRef<Path> + Send + Sync,
     {
-        let path_copy_for_error = path.as_ref().to_path_buf();
-        Self::from_slice_iter(
-            tokio::fs::read_to_string(path)
-                .await
-                .map_err(|err| Error::IO(path_copy_for_error, err.kind()))?
-                .lines(),
-            parser,
-        )
+        if Self::file_exists(&path).await? {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => Self::from_slice_iter(content.lines(), parser).map(Some),
+                Err(err) => Err(Error::io_err(path, &err)),
+            }
+        } else {
+            log::trace!("couldn't find {:?}", path.as_ref().display());
+            Ok(None)
+        }
     }
-    pub fn from_slice_iter<Iter>(data: Iter, parser: Parser) -> Result<Self, Error>
+    async fn file_exists(base_folder: impl AsRef<Path> + Send + Sync) -> Result<bool, Error> {
+        tokio::fs::try_exists(&base_folder)
+            .await
+            .map_err(|err| Error::io_err(base_folder, &err))
+    }
+
+    pub fn from_slice_iter<Iter>(iter: Iter, parser: Parser) -> Result<Self, Error>
     where
         Iter: Iterator,
         Iter::Item: AsRef<str>,
     {
-        Ok(Self {
-            data: data
-                .filter(|line| !line.as_ref().trim_start().starts_with('#'))
-                .map(|line| {
-                    parser
-                        .parse_line(line.as_ref())
-                        .ok_or_else(|| Error::ParseError(line.as_ref().to_owned(), parser))
-                })
-                .collect::<Result<_, Error>>()?,
-        })
+        iter.filter(|line| !line.as_ref().trim_start().starts_with('#'))
+            .map(|line| parser.parse_line(line.as_ref()))
+            .collect::<Result<_, Error>>()
+            .map(|data| Self { data })
     }
 
     #[must_use]
@@ -128,12 +137,6 @@ impl Index {
             .get(chapter_number.nr() - 1)
             .map(|(n, a)| (n.as_str(), a.as_ref().map(std::string::String::as_str)))
     }
-}
-
-async fn file_exists(base_folder: &PathBuf) -> Result<bool, Error> {
-    tokio::fs::try_exists(base_folder)
-        .await
-        .map_err(|err| Error::IO(base_folder.clone(), err.kind()))
 }
 
 #[cfg(test)]
