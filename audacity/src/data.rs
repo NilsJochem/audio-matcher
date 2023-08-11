@@ -12,7 +12,7 @@ pub enum LableParseError {
 }
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 #[display(
-    fmt = "{}\t{}\t{:?}",
+    fmt = "{:.4}\t{:.4}\t{}",
     "start.as_secs_f64()",
     "end.as_secs_f64()",
     "name.as_ref().map_or(\"\", String::as_str)"
@@ -25,8 +25,12 @@ pub struct TimeLabel {
 
 impl TimeLabel {
     /// creates a new [`Timelabel`] with the given values
+    ///
+    /// # Panics
+    /// panics if start is after end
     #[must_use]
     pub fn new(start: Duration, end: Duration, name: Option<String>) -> Self {
+        assert!(start <= end, "start needs to be befor end");
         Self {
             start,
             end,
@@ -125,5 +129,39 @@ impl From<(f64, f64, String)> for TimeLabel {
             Duration::from_secs_f64(value.1),
             Some(value.2),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lable_to_str() {
+        assert_eq!(
+            "2.3457\t30.0000\ttest name",
+            TimeLabel::new(
+                Duration::from_secs_f64(2.3456789),
+                Duration::from_secs(30),
+                Some("test name".to_owned()),
+            )
+            .to_string()
+        );
+        assert_eq!(
+            "2.0000\t3.0000\t",
+            TimeLabel::new(Duration::from_secs(2), Duration::from_secs(3), None,).to_string()
+        );
+    }
+
+    #[test]
+    fn str_to_label() {
+        assert_eq!(
+            Ok(TimeLabel::new(
+                Duration::from_secs(3),
+                Duration::from_secs_f64(4.56789),
+                Some("some title".to_owned())
+            )),
+            "3.000000000\t4.56789\tsome title".parse()
+        );
     }
 }
