@@ -53,6 +53,53 @@ extern "C" {
     fn geteuid() -> u32;
 }
 
+pub mod data;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
+pub enum RelativeTo {
+    ProjectStart,
+    Project,
+    ProjectEnd,
+    SelectionStart,
+    Selection,
+    SelectionEnd,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    All,
+    None,
+    Stored,
+    Part {
+        start: Duration,
+        end: Duration,
+        relative_to: RelativeTo,
+    },
+}
+impl From<Selection> for command::NoOut<'_> {
+    fn from(value: Selection) -> Self {
+        match value {
+            Selection::All => command::SelectAll,
+            Selection::None => command::SelectNone,
+            Selection::Stored => command::SelRestore,
+            Selection::Part {
+                start,
+                end,
+                relative_to,
+            } => command::SelectTime {
+                start: Some(start),
+                end: Some(end),
+                relative_to,
+            },
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Save {
+    Restore,
+    Discard,
+    None,
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("{0}")]
@@ -99,23 +146,6 @@ impl PartialEq for MalformedCause {
             (Self::MissingLineBreak, Self::MissingLineBreak) => true,
             _ => false,
         }
-    }
-}
-
-pub mod data;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelativeTo {
-    ProjectStart,
-    Project,
-    ProjectEnd,
-    SelectionStart,
-    Selection,
-    SelectionEnd,
-}
-impl std::fmt::Display for RelativeTo {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{self:?}")
     }
 }
 
@@ -616,8 +646,8 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         self.write_assume_empty(command::SetLabel {
             label: i,
             text,
-            start: start.map(|it| it.as_secs_f64()),
-            end: end.map(|it| it.as_secs_f64()),
+            start,
+            end,
             selected,
         })
         .await
@@ -659,11 +689,11 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         label: TimeLabel,
         track_hint: Option<usize>,
     ) -> Result<usize, Error> {
-        self.select_time(
-            Some(label.start),
-            Some(label.end),
-            Some(RelativeTo::ProjectStart),
-        )
+        self.select(Selection::Part {
+            start: label.start,
+            end: label.end,
+            relative_to: RelativeTo::ProjectStart,
+        })
         .await?;
         self.write_assume_empty(command::AddLabel).await?;
 
@@ -716,28 +746,39 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .0)
     }
 
-    /// selects time from `start` to `end` in the selected track. If one is None keeps the current selection for it.
+    /// selects `selection` and zooms to it
     ///
-    /// Only logs a warning if all parameters are [`None`], buts returns [`Ok`]
+    /// can restore/discard/ignore the state of the selection after the opteration.
+    /// Restoring uses `SelSave`, so anyting inside will be overwritten.
     ///
     /// # Errors
     ///  - when write/send errors
-    pub async fn select_time(
+    pub async fn zoom_to(
         &mut self,
-        start: Option<Duration>,
-        end: Option<Duration>,
-        relative_to: Option<RelativeTo>,
+        selection: Selection,
+        restore_selection: Save,
     ) -> Result<(), Error> {
-        if start.is_none() && end.is_none() {
-            warn!("attempted to select_time with no values");
-            return Ok(());
+        match restore_selection {
+            Save::Restore => self.write_assume_empty(command::SelSave).await?,
+            Save::Discard | Save::None => {}
         }
-        self.write_assume_empty(command::SelectTime {
-            start: start.map(|it| it.as_secs_f64()),
-            end: end.map(|it| it.as_secs_f64()),
-            reative_to: relative_to,
-        })
-        .await
+        self.select(selection).await?;
+        self.write_assume_empty(command::ZoomSel).await?;
+
+        match restore_selection {
+            Save::Restore => self.select(Selection::Stored).await?,
+            Save::Discard => self.select(Selection::None).await?,
+            Save::None => {}
+        };
+        Ok(())
+    }
+
+    /// selects `selection`
+    ///
+    /// # Errors
+    ///  - when write/send errors
+    pub async fn select(&mut self, selection: Selection) -> Result<(), Error> {
+        self.write_assume_empty(selection.into()).await
     }
 }
 

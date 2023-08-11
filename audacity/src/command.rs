@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 pub use NoOut::*;
 pub use Out::*;
@@ -37,7 +37,7 @@ pub enum Out<'a> {
     },
 }
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone, command_derive::Command)]
+#[derive(Debug, PartialEq, Eq, Clone, command_derive::Command)]
 pub enum NoOut<'a> {
     /// Creates a new empty mono audio track.
     NewMonoTrack,
@@ -48,13 +48,23 @@ pub enum NoOut<'a> {
     /// Adds an empty time track to the project. Time tracks are used to speed up and slow down audio.
     NewTimeTrack,
 
+    /// Selects all of the audio in all of the tracks.
+    SelectAll,
+    /// Deselects all of the audio in all of the tracks.
+    SelectNone,
+    /// Stores the end points of a selection for later reuse.
+    SelSave,
+    /// Retrieves the end points of a previously stored selection.
+    SelRestore,
     /// Extends the current selection up and/or down into all tracks in the project
     SelAllTracks,
     /// Modifies the temporal selection. Start and End are time. FromEnd allows selection from the end, which is handy to fade in and fade out a track.
     SelectTime {
-        start: Option<f64>,
-        end: Option<f64>,
-        reative_to: Option<crate::RelativeTo>,
+        #[command(display_with = "&start.as_secs_f64()")]
+        start: Option<Duration>,
+        #[command(display_with = "&end.as_secs_f64()")]
+        end: Option<Duration>,
+        relative_to: crate::RelativeTo,
     },
     /// Modifies which tracks are selected. First and Last are track numbers. High and Low are for spectral selection. The Mode parameter allows complex selections, e.g adding or removing tracks from the current selection.
     SelectTracks {
@@ -73,8 +83,10 @@ pub enum NoOut<'a> {
     SetLabel {
         label: usize,
         text: Option<&'a str>,
-        start: Option<f64>,
-        end: Option<f64>,
+        #[command(display_with = "&start.as_secs_f64()")]
+        start: Option<Duration>,
+        #[command(display_with = "&end.as_secs_f64()")]
+        end: Option<Duration>,
         selected: Option<bool>,
     },
     /// Brings up a dialog box showing all of your labels in a keyboard-accessible tabular view. Handy buttons in the dialog let you insert or delete a label, or import and export labels to a file. See Labels Editor for more details.

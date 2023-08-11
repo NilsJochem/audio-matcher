@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use crate::args::{parse_duration, ConfigArgs, Inputs, OutputLevel};
 use clap::Parser;
@@ -118,20 +121,19 @@ impl Arguments {
 
     #[allow(dead_code)]
     #[must_use]
-    pub fn tmp_path(&self) -> PathBuf {
-        let mut tmp_path = self.parameter.audio_paths.first().unwrap().clone(); // TODO find common value
-        tmp_path.pop();
-        tmp_path
+    pub fn tmp_path(&self) -> &Path {
+        self.parameter
+            .audio_paths
+            .first() // TODO find common value
+            .expect("no paths")
+            .parent()
+            .expect("path without parent")
     }
     #[allow(dead_code)]
     fn label_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.parameter
             .audio_paths
             .iter()
-            .cloned()
-            .map(|mut label_path| {
-                label_path.set_extension("txt");
-                label_path
-            })
+            .map(|label_path| label_path.with_extension("txt"))
     }
 }

@@ -1,6 +1,6 @@
 use audacity::AudacityApi;
 use log::{debug, trace};
-use std::{path::PathBuf, time::Duration};
+use std::{path::Path, time::Duration};
 use thiserror::Error;
 use tokio::task::JoinSet;
 
@@ -81,16 +81,16 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         if !args.skip_load() {
             prepare_project(audacity_api, audio_path, &label_path).await?;
         }
+        audacity_api
+            .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+            .await?;
         let _ = args
             .always_answer()
             .input("press enter when you are ready to start renaming", None);
 
-        let (patterns, tags) = rename_labels(args, audacity_api).await?;
+        let (patterns, tags, nr_pad) = rename_labels(args, audacity_api).await?;
         adjust_labels(args, audacity_api).await?;
 
-        let _ = args
-            .always_answer()
-            .input("press enter when you are ready to finish", None);
         audacity_api
             .export_all_labels_to(label_path, args.dry_run())
             .await?;
@@ -108,7 +108,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 tag.save_changes(false)?;
             }
         }
-        move_results(patterns, args.tmp_path(), args).await?;
+        move_results(patterns, nr_pad, args.tmp_path(), args).await?;
 
         if !args.skip_load() {
             audacity_api
@@ -122,8 +122,8 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
 
 async fn prepare_project(
     audacity: &mut AudacityApi,
-    audio_path: &PathBuf,
-    label_path: &PathBuf,
+    audio_path: impl AsRef<Path> + Send,
+    label_path: impl AsRef<Path> + Send + Sync,
 ) -> Result<(), audacity::Error> {
     trace!("opened audacity");
     if audacity.get_track_info().await?.is_empty() {
@@ -145,22 +145,23 @@ const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
 async fn rename_labels(
     args: &Arguments,
     audacity: &mut AudacityApi,
-) -> Result<(Vec<Pattern>, Vec<TaggedFile>), Error> {
+) -> Result<(Vec<Pattern>, Vec<TaggedFile>, Option<usize>), Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
 
-    let mut patterns = Vec::new();
-    let mut tags = Vec::new();
-    let mut i = 0;
     let series = args
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
-
     let index = crate::worker::index::Index::try_get_index(args, &series).await?;
     let index_len = index.as_ref().map(index::Index::len);
-    let mut expected_next_chapter_number: Option<ChapterNumber> = None;
+    let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
 
+    let mut patterns = Vec::new();
+    let mut tags = Vec::new();
+
+    let mut expected_next_chapter_number: Option<ChapterNumber> = None;
+    let mut i = 0;
     while i < labels.len() {
         let chapter_number = args
             .always_answer()
@@ -194,9 +195,10 @@ async fn rename_labels(
         for j in 0..number {
             let name = build_timelabel_name(&series, &chapter_number, j + 1, &chapter_name);
 
-            let mut path = args.tmp_path();
-            path.push(format!("{name}.mp3"));
+            let mut path = args.tmp_path().to_path_buf();
+            path.set_file_name(format!("{name}.mp3"));
             let tag = tags.push_return(TaggedFile::new_empty(path));
+
             tag.set::<Title>(Some(&format!("{chapter_name} {}", j + 1)));
             tag.set::<Album>(Some(&series));
             tag.set::<Track>(Some((j + 1) as u32));
@@ -217,7 +219,7 @@ async fn rename_labels(
         i += number;
         patterns.push((series.clone(), chapter_number, chapter_name));
     }
-    Ok((patterns, tags))
+    Ok((patterns, tags, nr_pad))
 }
 
 pub async fn adjust_labels(
@@ -233,41 +235,44 @@ pub async fn adjust_labels(
             crate::iter::State::End(b) => (b.end, b.end + Duration::from_secs(10)),
         };
         audacity
-            .select_time(
-                Some(prev_end - Duration::from_secs(10)),
-                Some(next_start + Duration::from_secs(10)),
-                Some(audacity::RelativeTo::ProjectStart),
+            .zoom_to(
+                audacity::Selection::Part {
+                    start: prev_end - Duration::from_secs(10),
+                    end: next_start + Duration::from_secs(10),
+                    relative_to: audacity::RelativeTo::ProjectStart,
+                },
+                audacity::Save::Discard,
             )
             .await?;
 
-        audacity
-            .write_assume_empty(audacity::command::ZoomSel)
-            .await?;
         let _ = args.always_answer().input(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
             None,
         );
     }
     audacity
-        .write_assume_empty(audacity::command::ZoomNormal)
-        .await?;
-    Ok(())
+        .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+        .await
 }
 
 async fn move_results(
     patterns: Vec<Pattern>,
-    tmp_path: PathBuf,
+    nr_padding: Option<usize>,
+    tmp_path: impl AsRef<Path> + Send,
     args: &Arguments,
 ) -> Result<(), MoveError> {
     let mut handles = JoinSet::new();
     for (series, nr, chapter) in patterns {
-        let mut dir = tmp_path.clone();
+        let mut dir = tmp_path.as_ref().to_path_buf();
         dir.push("current");
         dir.push(&series);
-        dir.push(format!("{nr} {chapter}"));
+        dir.set_file_name(format!(
+            "{} {chapter}",
+            nr.as_display(nr_padding.map(|it| (it, true)), false)
+        ));
 
-        let mut glob_path = tmp_path.clone();
-        glob_path.push(format!("{series} {nr}.* {chapter}.mp3"));
+        let mut glob_path = tmp_path.as_ref().to_path_buf();
+        glob_path.set_file_name(format!("{series} {nr}.* {chapter}.mp3"));
         handles.spawn(move_result(
             dir,
             glob_path
@@ -282,19 +287,23 @@ async fn move_results(
     }
     Ok(())
 }
-async fn move_result(dir: PathBuf, glob_pattern: String, dry_run: bool) -> Result<(), MoveError> {
+async fn move_result(
+    dir: impl AsRef<Path> + Send + Sync,
+    glob_pattern: impl AsRef<str> + Send,
+    dry_run: bool,
+) -> Result<(), MoveError> {
     if dry_run {
-        println!("create directory {dir:?}");
-        println!("moving {glob_pattern:?} to {dir:?}");
+        println!("create directory {:?}", dir.as_ref());
+        println!("moving {:?} to {:?}", glob_pattern.as_ref(), dir.as_ref());
         return Ok(());
     }
     tokio::fs::create_dir_all(&dir).await?;
-    trace!("create directory {dir:?}");
+    trace!("create directory {:?}", dir.as_ref());
 
     let mut handles = JoinSet::new();
-    for f in glob::glob(&glob_pattern)? {
+    for f in glob::glob(glob_pattern.as_ref())? {
         let f = f?;
-        let mut target = dir.clone();
+        let mut target = dir.as_ref().to_path_buf();
         target.push(f.file_name().unwrap());
         trace!("moving {f:?} to {target:?}");
         handles.spawn(async move {
@@ -319,7 +328,7 @@ fn request_next_chapter_name(args: &Arguments) -> String {
         .input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
 }
 
-fn read_number(input: Inputs, msg: &str, default: Option<usize>) -> usize {
+fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> usize {
     input
         .try_input(msg, default, |rin| rin.parse().ok())
         .expect("gib was vern\u{fc}nftiges ein")
