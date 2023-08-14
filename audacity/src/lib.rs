@@ -701,26 +701,29 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             Some(v) => v,
             None => self.get_focused_track().await?,
         };
-
-        let labels = self.get_label_info().await?;
-        let id_offset: usize = labels
-            .iter()
-            .filter(|(t_nr, _)| t_nr < &&track_hint)
-            .map(|(_, l)| l.len())
-            .sum();
-
-        let new_labels = labels.get(&track_hint).unwrap();
-        let new_id = id_offset
-            + new_labels
+        let new_id = {
+            let labels = self.get_label_info().await?;
+            let id_offset: usize = labels
                 .iter()
-                .enumerate()
-                .find(|(_, candidate)| {
-                    candidate.name.is_none()
-                        && is_near_to(candidate.start, label.start, Duration::from_millis(10))
-                        && is_near_to(candidate.end, label.end, Duration::from_millis(10))
-                })
-                .unwrap_or_else(|| panic!("not enought labels in track {track_hint}"))
-                .0;
+                .filter(|(t_nr, _)| t_nr < &&track_hint)
+                .map(|(_, l)| l.len())
+                .sum();
+
+            let new_labels = labels.get(&track_hint).unwrap();
+            id_offset
+                + new_labels
+                    .iter()
+                    .enumerate()
+                    .find(|(_, candidate)| {
+                        candidate.name.is_none()
+                            && is_near_to(candidate.start, label.start, Duration::from_millis(50))
+                            && is_near_to(candidate.end, label.end, Duration::from_millis(50))
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("not enought labels in track {track_hint}, can't find {label:?}")
+                    })
+                    .0
+        };
 
         self.set_label(
             new_id,
