@@ -39,6 +39,29 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
     };
 
     for main_file in &args.within {
+        let out_path = args
+            .out_file
+            .out_file
+            .clone()
+            .or_else(|| (!args.out_file.no_out).then(|| auto_out_file(main_file)));
+        let out_path = if out_path.as_ref().is_some_and(|path| path.exists()) {
+            if args.always_answer.ask_consent(format!(
+                "Ausgabe Datei {:?} existiert bereits, m\u{f6}chtest du skippen",
+                out_path
+                    .as_ref()
+                    .and_then(|it| it.file_name())
+                    .unwrap_or_else(|| panic!("couldn't get filename of {out_path:?}"))
+            )) {
+                continue;
+            }
+            out_path.filter(|_| {
+                args.always_answer
+                    .ask_consent("soll die existierende Datei \u{fc}berschrieben werden")
+            })
+        } else {
+            out_path
+        };
+
         // TODO only fail this loop iteration
         log!(level, "preparing data of '{}'", main_file.display());
 
@@ -61,13 +84,7 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
         print_offsets(&peaks, sr);
         debug!("found peaks {:#?}", &peaks);
 
-        if let Some(out_path) = args
-            .out_file
-            .out_file
-            .clone()
-            .or_else(|| (!args.out_file.no_out).then(|| auto_out_file(main_file.clone())))
-            .filter(|path| args.should_overwrite_if_exists(path))
-        {
+        if let Some(out_path) = out_path {
             trace!("writing result to '{}'", out_path.display());
             TimeLabel::write(
                 timelabel_from_peaks(peaks.iter(), sr, Duration::from_secs(7), "Segment #"),
@@ -81,9 +98,8 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
     Ok(())
 }
 
-fn auto_out_file(mut path: std::path::PathBuf) -> std::path::PathBuf {
-    path.set_extension("txt");
-    path
+fn auto_out_file(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    path.as_ref().with_extension("txt")
 }
 
 fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {

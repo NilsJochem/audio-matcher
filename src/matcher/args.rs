@@ -1,5 +1,4 @@
 use clap::{Args, Parser};
-use log::error;
 use std::{path::PathBuf, time::Duration};
 
 use crate::args::{parse_duration, Inputs, OutputLevel};
@@ -71,18 +70,5 @@ impl Arguments {
     #[must_use]
     pub fn distance(&self) -> Duration {
         self.distance.unwrap_or(Duration::from_secs(8 * 60))
-    }
-    #[must_use]
-    pub fn should_overwrite_if_exists(&self, path: &std::path::PathBuf) -> bool {
-        let out = !std::path::Path::new(path).exists() || {
-            self.always_answer.ask_consent(format!(
-                "file '{}' already exists, overwrite",
-                path.display()
-            ))
-        };
-        if !out {
-            error!("won't overwrite '{}'", path.display());
-        }
-        out
     }
 }
