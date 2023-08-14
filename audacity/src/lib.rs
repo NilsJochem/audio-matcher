@@ -99,6 +99,24 @@ pub enum Save {
     Discard,
     None,
 }
+pub enum Hint {
+    Track(usize),
+    LabelNr(usize),
+}
+impl Hint {
+    const fn try_get_label_nr(&self) -> Option<usize> {
+        match self {
+            Self::Track(_) => None,
+            Self::LabelNr(nr) => Some(*nr),
+        }
+    }
+    const fn try_get_track(&self) -> Option<usize> {
+        match self {
+            Self::Track(value) => Some(*value),
+            Self::LabelNr(_) => None,
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -592,10 +610,15 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         track_name: Option<impl AsRef<str> + Send>,
     ) -> Result<(), Error> {
         let nr = self.add_label_track(track_name).await?;
-        for label in TimeLabel::read(&path)
+        let offset = Self::get_label_offset(&self.get_label_info().await?, nr);
+        for (label_nr, label) in TimeLabel::read(&path)
             .map_err(|err| Error::PathErr(path.as_ref().to_path_buf(), err))?
+            .into_iter()
+            .enumerate()
         {
-            let _ = self.add_label(label, Some(nr)).await?;
+            let _ = self
+                .add_label(label, Some(Hint::LabelNr(offset + label_nr)))
+                .await?;
         }
         Ok(())
     }
@@ -672,7 +695,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             focused: Some(true),
         })
         .await?;
-        self.add_label(label, Some(track_nr)).await
+        self.add_label(label, Some(Hint::Track(track_nr))).await
     }
     /// Creates a new label on track `track_nr` from `start` to `end` with Some(text).
     ///
@@ -687,7 +710,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn add_label(
         &mut self,
         label: TimeLabel,
-        track_hint: Option<usize>,
+        hint: Option<Hint>,
     ) -> Result<usize, Error> {
         self.select(Selection::Part {
             start: label.start,
@@ -697,21 +720,17 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         .await?;
         self.write_assume_empty(command::AddLabel).await?;
 
-        let track_hint = match track_hint {
-            Some(v) => v,
-            None => self.get_focused_track().await?,
-        };
-        let new_id = {
-            let labels = self.get_label_info().await?;
-            let id_offset: usize = labels
-                .iter()
-                .filter(|(t_nr, _)| t_nr < &&track_hint)
-                .map(|(_, l)| l.len())
-                .sum();
+        let new_id = match hint.as_ref().and_then(Hint::try_get_label_nr) {
+            Some(nr) => nr,
+            None => {
+                let track_hint = match hint.as_ref().and_then(Hint::try_get_track) {
+                    Some(v) => v,
+                    None => self.get_focused_track().await?,
+                };
+                let labels = self.get_label_info().await?;
 
-            let new_labels = labels.get(&track_hint).unwrap();
-            id_offset
-                + new_labels
+                let new_labels = labels.get(&track_hint).unwrap();
+                let var_name = new_labels
                     .iter()
                     .enumerate()
                     .find(|(_, candidate)| {
@@ -722,7 +741,11 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
                     .unwrap_or_else(|| {
                         panic!("not enought labels in track {track_hint}, can't find {label:?}")
                     })
-                    .0
+                    .0;
+
+                let id_offset: usize = Self::get_label_offset(&labels, track_hint);
+                id_offset + var_name
+            }
         };
 
         self.set_label(
@@ -735,6 +758,13 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         .await?;
 
         Ok(new_id)
+    }
+    fn get_label_offset(labels: &HashMap<usize, Vec<TimeLabel>>, track_hint: usize) -> usize {
+        labels
+            .iter()
+            .filter(|(t_nr, _)| t_nr < &&track_hint)
+            .map(|(_, l)| l.len())
+            .sum()
     }
 
     async fn get_focused_track(&mut self) -> Result<usize, Error> {
