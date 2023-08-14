@@ -16,7 +16,10 @@ use log::{debug, warn};
 use regex::Regex;
 use thiserror::Error;
 
-use crate::matcher::{mp3_reader::SampleType, start_as_duration};
+use crate::{
+    extensions::vec::FindOrPush,
+    matcher::{mp3_reader::SampleType, start_as_duration},
+};
 
 #[must_use]
 pub fn build_timelabel_name(
@@ -89,36 +92,33 @@ impl Archive {
                     continue;
                 };
 
-                let ch_nr = ChapterNumber::new(
-                    captures.name("nr").unwrap().as_str().parse().unwrap(),
-                    !captures.name("extra").unwrap().is_empty(),
-                );
-                let series_name = captures.name("series").unwrap().as_str();
-                let chapter_name = captures.name("chapter").map(|it| it.as_str());
-
-                let series = if let Some(it) = archive.get_mut_series_by_name(series_name) {
-                    it
-                } else {
-                    archive.data.push(Series::new(series_name.to_owned()));
-                    unsafe { archive.data.last_mut().unwrap_unchecked() }
+                let series = {
+                    let series_name = captures.name("series").unwrap().as_str();
+                    archive.data.find_or_push_else(
+                        || Series::new(series_name.to_owned()),
+                        |it| it.name == series_name,
+                    )
                 };
 
-                let chapter = if let Some(it) = series.chapters.iter_mut().find(|it| it.nr == ch_nr)
-                {
-                    it
-                } else {
-                    series.chapters.push(Chapter::new(
-                        ch_nr,
-                        chapter_name.map(std::borrow::ToOwned::to_owned),
-                    ));
-                    unsafe { series.chapters.last_mut().unwrap_unchecked() }
+                let chapter = {
+                    let ch_nr = ChapterNumber::new(
+                        captures.name("nr").unwrap().as_str().parse().unwrap(),
+                        !captures.name("extra").unwrap().is_empty(),
+                    );
+                    series.chapters.find_or_push_else(
+                        || {
+                            let chapter_name = captures.name("chapter").map(|it| it.as_str());
+                            Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned))
+                        },
+                        |it| it.nr == ch_nr,
+                    )
                 };
 
-                if let Some(part) = chapter.parts.get_mut(&source) {
-                    *part += 1;
-                } else {
-                    chapter.parts.insert(source.clone(), 1);
-                }
+                chapter
+                    .parts
+                    .entry(source.clone())
+                    .and_modify(|part| *part += 1)
+                    .or_insert(1);
             }
         }
         archive.data.sort_by(|a, b| Ord::cmp(&a.name, &b.name));
@@ -183,10 +183,6 @@ impl Archive {
         }
     }
 
-    #[must_use]
-    pub fn get_mut_series_by_name(&mut self, identifier: &str) -> Option<&mut Series> {
-        self.data.iter_mut().find(|x| x.name == identifier)
-    }
     #[must_use]
     pub fn get_series_by_name(&self, identifier: &str) -> Option<&Series> {
         self.data.iter().find(|x| x.name == identifier)
