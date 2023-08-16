@@ -51,7 +51,7 @@ impl Index {
         A: AsRef<str> + Send,
     {
         Ok(match args.index_folder() {
-            Some(folder) => Self::try_read_index(folder.clone(), series).await?,
+            Some(folder) => Self::try_read_index(folder.to_owned(), series).await?,
             None => {
                 let path = args
                     .always_answer()

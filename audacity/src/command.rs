@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::Path, time::Duration};
 
 pub use NoOut::*;
 pub use Out::*;
@@ -165,7 +165,7 @@ pub enum NoOut<'a> {
 
     Screenshot {
         #[command(display_with = "&path.display()")]
-        path: &'a PathBuf,
+        path: &'a Path,
         #[command(defaults = "CaptureWhat::Window")]
         capture_what: CaptureWhat,
         #[command(defaults = "Background::None")]
@@ -187,14 +187,14 @@ pub enum NoOut<'a> {
     ExportMultiple,
     Import2 {
         #[command(display_with = "&filename.display()")]
-        filename: &'a PathBuf,
+        filename: &'a Path,
     },
     Export2 {
         #[command(
             display_with = "&filename.display()",
-            defaults = "&PathBuf::from(\"exported.wav\")"
+            defaults = "std::path::PathBuf::from(\"exported.wav\").as_path()"
         )]
-        filename: &'a PathBuf,
+        filename: &'a Path,
         #[command(defaults = "Channels::Mono")]
         num_channels: Channels,
     },
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(
             "Export2: Filename=\"/test path.exe\" NumChannels=2",
             Export2 {
-                filename: &PathBuf::from("/test path.exe"),
+                filename: &std::path::PathBuf::from("/test path.exe"),
                 num_channels: Channels::Stereo
             }
             .to_string()

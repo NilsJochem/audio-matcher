@@ -87,11 +87,12 @@ impl Arguments {
         &self.config.genre
     }
     #[must_use]
-    pub fn index_folder(&self) -> Option<&PathBuf> {
+    pub fn index_folder(&self) -> Option<&Path> {
         self.parameter
             .index_folder
             .as_ref()
             .or(self.config.index_folder.as_ref())
+            .map(std::path::PathBuf::as_path)
     }
 
     #[must_use]

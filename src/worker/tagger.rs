@@ -1,5 +1,5 @@
 use id3::{Tag, TagLike};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 macro_rules! field {
     ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
@@ -155,8 +155,8 @@ impl TaggedFile {
 
     #[must_use]
     /// a reference to the current path of this file
-    pub const fn path(&self) -> &PathBuf {
-        &self.path
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
     /// changes the internal file path in case the file was moved externally
     pub fn file_moved(&mut self, new_path: PathBuf) {
