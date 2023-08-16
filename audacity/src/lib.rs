@@ -184,9 +184,9 @@ impl Default for Config {
 
 #[derive(Debug)]
 #[must_use]
-pub struct AudacityApiGeneric<W: AsyncWrite, R: AsyncRead> {
-    write_pipe: W,
-    read_pipe: BufReader<R>,
+pub struct AudacityApiGeneric<Writer, Reader> {
+    write_pipe: Writer,
+    read_pipe: BufReader<Reader>,
     timer: Option<Duration>,
 }
 

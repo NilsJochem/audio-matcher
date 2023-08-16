@@ -343,8 +343,8 @@ impl CorrelateAlgo<SampleType> for LibConvolve {
     }
 }
 
-struct MyR2C2C<R: FftNum>(Arc<dyn RealToComplex<R>>, Arc<dyn ComplexToReal<R>>);
-impl<R: FftNum> MyR2C2C<R> {
+struct MyR2C2R<Real>(Arc<dyn RealToComplex<Real>>, Arc<dyn ComplexToReal<Real>>);
+impl<R: FftNum> MyR2C2R<R> {
     fn new(planner: &mut RealFftPlanner<R>, len: usize) -> Self {
         Self(
             Arc::clone(&planner.plan_fft_forward(len)),
@@ -424,7 +424,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
         if !self.use_conjugation {
             sample_and_zeros.reverse();
         }
-        let r2c2r = MyR2C2C::new(&mut self.planner.lock().unwrap(), pad_len);
+        let r2c2r = MyR2C2R::new(&mut self.planner.lock().unwrap(), pad_len);
 
         let mut fft_a = r2c2r.fft(&mut within_and_zeros)?;
         let fft_b = r2c2r.fft(&mut sample_and_zeros)?;

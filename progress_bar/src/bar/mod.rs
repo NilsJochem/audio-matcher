@@ -27,11 +27,11 @@ impl<const N: usize> Bar<N> {
     }
 }
 
-pub struct Progress<Iter, const N: usize, B: Bound> {
+pub struct Progress<Iter, const N: usize, B> {
     iter: Iter,
     holder: ProgressBarHolder<N, B>,
 }
-pub struct ProgressBarHolder<const N: usize, B: Bound> {
+pub struct ProgressBarHolder<const N: usize, B> {
     bar: Bar<N>,
     i: [usize; N],
     start: Option<Instant>,
@@ -118,7 +118,7 @@ impl<Iter: Iterator, const N: usize> Progress<Iter, N, Bounded> {
     }
 }
 
-impl<const N: usize, Iter: Iterator, B: Bound> Progress<Iter, N, B> {
+impl<const N: usize, Iter: Iterator, B> Progress<Iter, N, B> {
     pub fn get_iter(self) -> (Iter, ProgressBarHolder<N, B>) {
         self.into()
     }
@@ -126,14 +126,12 @@ impl<const N: usize, Iter: Iterator, B: Bound> Progress<Iter, N, B> {
         self.into()
     }
 }
-impl<const N: usize, Iter, B: Bound> From<Progress<Iter, N, B>>
-    for (Iter, ProgressBarHolder<N, B>)
-{
+impl<const N: usize, Iter, B> From<Progress<Iter, N, B>> for (Iter, ProgressBarHolder<N, B>) {
     fn from(val: Progress<Iter, N, B>) -> Self {
         (val.iter, val.holder)
     }
 }
-impl<const N: usize, Iter, B: Bound> From<Progress<Iter, N, B>>
+impl<const N: usize, Iter, B> From<Progress<Iter, N, B>>
     for (Iter, Arc<Mutex<ProgressBarHolder<N, B>>>)
 {
     fn from(val: Progress<Iter, N, B>) -> Self {
@@ -154,11 +152,11 @@ impl<Iter: Iterator, B: Bound> Iterator for Progress<Iter, 1, B> {
 }
 
 #[must_use]
-pub struct Callback<const N: usize, B: Bound> {
+pub struct Callback<const N: usize, B> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
 }
-impl<const N: usize, B: Bound> Callback<N, B> {
-    pub(crate) fn new(holder: &Arc<Mutex<ProgressBarHolder<N, B>>>) -> Self {
+impl<const N: usize, B> Callback<N, B> {
+    fn new(holder: &Arc<Mutex<ProgressBarHolder<N, B>>>) -> Self {
         Self {
             progress: Arc::clone(holder),
         }
@@ -186,7 +184,7 @@ impl<const N: usize, B: Bound> Callback<N, B> {
 }
 
 #[must_use]
-pub struct Once<const N: usize, B: Bound> {
+pub struct Once<const N: usize, B> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
     i: usize,
 }
@@ -207,7 +205,7 @@ impl<const N: usize, B: Bound> Once<N, B> {
 }
 
 #[must_use]
-pub struct Mut<const N: usize, B: Bound> {
+pub struct Mut<const N: usize, B> {
     progress: Arc<Mutex<ProgressBarHolder<N, B>>>,
     i: usize,
 }
