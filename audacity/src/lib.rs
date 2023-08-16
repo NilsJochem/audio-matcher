@@ -99,6 +99,7 @@ pub enum Save {
     Discard,
     None,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hint {
     Track(usize),
     LabelNr(usize),
@@ -133,17 +134,6 @@ pub enum Error {
     #[error("timeout after {0:?}")]
     Timeout(Duration),
 }
-impl PartialEq for Error {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::MissingOK(l0), Self::MissingOK(r0))
-            | (Self::AudacityErr(l0), Self::AudacityErr(r0)) => l0 == r0,
-            (Self::Timeout(l0), Self::Timeout(r0)) => l0 == r0,
-            (Self::MalformedResult(l0, l1), Self::MalformedResult(r0, r1)) => l0 == r0 && l1 == r1,
-            _ => false,
-        }
-    }
-}
 
 #[derive(Error, Debug)]
 pub enum MalformedCause {
@@ -155,16 +145,6 @@ pub enum MalformedCause {
     BadPingResult(String),
     #[error("missing line break")]
     MissingLineBreak,
-}
-impl PartialEq for MalformedCause {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Own(l0), Self::Own(r0)) => l0 == r0,
-            (Self::BadPingResult(l0), Self::BadPingResult(r0)) => l0 == r0,
-            (Self::MissingLineBreak, Self::MissingLineBreak) => true,
-            _ => false,
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -1059,26 +1039,32 @@ mod tests {
     async fn read_mulitline_ok() {
         let msg = "some multiline\n Message".to_owned();
         let mut api = new_mocked_api([ExpectAction::ReadOk(&msg)].into_iter(), false).await;
-        assert_eq!(Ok(msg), api.read(false).await);
+        assert_eq!(msg, api.read(false).await.unwrap());
     }
     #[tokio::test]
     async fn read_mulitline_failed() {
         let msg = "some multiline\n Message".to_owned();
         let mut api = new_mocked_api([ExpectAction::ReadFail(&msg)].into_iter(), false).await;
 
-        assert_eq!(Err(Error::AudacityErr(msg)), api.read(false).await);
+        assert!(matches!(
+            api.read(false).await.unwrap_err(),
+            Error::AudacityErr(e) if e==msg
+        ));
     }
     #[tokio::test]
     async fn read_mulitline_ok_windows_line_ending() {
         let msg = "some multiline\n Message".to_owned();
         let mut api = new_mocked_api([ExpectAction::ReadOk(&msg)].into_iter(), true).await;
-        assert_eq!(Ok(msg), api.read(false).await);
+        assert_eq!(msg, api.read(false).await.unwrap());
     }
     #[tokio::test]
     async fn read_mulitline_failed_windows_line_ending() {
         let msg = "some multiline\n Message".to_owned();
         let mut api = new_mocked_api([ExpectAction::ReadFail(&msg)].into_iter(), true).await;
 
-        assert_eq!(Err(Error::AudacityErr(msg)), api.read(false).await);
+        assert!(matches!(
+            api.read(false).await.unwrap_err(),
+            Error::AudacityErr(e) if e==msg
+        ));
     }
 }
