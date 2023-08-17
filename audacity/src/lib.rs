@@ -482,14 +482,8 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
                 format: command::OutputFormat::Json,
             })
             .await?;
-        serde_json::from_str::<Vec<result::RawTrackInfo>>(&json)
-            .map_err(|e| Error::MalformedResult(json.clone(), e.into()))?
-            .into_iter()
-            .map(|it| {
-                it.try_into()
-                    .map_err(|e: result::Error| Error::MalformedResult(json.clone(), e.into()))
-            })
-            .collect()
+        serde_json::from_str::<Vec<result::TrackInfo>>(&json)
+            .map_err(|e| Error::MalformedResult(json.clone(), e.into()))
     }
     /// Selects the tracks with position `tracks`.
     ///
@@ -811,7 +805,7 @@ async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
 }
 
 pub mod result {
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
     use thiserror::Error;
 
     #[derive(Debug, Error, PartialEq, Eq)]
@@ -822,51 +816,15 @@ pub mod result {
         UnkownKind(String),
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
-    pub(super) struct RawTrackInfo {
-        name: String,
-        focused: u8,
-        selected: u8,
-        kind: String,
-        start: Option<f64>,
-        end: Option<f64>,
-        pan: Option<usize>,
-        gain: Option<f64>,
-        channels: Option<usize>,
-        solo: Option<u8>,
-        mute: Option<u8>,
-    }
-    impl TryFrom<RawTrackInfo> for TrackInfo {
-        type Error = Error;
-
-        fn try_from(value: RawTrackInfo) -> Result<Self, Self::Error> {
-            Ok(Self {
-                name: value.name,
-                focused: value.focused == 1,
-                selected: value.selected == 1,
-                kind: match value.kind.as_str() {
-                    "wave" => Kind::Wave {
-                        start: value.start.ok_or(Error::MissingField("wave.start"))?,
-                        end: value.end.ok_or(Error::MissingField("wave.end"))?,
-                        pan: value.pan.ok_or(Error::MissingField("wave.pan"))?,
-                        gain: value.gain.ok_or(Error::MissingField("wave.gain"))?,
-                        channels: value.channels.ok_or(Error::MissingField("wave.channels"))?,
-                        solo: value.solo.ok_or(Error::MissingField("wave.solo"))? == 1,
-                        mute: value.mute.ok_or(Error::MissingField("wave.mute"))? == 1,
-                    },
-                    "label" => Kind::Label,
-                    "time" => Kind::Time,
-                    _ => return Err(Error::UnkownKind(value.kind)),
-                },
-            })
-        }
-    }
-    #[derive(Debug)]
+    #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     pub struct TrackInfo {
         pub name: String,
+        #[serde(deserialize_with = "bool_from_int")]
         pub focused: bool,
+        #[serde(deserialize_with = "bool_from_int")]
         pub selected: bool,
+        #[serde(flatten)]
         pub kind: Kind,
     }
     impl PartialEq for TrackInfo {
@@ -875,20 +833,39 @@ pub mod result {
         }
     }
 
-    #[derive(Debug, PartialEq)]
-    #[allow(dead_code)]
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(tag = "kind")]
     pub enum Kind {
+        #[serde(rename = "wave")]
         Wave {
             start: f64,
             end: f64,
             pan: usize,
             gain: f64,
             channels: usize,
+            #[serde(deserialize_with = "bool_from_int")]
             solo: bool,
+            #[serde(deserialize_with = "bool_from_int")]
             mute: bool,
         },
+        #[serde(rename = "label")]
         Label,
+        #[serde(rename = "time")]
         Time,
+    }
+    /// Deserialize 0 => false, 1 => true
+    fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match u8::deserialize(deserializer)? {
+            1 => Ok(true),
+            0 => Ok(false),
+            other => Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Unsigned(other as u64),
+                &"0 or 1",
+            )),
+        }
     }
 }
 
