@@ -153,7 +153,7 @@ async fn rename_labels(
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
     let index = crate::worker::index::Index::try_get_index(args, &series).await?;
-    let index_len = index.as_ref().map(index::Index::len);
+    let index_len = index.as_ref().map(index::Index::main_len);
     let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
 
     let mut patterns = Vec::new();
@@ -177,9 +177,11 @@ async fn rename_labels(
         expected_next_chapter_number = Some(chapter_number.next());
 
         let index_value = index.as_ref().map(|index| index.get(chapter_number));
-        let artist = index_value.and_then(|it| it.1);
-        let chapter_name =
-            index_value.map_or_else(|| request_next_chapter_name(args), |(n, _)| n.to_owned());
+        let artist = index_value.as_ref().and_then(|it| it.artist.as_ref());
+        let chapter_name = index_value.as_ref().map_or_else(
+            || request_next_chapter_name(args),
+            |it| it.title.as_ref().to_owned(),
+        );
 
         let expected_number = Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i));
         let number = read_number(
