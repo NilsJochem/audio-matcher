@@ -2,13 +2,12 @@ use audacity::AudacityApi;
 use log::{debug, trace};
 use std::{path::Path, time::Duration};
 use thiserror::Error;
-use tokio::task::JoinSet;
 
 use crate::{
     archive::data::{build_timelabel_name, ChapterNumber},
     args::Inputs,
     extensions::vec::PushReturn,
-    iter::CloneIteratorExt,
+    iter::{CloneIteratorExt, FutIterExt},
     worker::tagger::{
         Album, Artist, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track,
     },
@@ -258,69 +257,70 @@ pub async fn adjust_labels(
 async fn move_results(
     patterns: Vec<Pattern>,
     nr_padding: Option<usize>,
-    tmp_path: impl AsRef<Path> + Send,
+    tmp_path: impl AsRef<Path> + Send + Sync,
     args: &Arguments,
 ) -> Result<(), MoveError> {
-    let mut handles = JoinSet::new();
-    for (series, nr, chapter) in patterns {
-        let mut dir = tmp_path.as_ref().to_path_buf();
-        dir.push("current");
-        dir.push(&series);
-        dir.push(format!(
-            "{} {chapter}",
-            nr.as_display(nr_padding.map(|it| (it, true)), false)
-        ));
+    patterns
+        .into_iter()
+        .map(|(series, nr, chapter)| {
+            let mut dir = tmp_path.as_ref().to_path_buf();
+            dir.push("current");
+            dir.push(&series);
+            dir.push(format!(
+                "{} {chapter}",
+                nr.as_display(nr_padding.map(|it| (it, true)), false)
+            ));
 
-        let mut glob_path = tmp_path.as_ref().to_path_buf();
-        glob_path.set_file_name(format!("{series} {nr}.* {chapter}.mp3"));
-        handles.spawn(move_result(
-            dir,
-            glob_path
-                .to_str()
-                .expect("glob_path contained non UTF-8 char")
-                .to_owned(),
-            args.dry_run(),
-        ));
-    }
-    while let Some(result) = handles.join_next().await {
-        result??;
-    }
-    Ok(())
+            let mut glob_path = tmp_path.as_ref().to_path_buf();
+            glob_path.push(format!("{series} {nr}.* {chapter}.mp3"));
+            move_result(
+                dir,
+                glob_path
+                    .to_str()
+                    .expect("glob_path contained non UTF-8 char")
+                    .to_owned(),
+                args.dry_run(),
+            )
+        })
+        .join_all()
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()
 }
 async fn move_result(
     dir: impl AsRef<Path> + Send + Sync,
-    glob_pattern: impl AsRef<str> + Send,
+    glob_pattern: impl AsRef<str> + Send + Sync,
     dry_run: bool,
 ) -> Result<(), MoveError> {
+    let dir = dir.as_ref();
     if dry_run {
-        println!("create directory {:?}", dir.as_ref());
-        println!("moving {:?} to {:?}", glob_pattern.as_ref(), dir.as_ref());
+        println!("create directory {dir:?}",);
+        println!("moving {dir:?} to {:?}", glob_pattern.as_ref());
         return Ok(());
     }
     tokio::fs::create_dir_all(&dir).await?;
-    trace!("create directory {:?}", dir.as_ref());
+    trace!("create directory {dir:?}");
 
-    let mut handles = JoinSet::new();
-    for f in glob::glob(glob_pattern.as_ref())? {
-        let f = f?;
-        let mut target = dir.as_ref().to_path_buf();
-        target.push(f.file_name().unwrap());
-        trace!("moving {f:?} to {target:?}");
-        handles.spawn(async move {
-            match tokio::fs::rename(&f, &target).await {
+    glob::glob(glob_pattern.as_ref())?
+        .map(|file| async move {
+            let file = file?;
+            let mut target = dir.to_path_buf();
+            target.push(file.file_name().unwrap());
+            trace!("moving {file:?} to {target:?}");
+            match tokio::fs::rename(&file, &target).await {
                 Ok(()) => Ok(()),
                 Err(_err) => {
                     debug!("couldn't just rename file, try to copy and remove old");
-                    tokio::fs::copy(&f, &target).await?;
-                    tokio::fs::remove_file(&f).await
+                    tokio::fs::copy(&file, &target).await?;
+                    tokio::fs::remove_file(&file).await?;
+                    Ok(())
                 }
             }
-        });
-    }
-    while let Some(result) = handles.join_next().await {
-        result??;
-    }
-    Ok(())
+        })
+        .join_all()
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()
 }
 
 fn request_next_chapter_name(args: &Arguments) -> String {

@@ -6,6 +6,20 @@ impl<Iter: Iterator> IteratorExt for Iter {
         ExactSizeWrapper::new(self, size)
     }
 }
+pub trait FutIterExt: IntoIterator + Sized
+where
+    Self::Item: core::future::Future,
+{
+    fn join_all(self) -> futures::future::JoinAll<<Self as IntoIterator>::Item>;
+}
+impl<Iter: IntoIterator + Sized> FutIterExt for Iter
+where
+    Iter::Item: core::future::Future,
+{
+    fn join_all(self) -> futures::future::JoinAll<<Self as IntoIterator>::Item> {
+        futures::future::join_all(self)
+    }
+}
 
 pub trait CloneIteratorExt: Iterator + Sized {
     fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self>;
