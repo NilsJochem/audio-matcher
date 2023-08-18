@@ -13,8 +13,8 @@ use crate::archive::data::ChapterNumber;
 pub enum Error {
     #[error("failed to parse {0:?} with {1:?}")]
     Parse(String, Parser),
-    #[error("failed to parse {0:?} with {1:?}")]
-    Serde(String, #[source] toml::de::Error),
+    #[error(transparent)]
+    Serde(#[from] toml::de::Error),
     #[error("cant read {0:?} because {1:?}")]
     IO(PathBuf, std::io::ErrorKind),
 }
@@ -151,12 +151,14 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
 }
 
 impl<'a> Index<'a> {
-    pub async fn try_get_index<A>(args: &Arguments, series: A) -> Result<Option<Index<'a>>, Error>
+    pub async fn try_read_index<A>(args: &Arguments, series: A) -> Result<Option<Index<'a>>, Error>
     where
         A: AsRef<str> + Send,
     {
         Ok(match args.index_folder() {
-            Some(folder) => Self::try_read_index(folder.to_owned(), series).await?,
+            Some(folder) => {
+                Self::try_read_index_from_supported_files(folder.to_owned(), series).await?
+            }
             None => {
                 let path = args
                     .always_answer()
@@ -180,7 +182,10 @@ impl<'a> Index<'a> {
     }
     #[allow(clippy::doc_markdown)]
     /// returns None if neither "index.txt", nor "index_full.txt" exists in `base_folder`
-    async fn try_read_index<A>(mut folder: PathBuf, series: A) -> Result<Option<Index<'a>>, Error>
+    async fn try_read_index_from_supported_files<A>(
+        mut folder: PathBuf,
+        series: A,
+    ) -> Result<Option<Index<'a>>, Error>
     where
         A: AsRef<str> + Send,
     {
@@ -197,7 +202,7 @@ impl<'a> Index<'a> {
         Self::try_from_path(&folder, Parser::WithoutArtist).await
     }
 
-    async fn try_from_toml_path<P>(path: P) -> Result<Option<Index<'a>>, Error>
+    pub async fn try_from_toml_path<P>(path: P) -> Result<Option<Index<'a>>, Error>
     where
         P: AsRef<Path> + Send + Sync,
     {
@@ -225,8 +230,7 @@ impl<'a> Index<'a> {
     }
 
     pub fn from_toml_str(content: impl AsRef<str>) -> Result<Self, Error> {
-        toml::from_str(content.as_ref())
-            .map_err(|err| Error::Serde(content.as_ref().to_owned(), err))
+        Ok(toml::from_str(content.as_ref())?)
     }
     pub fn from_slice_iter<Iter>(iter: Iter, parser: Parser) -> Result<Self, Error>
     where

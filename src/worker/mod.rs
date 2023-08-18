@@ -152,7 +152,7 @@ async fn rename_labels(
     let series = args
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
-    let index = crate::worker::index::Index::try_get_index(args, &series).await?;
+    let index = crate::worker::index::Index::try_read_index(args, &series).await?;
     let index_len = index.as_ref().map(index::Index::main_len);
     let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
 
