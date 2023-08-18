@@ -45,13 +45,15 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
             .clone()
             .or_else(|| (!args.out_file.no_out).then(|| auto_out_file(main_file)));
         let out_path = if out_path.as_ref().is_some_and(|path| path.exists()) {
-            if args.always_answer.ask_consent(format!(
-                "Ausgabe Datei {:?} existiert bereits, m\u{f6}chtest du skippen",
-                out_path
-                    .as_ref()
-                    .and_then(|it| it.file_name())
-                    .unwrap_or_else(|| panic!("couldn't get filename of {out_path:?}"))
-            )) {
+            if args.skip_existing
+                || args.always_answer.ask_consent(format!(
+                    "Ausgabe Datei {:?} existiert bereits, m\u{f6}chtest du skippen",
+                    out_path
+                        .as_ref()
+                        .and_then(|it| it.file_name())
+                        .unwrap_or_else(|| panic!("couldn't get filename of {out_path:?}"))
+                ))
+            {
                 continue;
             }
             out_path.filter(|_| {

@@ -39,6 +39,8 @@ pub struct Arguments {
     // pub new_correlate: bool,
     #[clap(long)]
     pub dry_run: bool,
+    #[clap(long)]
+    pub skip_existing: bool,
 
     #[command(flatten)]
     pub always_answer: Inputs,
