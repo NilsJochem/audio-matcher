@@ -11,7 +11,7 @@ use crate::archive::data::ChapterNumber;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
     #[error("failed to parse {0:?} with {1:?}")]
-    Parse(String, TxtParser),
+    Parse(String, parser::Txt),
     #[error(transparent)]
     Serde(#[from] toml::de::Error),
     #[error("cant read {0:?} because {1:?}")]
@@ -27,58 +27,68 @@ impl Error {
     fn io_err(path: impl AsRef<Path>, err: &std::io::Error) -> Self {
         Self::IO(path.as_ref().to_path_buf(), err.kind())
     }
-    fn parse_err(line: impl AsRef<str>, parser: TxtParser) -> Self {
+    fn parse_err(line: impl AsRef<str>, parser: parser::Txt) -> Self {
         Self::Parse(line.as_ref().to_owned(), parser)
     }
 }
+pub mod parser {
+    use std::borrow::Cow;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Parser {
-    Toml,
-    Txt(TxtParser),
-}
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum TxtParser {
-    WithoutArtist,
-    WithArtist,
-    TryWithArtist,
-}
-impl From<TxtParser> for Parser {
-    fn from(value: TxtParser) -> Self {
-        Self::Txt(value)
+    use super::{ChapterEntry, Error};
+
+    pub(super) use Parser::Toml;
+
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    pub(super) enum Parser {
+        Toml,
+        Txt(Txt),
     }
-}
-impl TxtParser {
-    fn parse_line_owned<'b>(self, line: &str) -> Result<ChapterEntry<'b>, Error> {
-        self.parse_line(line, |it| Cow::Owned(it.to_owned()))
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    pub enum Txt {
+        WithoutArtist,
+        WithArtist,
+        TryWithArtist,
     }
-    #[allow(dead_code)]
-    fn parse_line_borrowed(self, line: &str) -> Result<ChapterEntry, Error> {
-        self.parse_line(line, Cow::Borrowed)
+    impl From<Txt> for Parser {
+        fn from(value: Txt) -> Self {
+            Self::Txt(value)
+        }
     }
-    fn parse_line<'a, 'b>(
-        self,
-        line: &'a str,
-        map_to_cow: impl Fn(&'a str) -> Cow<'b, str> + Clone,
-    ) -> Result<ChapterEntry<'b>, Error> {
-        match self {
-            Self::WithoutArtist => Ok(ChapterEntry {
-                title: map_to_cow(line),
-                artist: None,
-                release: None,
-            }),
-            Self::WithArtist => line
-                .rsplit_once(" - ")
-                .map(|(name, author)| ChapterEntry {
-                    title: map_to_cow(name),
-                    artist: Some(map_to_cow(author)),
+    impl Txt {
+        pub(super) fn parse_line_owned<'b>(
+            self,
+            line: impl AsRef<str>,
+        ) -> Result<ChapterEntry<'b>, Error> {
+            self.parse_line(line.as_ref(), |it| Cow::Owned(it.to_owned()))
+        }
+        #[allow(dead_code)]
+        pub(super) fn parse_line_borrowed(self, line: &str) -> Result<ChapterEntry, Error> {
+            self.parse_line(line, Cow::Borrowed)
+        }
+        fn parse_line<'a, 'b>(
+            self,
+            line: &'a str,
+            map_to_cow: impl Fn(&'a str) -> Cow<'b, str> + Clone,
+        ) -> Result<ChapterEntry<'b>, Error> {
+            match self {
+                Self::WithoutArtist => Ok(ChapterEntry {
+                    title: map_to_cow(line),
+                    artist: None,
                     release: None,
-                })
-                .ok_or_else(|| Error::parse_err(line, self)),
-            Self::TryWithArtist => Self::WithArtist
-                .parse_line(line, map_to_cow.clone())
-                .or_else(|_| Self::WithoutArtist.parse_line(line, map_to_cow)),
+                }),
+                Self::WithArtist => line
+                    .rsplit_once(" - ")
+                    .map(|(name, author)| ChapterEntry {
+                        title: map_to_cow(name),
+                        artist: Some(map_to_cow(author)),
+                        release: None,
+                    })
+                    .ok_or_else(|| Error::parse_err(line, self)),
+                Self::TryWithArtist => Self::WithArtist
+                    .parse_line(line, map_to_cow.clone())
+                    .or_else(|_| Self::WithoutArtist.parse_line(line, map_to_cow)),
+            }
         }
     }
 }
@@ -119,12 +129,8 @@ pub struct ChapterEntry<'a> {
 impl<'a> ChapterEntry<'a> {
     fn fill(&'a self, artist: Option<Cow<'a, str>>, release: Option<DateOrYear>) -> Self {
         Self {
-            title: Cow::Borrowed(self.title.as_ref()),
-            artist: self
-                .artist
-                .as_ref()
-                .map(|it| Cow::Borrowed(it.as_ref()))
-                .or(artist),
+            title: reborrow_cow(&self.title),
+            artist: reborrow_opt_cow(self.artist.as_ref()).or(artist),
             release: self.release.or(release),
         }
     }
@@ -170,8 +176,8 @@ impl<'a> Index<'a> {
         path: impl AsRef<Path> + Send + Sync,
     ) -> Result<Index<'a>, Error> {
         match path.as_ref().extension().and_then(OsStr::to_str) {
-            Some("toml") => Self::try_from_path(path, Parser::Toml).await,
-            Some("txt") => Self::try_from_path(path, TxtParser::TryWithArtist).await,
+            Some("toml") => Self::try_from_path(path, parser::Toml).await,
+            Some("txt") => Self::try_from_path(path, parser::Txt::TryWithArtist).await,
             Some(_) | None => Err(Error::NonSupportedFile),
         }
         .and_then(|it| it.ok_or(Error::NoIndexFile))
@@ -187,15 +193,15 @@ impl<'a> Index<'a> {
             .and_then(|exists| exists.then_some(()).ok_or(Error::SeriesNotFound))?;
 
         folder.push("index.toml");
-        if let Some(index) = Self::try_from_path(&folder, Parser::Toml).await? {
+        if let Some(index) = Self::try_from_path(&folder, parser::Toml).await? {
             return Ok(index);
         }
         folder.set_file_name("index_full.txt");
-        if let Some(index) = Self::try_from_path(&folder, TxtParser::WithArtist).await? {
+        if let Some(index) = Self::try_from_path(&folder, parser::Txt::WithArtist).await? {
             return Ok(index);
         }
         folder.set_file_name("index.txt");
-        if let Some(index) = Self::try_from_path(&folder, TxtParser::WithoutArtist).await? {
+        if let Some(index) = Self::try_from_path(&folder, parser::Txt::WithoutArtist).await? {
             return Ok(index);
         }
         Err(Error::NoIndexFile)
@@ -203,16 +209,17 @@ impl<'a> Index<'a> {
 
     async fn try_from_path(
         path: impl AsRef<Path> + Send + Sync,
-        parser: impl Into<Parser> + Send,
+        parser: impl Into<parser::Parser> + Send,
     ) -> Result<Option<Index<'a>>, Error> {
         if Self::file_exists(&path).await? {
             let content = tokio::fs::read_to_string(&path)
                 .await
                 .map_err(|err| Error::io_err(path, &err))?;
             match parser.into() {
-                Parser::Toml => Self::from_toml_str(content).map(Some),
-                Parser::Txt(parser) => Self::from_slice_iter(content.lines(), parser).map(Some),
+                parser::Parser::Toml => Self::from_toml_str(content),
+                parser::Parser::Txt(parser) => Self::from_slice_iter(content.lines(), parser),
             }
+            .map(Some)
         } else {
             Ok(None)
         }
@@ -221,13 +228,13 @@ impl<'a> Index<'a> {
     pub fn from_toml_str(content: impl AsRef<str>) -> Result<Self, Error> {
         Ok(toml::from_str(content.as_ref())?)
     }
-    pub fn from_slice_iter<Iter>(iter: Iter, parser: TxtParser) -> Result<Self, Error>
+    pub fn from_slice_iter<Iter>(iter: Iter, parser: parser::Txt) -> Result<Self, Error>
     where
         Iter: Iterator,
         Iter::Item: AsRef<str>,
     {
         iter.filter(|line| !line.as_ref().trim_start().starts_with('#'))
-            .map(|line| parser.parse_line_owned(line.as_ref()))
+            .map(|line| parser.parse_line_owned(line))
             .collect::<Result<_, Error>>()
             .map(|data| Self {
                 artist: None,
@@ -275,10 +282,7 @@ impl<'a> Index<'a> {
     }
 
     fn fill(&'a self, it: &'a ChapterEntry<'a>) -> ChapterEntry<'a> {
-        it.fill(
-            self.artist.as_ref().map(|it| Cow::Borrowed(it.as_ref())),
-            self.release,
-        )
+        it.fill(reborrow_opt_cow(self.artist.as_ref()), self.release)
     }
 }
 
@@ -290,6 +294,16 @@ impl<'a> Index<'a> {
 //         self.get(index)
 //     }
 // }
+
+#[allow(clippy::ptr_arg)]
+#[inline]
+fn reborrow_cow<'a, B: ToOwned + ?Sized>(value: &'a Cow<'a, B>) -> Cow<'a, B> {
+    Cow::Borrowed(value.as_ref())
+}
+#[inline]
+fn reborrow_opt_cow<'a, B: ToOwned + ?Sized>(value: Option<&'a Cow<'a, B>>) -> Option<Cow<'a, B>> {
+    value.map(reborrow_cow)
+}
 
 #[cfg(test)]
 mod tests {
@@ -303,7 +317,7 @@ mod tests {
             "# some comment",
             "third element",
         ];
-        let index = Index::from_slice_iter(data.into_iter(), TxtParser::WithoutArtist).unwrap();
+        let index = Index::from_slice_iter(data.into_iter(), parser::Txt::WithoutArtist).unwrap();
         assert_eq!(
             index.get(ChapterNumber::new(1, false)),
             ChapterEntry {
@@ -364,7 +378,7 @@ mod tests {
                 }
                 s
             }),
-            TxtParser::WithArtist,
+            parser::Txt::WithArtist,
         )
         .unwrap();
         assert_eq!(index.get(ChapterNumber::new(1, false)), data[0]);
@@ -381,8 +395,8 @@ mod tests {
             "second element - with author",
         ];
         assert_eq!(
-            Error::Parse(data[1].to_owned(), TxtParser::WithArtist),
-            Index::from_slice_iter(data.into_iter(), TxtParser::WithArtist).unwrap_err()
+            Error::Parse(data[1].to_owned(), parser::Txt::WithArtist),
+            Index::from_slice_iter(data.into_iter(), parser::Txt::WithArtist).unwrap_err()
         );
     }
     #[test]
@@ -397,7 +411,7 @@ mod tests {
         ];
         assert_eq!(
             2,
-            Index::from_slice_iter(data.into_iter(), TxtParser::TryWithArtist)
+            Index::from_slice_iter(data.into_iter(), parser::Txt::TryWithArtist)
                 .unwrap()
                 .main_len()
         );
