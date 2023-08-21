@@ -1,6 +1,9 @@
 use audacity::AudacityApi;
 use log::{debug, trace};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use thiserror::Error;
 
 use crate::{
@@ -149,10 +152,8 @@ async fn rename_labels(
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
 
-    let series = args
-        .always_answer()
-        .input("Welche Serie ist heute dran: ", None);
-    let index = crate::worker::index::Index::try_read_index(args, &series).await?;
+    let (series, index) = read_index_from_args(args).await?;
+
     let index_len = index.as_ref().map(index::Index::main_len);
     let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
 
@@ -221,6 +222,53 @@ async fn rename_labels(
         patterns.push((series.clone(), chapter_number, chapter_name));
     }
     Ok((patterns, tags, nr_pad))
+}
+
+pub async fn read_index_from_args(
+    args: &Arguments,
+) -> Result<(String, Option<crate::worker::index::Index>), crate::worker::index::Error> {
+    let series = args
+        .always_answer()
+        .input("Welche Serie ist heute dran: ", None);
+    let index = match args.index_folder() {
+        Some(folder) => crate::worker::index::Index::try_read_index(folder.to_owned(), &series)
+            .await
+            .map(Some)
+            .or_else(|err| match err {
+                index::Error::SeriesNotFound => todo!("re-ask for series"),
+                index::Error::NoIndexFile => todo!("ask for direct path"),
+                index::Error::NonSupportedFile => unreachable!(),
+                index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
+                    Err(err)
+                }
+            })?,
+        None => {
+            let path = args
+                .always_answer()
+                .try_input(
+                    "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                    Some(None),
+                    |it| Some(Some(PathBuf::from(it))),
+                )
+                .unwrap_or_else(|| unreachable!());
+            match path {
+                Some(path) => crate::worker::index::Index::try_read_from_path(path)
+                    .await
+                    .map(Some)
+                    .or_else(|err| match err {
+                        index::Error::SeriesNotFound => unreachable!(),
+                        index::Error::NoIndexFile | index::Error::NonSupportedFile => {
+                            todo!("re-ask for path")
+                        }
+                        index::Error::Parse(_, _)
+                        | index::Error::Serde(_)
+                        | index::Error::IO(_, _) => Err(err),
+                    })?,
+                None => None,
+            }
+        }
+    };
+    Ok((series, index))
 }
 
 pub async fn adjust_labels(

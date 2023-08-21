@@ -6,35 +6,50 @@ use std::{
 };
 use toml::value::Datetime;
 
-use super::args::Arguments;
 use crate::archive::data::ChapterNumber;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
     #[error("failed to parse {0:?} with {1:?}")]
-    Parse(String, Parser),
+    Parse(String, TxtParser),
     #[error(transparent)]
     Serde(#[from] toml::de::Error),
     #[error("cant read {0:?} because {1:?}")]
     IO(PathBuf, std::io::ErrorKind),
+    #[error("couldn't find the given series")]
+    SeriesNotFound,
+    #[error("couldn't an index file")]
+    NoIndexFile,
+    #[error("only supporting .toml and .txt")]
+    NonSupportedFile,
 }
 impl Error {
     fn io_err(path: impl AsRef<Path>, err: &std::io::Error) -> Self {
         Self::IO(path.as_ref().to_path_buf(), err.kind())
     }
-    fn parse_err(line: impl AsRef<str>, parser: Parser) -> Self {
+    fn parse_err(line: impl AsRef<str>, parser: TxtParser) -> Self {
         Self::Parse(line.as_ref().to_owned(), parser)
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Parser {
+    Toml,
+    Txt(TxtParser),
+}
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Parser {
+pub enum TxtParser {
     WithoutArtist,
     WithArtist,
     TryWithArtist,
 }
-impl Parser {
+impl From<TxtParser> for Parser {
+    fn from(value: TxtParser) -> Self {
+        Self::Txt(value)
+    }
+}
+impl TxtParser {
     fn parse_line_owned<'b>(self, line: &str) -> Result<ChapterEntry<'b>, Error> {
         self.parse_line(line, |it| Cow::Owned(it.to_owned()))
     }
@@ -117,7 +132,7 @@ impl<'a> ChapterEntry<'a> {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum RawChapterEntry<'a> {
+enum RawChapterEntry<'a> {
     JustTitel(Cow<'a, str>),
     WithArtist((Cow<'a, str>, Cow<'a, str>)),
     WithDate((Cow<'a, str>, DateOrYear)),
@@ -151,78 +166,52 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
 }
 
 impl<'a> Index<'a> {
-    pub async fn try_read_index<A>(args: &Arguments, series: A) -> Result<Option<Index<'a>>, Error>
-    where
-        A: AsRef<str> + Send,
-    {
-        Ok(match args.index_folder() {
-            Some(folder) => {
-                Self::try_read_index_from_supported_files(folder.to_owned(), series).await?
-            }
-            None => {
-                let path = args
-                    .always_answer()
-                    .try_input(
-                        "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                        Some(None),
-                        |it| Some(Some(PathBuf::from(it))),
-                    )
-                    .unwrap_or_else(|| unreachable!());
-                match path {
-                    Some(path) => match path.extension().and_then(OsStr::to_str) {
-                        Some("toml") => Self::try_from_toml_path(&path).await?,
-                        Some("txt" | _) | None => {
-                            Self::try_from_path(&path, Parser::WithoutArtist).await?
-                        }
-                    },
-                    None => None,
-                }
-            }
-        })
-    }
-    #[allow(clippy::doc_markdown)]
-    /// returns None if neither "index.txt", nor "index_full.txt" exists in `base_folder`
-    async fn try_read_index_from_supported_files<A>(
-        mut folder: PathBuf,
-        series: A,
-    ) -> Result<Option<Index<'a>>, Error>
-    where
-        A: AsRef<str> + Send,
-    {
-        folder.push(series.as_ref());
-        folder.push("index.toml");
-        if let Some(index) = Self::try_from_toml_path(&folder).await? {
-            return Ok(Some(index));
+    pub async fn try_read_from_path(
+        path: impl AsRef<Path> + Send + Sync,
+    ) -> Result<Index<'a>, Error> {
+        match path.as_ref().extension().and_then(OsStr::to_str) {
+            Some("toml") => Self::try_from_path(path, Parser::Toml).await,
+            Some("txt") => Self::try_from_path(path, TxtParser::TryWithArtist).await,
+            Some(_) | None => Err(Error::NonSupportedFile),
         }
-        folder.set_file_name("index_full.txt");
-        if let Some(index) = Self::try_from_path(&folder, Parser::WithArtist).await? {
-            return Ok(Some(index));
-        }
-        folder.set_file_name("index.txt");
-        Self::try_from_path(&folder, Parser::WithoutArtist).await
+        .and_then(|it| it.ok_or(Error::NoIndexFile))
     }
 
-    pub async fn try_from_toml_path<P>(path: P) -> Result<Option<Index<'a>>, Error>
-    where
-        P: AsRef<Path> + Send + Sync,
-    {
+    pub async fn try_read_index(
+        mut folder: PathBuf,
+        series: impl AsRef<str> + Send,
+    ) -> Result<Index<'a>, Error> {
+        folder.push(series.as_ref());
+        Self::file_exists(&folder)
+            .await
+            .and_then(|exists| exists.then_some(()).ok_or(Error::SeriesNotFound))?;
+
+        folder.push("index.toml");
+        if let Some(index) = Self::try_from_path(&folder, Parser::Toml).await? {
+            return Ok(index);
+        }
+        folder.set_file_name("index_full.txt");
+        if let Some(index) = Self::try_from_path(&folder, TxtParser::WithArtist).await? {
+            return Ok(index);
+        }
+        folder.set_file_name("index.txt");
+        if let Some(index) = Self::try_from_path(&folder, TxtParser::WithoutArtist).await? {
+            return Ok(index);
+        }
+        Err(Error::NoIndexFile)
+    }
+
+    async fn try_from_path(
+        path: impl AsRef<Path> + Send + Sync,
+        parser: impl Into<Parser> + Send,
+    ) -> Result<Option<Index<'a>>, Error> {
         if Self::file_exists(&path).await? {
             let content = tokio::fs::read_to_string(&path)
                 .await
                 .map_err(|err| Error::io_err(path, &err))?;
-            Self::from_toml_str(content).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-    async fn try_from_path<P>(path: P, parser: Parser) -> Result<Option<Index<'a>>, Error>
-    where
-        P: AsRef<Path> + Send + Sync,
-    {
-        if Self::file_exists(&path).await? {
-            match tokio::fs::read_to_string(&path).await {
-                Ok(content) => Self::from_slice_iter(content.lines(), parser).map(Some),
-                Err(err) => Err(Error::io_err(path, &err)),
+            match parser.into() {
+                Parser::Toml => Self::from_toml_str(content).map(Some),
+                Parser::Txt(parser) => Self::from_slice_iter(content.lines(), parser).map(Some),
             }
         } else {
             Ok(None)
@@ -232,7 +221,7 @@ impl<'a> Index<'a> {
     pub fn from_toml_str(content: impl AsRef<str>) -> Result<Self, Error> {
         Ok(toml::from_str(content.as_ref())?)
     }
-    pub fn from_slice_iter<Iter>(iter: Iter, parser: Parser) -> Result<Self, Error>
+    pub fn from_slice_iter<Iter>(iter: Iter, parser: TxtParser) -> Result<Self, Error>
     where
         Iter: Iterator,
         Iter::Item: AsRef<str>,
@@ -293,6 +282,15 @@ impl<'a> Index<'a> {
     }
 }
 
+// doesn't work, because get returns a copy
+// impl<'a> std::ops::Index<ChapterNumber> for Index<'a> {
+//     type Output = ChapterEntry<'a>;
+
+//     fn index(&self, index: ChapterNumber) -> &Self::Output {
+//         self.get(index)
+//     }
+// }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,7 +303,7 @@ mod tests {
             "# some comment",
             "third element",
         ];
-        let index = Index::from_slice_iter(data.into_iter(), Parser::WithoutArtist).unwrap();
+        let index = Index::from_slice_iter(data.into_iter(), TxtParser::WithoutArtist).unwrap();
         assert_eq!(
             index.get(ChapterNumber::new(1, false)),
             ChapterEntry {
@@ -366,7 +364,7 @@ mod tests {
                 }
                 s
             }),
-            Parser::WithArtist,
+            TxtParser::WithArtist,
         )
         .unwrap();
         assert_eq!(index.get(ChapterNumber::new(1, false)), data[0]);
@@ -383,8 +381,8 @@ mod tests {
             "second element - with author",
         ];
         assert_eq!(
-            Error::Parse(data[1].to_owned(), Parser::WithArtist),
-            Index::from_slice_iter(data.into_iter(), Parser::WithArtist).unwrap_err()
+            Error::Parse(data[1].to_owned(), TxtParser::WithArtist),
+            Index::from_slice_iter(data.into_iter(), TxtParser::WithArtist).unwrap_err()
         );
     }
     #[test]
@@ -399,7 +397,7 @@ mod tests {
         ];
         assert_eq!(
             2,
-            Index::from_slice_iter(data.into_iter(), Parser::TryWithArtist)
+            Index::from_slice_iter(data.into_iter(), TxtParser::TryWithArtist)
                 .unwrap()
                 .main_len()
         );
