@@ -102,7 +102,7 @@ where
     });
     // save duration in tags, read new, in case somthing changed
     let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
-    tag.set::<tagger::Length>(Some(duration));
+    tag.set::<tagger::Length>(duration);
     tag.save_changes(false)?;
     Ok(duration)
 }

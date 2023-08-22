@@ -203,17 +203,17 @@ async fn rename_labels(
             path.push(format!("{name}.mp3"));
             let tag = tags.push_return(TaggedFile::new_empty(path));
 
-            tag.set::<Title>(Some(&format!("{chapter_name} {}", j + 1)));
-            tag.set::<Album>(Some(&series));
-            tag.set::<Track>(Some((j + 1) as u32));
-            tag.set::<TotalTracks>(Some(number as u32));
-            tag.set::<Genre>(Some(args.genre()));
-            tag.set::<Disc>(Some(chapter_number.nr() as u32));
+            tag.set::<Title>(format!("{chapter_name} {}", j + 1).as_ref());
+            tag.set::<Album>(series.as_ref());
+            tag.set::<Track>((j + 1) as u32);
+            tag.set::<TotalTracks>(number as u32);
+            tag.set::<Genre>(args.genre());
+            tag.set::<Disc>(chapter_number.nr() as u32);
             if let Some(l) = index_len {
-                tag.set::<TotalDiscs>(Some(l as u32));
+                tag.set::<TotalDiscs>(l as u32);
             }
             if let Some(artist) = artist.as_deref() {
-                tag.set::<Artist>(Some(artist));
+                tag.set::<Artist>(artist);
             }
             match release {
                 Some(
@@ -222,7 +222,7 @@ async fn rename_labels(
                         date: Some(Date { year, .. }),
                         ..
                     }),
-                ) => tag.set::<Year>(Some(year as i32)),
+                ) => tag.set::<Year>(year as i32),
                 Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
                     log::warn!("release didn't have a date");
                 }

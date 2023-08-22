@@ -185,8 +185,8 @@ impl TaggedFile {
         F::get(&self.inner)
     }
     /// upates the field `F` with `value` or removes it, if `value` is `None`
-    pub fn set<'a, F: Field<'a>>(&'a mut self, value: Option<F::Type>) {
-        self.was_changed |= F::update(&mut self.inner, value);
+    pub fn set<'a, F: Field<'a>>(&'a mut self, value: impl Into<Option<F::Type>>) {
+        self.was_changed |= F::update(&mut self.inner, value.into());
     }
     /// upates the field `F` with `value` if it is currently `None`
     pub fn fill_from<'a, F: Field<'a>>(&'a mut self, other: &'a Self) {
