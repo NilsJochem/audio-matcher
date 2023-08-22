@@ -6,7 +6,7 @@ use std::{
 };
 use toml::value::Datetime;
 
-use crate::archive::data::ChapterNumber;
+use crate::{archive::data::ChapterNumber, extensions::cow::Ext};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
@@ -36,7 +36,7 @@ pub mod parser {
 
     use super::{ChapterEntry, Error};
 
-    pub(super) use Parser::Toml;
+    pub(super) use Parser::Toml; // exposing Toml directly to be used like Txt::<variant>
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     pub(super) enum Parser {
@@ -56,6 +56,7 @@ pub mod parser {
         }
     }
     impl Txt {
+        /// parses `line` with `self` and takes ownership of the values
         pub(super) fn parse_line_owned<'b>(
             self,
             line: impl AsRef<str>,
@@ -63,6 +64,7 @@ pub mod parser {
             self.parse_line(line.as_ref(), |it| Cow::Owned(it.to_owned()))
         }
         #[allow(dead_code)]
+        /// parses `line` with `self` and references the orignal data
         pub(super) fn parse_line_borrowed(self, line: &str) -> Result<ChapterEntry, Error> {
             self.parse_line(line, Cow::Borrowed)
         }
@@ -104,7 +106,7 @@ pub struct Index<'a> {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub struct Chapters<'a> {
+struct Chapters<'a> {
     #[serde(default)]
     main: Vec<ChapterEntry<'a>>,
     #[serde(default)]
@@ -127,11 +129,16 @@ pub struct ChapterEntry<'a> {
     pub release: Option<DateOrYear>,
 }
 impl<'a> ChapterEntry<'a> {
-    fn fill(&'a self, artist: Option<Cow<'a, str>>, release: Option<DateOrYear>) -> Self {
+    /// trys to fill None values
+    fn fill(
+        &'a self,
+        artist: impl FnOnce() -> Option<Cow<'a, str>>,
+        release: impl FnOnce() -> Option<DateOrYear>,
+    ) -> Self {
         Self {
-            title: reborrow_cow(&self.title),
-            artist: reborrow_opt_cow(self.artist.as_ref()).or(artist),
-            release: self.release.or(release),
+            title: self.title.reborrow(),
+            artist: self.artist.reborrow().or_else(artist),
+            release: self.release.or_else(release),
         }
     }
 }
@@ -282,7 +289,7 @@ impl<'a> Index<'a> {
     }
 
     fn fill(&'a self, it: &'a ChapterEntry<'a>) -> ChapterEntry<'a> {
-        it.fill(reborrow_opt_cow(self.artist.as_ref()), self.release)
+        it.fill(|| self.artist.reborrow(), || self.release)
     }
 }
 
@@ -294,16 +301,6 @@ impl<'a> Index<'a> {
 //         self.get(index)
 //     }
 // }
-
-#[allow(clippy::ptr_arg)]
-#[inline]
-fn reborrow_cow<'a, B: ToOwned + ?Sized>(value: &'a Cow<'a, B>) -> Cow<'a, B> {
-    Cow::Borrowed(value.as_ref())
-}
-#[inline]
-fn reborrow_opt_cow<'a, B: ToOwned + ?Sized>(value: Option<&'a Cow<'a, B>>) -> Option<Cow<'a, B>> {
-    value.map(reborrow_cow)
-}
 
 #[cfg(test)]
 mod tests {
