@@ -1,10 +1,12 @@
 use audacity::AudacityApi;
 use log::{debug, trace};
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     time::Duration,
 };
 use thiserror::Error;
+use toml::value::{Date, Datetime};
 
 use crate::{
     archive::data::{build_timelabel_name, ChapterNumber},
@@ -12,7 +14,7 @@ use crate::{
     extensions::vec::PushReturn,
     iter::{CloneIteratorExt, FutIterExt},
     worker::tagger::{
-        Album, Artist, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track,
+        Album, Artist, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track, Year,
     },
 };
 
@@ -177,12 +179,12 @@ async fn rename_labels(
             .expect("gib was vern\u{fc}nftiges ein");
         expected_next_chapter_number = Some(chapter_number.next());
 
-        let index_value = index.as_ref().map(|index| index.get(chapter_number));
-        let artist = index_value.as_ref().and_then(|it| it.artist.as_ref());
-        let chapter_name = index_value.as_ref().map_or_else(
-            || request_next_chapter_name(args),
-            |it| it.title.as_ref().to_owned(),
-        );
+        let (chapter_name, artist, release) =
+            if let Some(value) = index.as_ref().map(|it| it.get(chapter_number)) {
+                (value.title, value.artist, value.release)
+            } else {
+                (Cow::Owned(request_next_chapter_name(args)), None, None)
+            };
 
         let expected_number = Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i));
         let number = read_number(
@@ -210,8 +212,21 @@ async fn rename_labels(
             if let Some(l) = index_len {
                 tag.set::<TotalDiscs>(Some(l as u32));
             }
-            if let Some(artist) = artist {
+            if let Some(artist) = artist.as_deref() {
                 tag.set::<Artist>(Some(artist));
+            }
+            match release {
+                Some(
+                    index::DateOrYear::Year(year)
+                    | index::DateOrYear::Date(Datetime {
+                        date: Some(Date { year, .. }),
+                        ..
+                    }),
+                ) => tag.set::<Year>(Some(year as i32)),
+                Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
+                    log::warn!("release didn't have a date");
+                }
+                None => {}
             }
 
             audacity
@@ -219,7 +234,7 @@ async fn rename_labels(
                 .await?;
         }
         i += number;
-        patterns.push((series.clone(), chapter_number, chapter_name));
+        patterns.push((series.clone(), chapter_number, chapter_name.into_owned()));
     }
     Ok((patterns, tags, nr_pad))
 }
