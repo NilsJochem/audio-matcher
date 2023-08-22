@@ -1,7 +1,4 @@
-use audio_matcher::{
-    archive::args::{Arguments, Config},
-    option::Ext,
-};
+use audio_matcher::archive::args::{Arguments, Config};
 use clap::Parser;
 
 const CONFIG_NAME: &str = "archive";
@@ -10,7 +7,7 @@ fn main() {
     args.output_level.init_logger();
     let mut config: Config = args.config.load_config(CONFIG_NAME);
     let mut changed = false;
-    config.path.insert_if_none(|| {
+    config.path.get_or_insert_with(|| {
         changed = true;
         args.archive
             .as_ref()
@@ -28,7 +25,7 @@ fn main() {
     if changed {
         args.config.save_config(CONFIG_NAME, &config);
     }
-    args.archive.insert_if_none(|| {
+    args.archive.get_or_insert_with(|| {
         config
             .path
             .clone()
