@@ -23,8 +23,8 @@ pub enum CliError {
     //     expected: String,
     //     found: String,
     // },
-    #[error(transparent)]
-    ID3(#[from] id3::Error),
+    #[error("id3 Error {1} for {0:?}")]
+    ID3(PathWrap, #[source] id3::Error),
 }
 
 // a wrapper for paths, that has display

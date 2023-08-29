@@ -31,7 +31,8 @@ pub enum Error {
     Move(#[from] MoveError),
     Launch(#[from] audacity::LaunchError),
     Audacity(#[from] audacity::Error),
-    Tag(#[from] id3::Error),
+    #[error("id3 Error {1} for {0:?}")]
+    Tag(PathBuf, #[source] id3::Error),
 }
 
 #[derive(Debug, Error)]
@@ -108,8 +109,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .write_assume_empty(audacity::command::ExportMultiple)
                 .await?;
             for mut tag in tags {
-                tag.reload_empty()?;
-                tag.save_changes(false)?;
+                tag.reload_empty()
+                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                tag.save_changes(false)
+                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
             }
         }
         move_results(patterns, nr_pad, args.tmp_path(), args).await?;

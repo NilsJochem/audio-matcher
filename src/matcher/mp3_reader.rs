@@ -70,7 +70,7 @@ where
     P: AsRef<std::path::Path>,
 {
     use crate::worker::tagger;
-    let tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf()).ok();
+    let tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), false).ok();
     // first try reading from tags or with external bibliothek
     if let Some(duration) = tag
         .as_ref()
@@ -101,9 +101,11 @@ where
             .sum()
     });
     // save duration in tags, read new, in case somthing changed
-    let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf())?;
+    let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), true)
+        .map_err(|err| CliError::ID3(path.into(), err))?;
     tag.set::<tagger::Length>(duration);
-    tag.save_changes(false)?;
+    tag.save_changes(false)
+        .map_err(|err| CliError::ID3(path.into(), err))?;
     Ok(duration)
 }
 

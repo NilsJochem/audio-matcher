@@ -125,10 +125,23 @@ pub struct TaggedFile {
     was_changed: bool,
 }
 impl TaggedFile {
-    /// reads the tags from `path`
-    pub fn from_path(path: PathBuf) -> Result<Self, id3::Error> {
+    fn inner_from_path(path: &Path, default_empty: bool) -> Result<Tag, id3::Error> {
+        match Tag::read_from_path(path) {
+            Ok(tag) => Ok(tag),
+            Err(id3::Error {
+                kind: id3::ErrorKind::NoTag,
+                ..
+            }) if default_empty => {
+                log::debug!("file {path:?} didn't have Tags, using empty");
+                Ok(Tag::new())
+            }
+            Err(err) => Err(err),
+        }
+    }
+    /// reads the tags from `path` or returns empty tag, when the file doesn't have tags
+    pub fn from_path(path: PathBuf, default_empty: bool) -> Result<Self, id3::Error> {
         Ok(Self {
-            inner: Tag::read_from_path(&path)?,
+            inner: Self::inner_from_path(&path, default_empty)?,
             path,
             was_changed: false,
         })
@@ -142,14 +155,14 @@ impl TaggedFile {
         }
     }
     /// drops all changes and loads the current tags
-    pub fn reload(&mut self) -> Result<(), id3::Error> {
+    pub fn reload(&mut self, default_empty: bool) -> Result<(), id3::Error> {
         self.was_changed = false;
-        self.inner = Tag::read_from_path(&self.path)?;
+        self.inner = Self::inner_from_path(&self.path, default_empty)?;
         Ok(())
     }
     /// rereads tags and fills all that are currently empty
     pub fn reload_empty(&mut self) -> Result<(), id3::Error> {
-        self.fill_all_from(&Self::from_path(self.path.clone())?);
+        self.fill_all_from(&Self::from_path(self.path.clone(), true)?);
         Ok(())
     }
 
@@ -272,7 +285,7 @@ mod tests {
     #[test]
     fn save_when_needed() {
         let file = TestFile::new("res/id3test.mp3");
-        let mut tag = TaggedFile::from_path(file.0.clone()).unwrap();
+        let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
 
         assert!(
             tag.save_changes(true).unwrap(),
@@ -292,7 +305,7 @@ mod tests {
 
     #[test]
     fn read() {
-        let tag = TaggedFile::from_path(PathBuf::from("res/id3test.mp3")).unwrap();
+        let tag = TaggedFile::from_path(PathBuf::from("res/id3test.mp3"), false).unwrap();
 
         assert_eq!(Some("title"), tag.get::<Title>());
         assert_eq!(Some("artist"), tag.get::<Artist>());
@@ -323,7 +336,7 @@ mod tests {
     #[test]
     fn read_saved() {
         let file = TestFile::new("res/id3test.mp3");
-        let mut tag = TaggedFile::from_path(file.0.clone()).unwrap();
+        let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
         let new_title = "example";
 
         assert_ne!(
@@ -334,7 +347,7 @@ mod tests {
         tag.set::<Title>(Some(new_title));
         tag.save_changes(false).unwrap();
 
-        let tag = TaggedFile::from_path(file.0.clone()).unwrap();
+        let tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
         assert_eq!(
             Some(new_title),
             tag.get::<Title>(),
