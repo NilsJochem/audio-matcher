@@ -1,41 +1,57 @@
 use id3::{Tag, TagLike};
 use std::path::{Path, PathBuf};
 
+macro_rules! inner_field {
+    ($ret: ty, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
+        type Type = $ret;
+        fn get(tag: &'a id3::Tag) -> Option<Self::Type> {
+            tag.$get_fn()
+        }
+        fn set(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
+            if tag.$get_fn().is_some_and(|it| it == value) {
+                return false;
+            }
+            tag.$set_fn(value);
+            true
+        }
+        fn remove(tag: &'a mut id3::Tag) -> bool {
+            if tag.$get_fn().is_none() {
+                return false;
+            }
+            tag.$remove_fn();
+            true
+        }
+        fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
+            if tag.$get_fn().is_some() {
+                return false;
+            }
+            tag.$set_fn(value);
+            true
+        }
+    };
+}
 macro_rules! field {
     ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
         pub struct $name;
         impl<'a> Field<'a> for $name {
-            type Type = $ret;
-            fn get(tag: &'a id3::Tag) -> Option<Self::Type> {
-                tag.$get_fn()
-            }
-            fn set(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
-                if tag.$get_fn().is_some_and(|it| it == value) {
-                    return false;
-                }
-                tag.$set_fn(value);
-                true
-            }
-            fn remove(tag: &'a mut id3::Tag) -> bool {
-                if tag.$get_fn().is_none() {
-                    return false;
-                }
-                tag.$remove_fn();
-                true
-            }
-            fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
-                if tag.$get_fn().is_some() {
-                    return false;
-                }
-                tag.$set_fn(value);
-                true
-            }
+            inner_field!($ret, $get_fn, $set_fn, $remove_fn);
         }
     };
 }
+macro_rules! ref_field {
+    ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
+        pub struct $name<'b> {
+            marker: std::marker::PhantomData<&'b ()>,
+        }
+        impl<'b, 'a: 'b> Field<'a> for $name<'b> {
+            inner_field!(&'b $ret, $get_fn, $set_fn, $remove_fn);
+        }
+    };
+}
+
 macro_rules! s_field {
     ($name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        field!(&'a str, $name, $get_fn, $set_fn, $remove_fn);
+        ref_field!(str, $name, $get_fn, $set_fn, $remove_fn);
     };
 }
 macro_rules! i_field {
