@@ -3,25 +3,25 @@ use std::path::{Path, PathBuf};
 
 macro_rules! inner_field {
     ($ret: ty, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        type Type = $ret;
-        fn get(tag: &'a id3::Tag) -> Option<Self::Type> {
+        type Type<'a> = $ret where Self: 'a;
+        fn get(tag: &id3::Tag) -> Option<Self::Type<'_>> {
             tag.$get_fn()
         }
-        fn set(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
+        fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
             if tag.$get_fn().is_some_and(|it| it == value) {
                 return false;
             }
             tag.$set_fn(value);
             true
         }
-        fn remove(tag: &'a mut id3::Tag) -> bool {
+        fn remove(tag: &mut id3::Tag) -> bool {
             if tag.$get_fn().is_none() {
                 return false;
             }
             tag.$remove_fn();
             true
         }
-        fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool {
+        fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
             if tag.$get_fn().is_some() {
                 return false;
             }
@@ -33,18 +33,16 @@ macro_rules! inner_field {
 macro_rules! field {
     ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
         pub struct $name;
-        impl<'a> Field<'a> for $name {
+        impl Field for $name {
             inner_field!($ret, $get_fn, $set_fn, $remove_fn);
         }
     };
 }
 macro_rules! ref_field {
     ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        pub struct $name<'b> {
-            marker: std::marker::PhantomData<&'b ()>,
-        }
-        impl<'b, 'a: 'b> Field<'a> for $name<'b> {
-            inner_field!(&'b $ret, $get_fn, $set_fn, $remove_fn);
+        pub struct $name;
+        impl Field for $name {
+            inner_field!(&'a $ret, $get_fn, $set_fn, $remove_fn);
         }
     };
 }
@@ -65,23 +63,80 @@ macro_rules! u_field {
     };
 }
 
-pub trait Field<'a> {
-    type Type;
+pub trait Field {
+    type Type<'a>
+    where
+        Self: 'a;
     /// returns the current value
-    fn get(tag: &'a id3::Tag) -> Option<Self::Type>;
+    fn get(tag: &id3::Tag) -> Option<Self::Type<'_>>;
+
     /// sets the value to `value` and returns, if something changed
-    fn set(tag: &'a mut id3::Tag, value: Self::Type) -> bool;
+    fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool;
     /// removes the value to `value` and returns, if something changed
-    fn remove(tag: &'a mut id3::Tag) -> bool;
+    fn remove(tag: &mut id3::Tag) -> bool;
     /// sets the value to `value` if it is currently `None`
-    fn fill(tag: &'a mut id3::Tag, value: Self::Type) -> bool;
+    fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool;
 
     /// updates the value to `value` and returns, if something changed
-    fn update(tag: &'a mut id3::Tag, value: Option<Self::Type>) -> bool {
+    fn update(tag: &mut id3::Tag, value: Option<Self::Type<'_>>) -> bool {
         match value {
             Some(value) => Self::set(tag, value),
             None => Self::remove(tag),
         }
+    }
+}
+
+pub trait MyTrait {
+    /// returns the current value
+    fn get<F: Field>(&self) -> Option<F::Type<'_>>;
+    /// sets the value to `value` and returns, if something changed
+    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    where
+        F::Type<'b>: PartialEq;
+    /// removes the value to `value` and returns, if something changed
+    fn remove<F: Field>(&mut self) -> bool;
+    /// sets the value to `value` if it is currently `None`
+    fn fill<F: Field>(&mut self, value: F::Type<'_>) -> bool;
+
+    /// updates the value to `value` and returns, if something changed
+    fn update<'a, F: Field>(&'a mut self, value: Option<F::Type<'a>>) -> bool
+    where
+        F::Type<'a>: PartialEq,
+    {
+        match value {
+            Some(value) => self.set::<F>(value),
+            None => self.remove::<F>(),
+        }
+    }
+}
+impl MyTrait for id3::Tag {
+    fn get<F: Field>(&self) -> Option<F::Type<'_>> {
+        F::get(self)
+    }
+
+    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    where
+        F::Type<'b>: PartialEq,
+    {
+        {
+            let ptr = self as *mut Self;
+            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
+            let self_reborrow = unsafe { &*ptr };
+            if F::get(self_reborrow).is_some_and(|it| it == value) {
+                return false;
+            }
+        }
+
+        F::set(self, value);
+        true
+    }
+
+    fn remove<F: Field>(&mut self) -> bool {
+        F::remove(self)
+    }
+
+    fn fill<F: Field>(&mut self, value: F::Type<'_>) -> bool {
+        F::fill(self, value)
     }
 }
 
@@ -103,12 +158,12 @@ u_field!(Disc, disc, set_disc, remove_disc);
 u_field!(TotalDiscs, total_discs, set_total_discs, remove_total_discs);
 
 pub struct Length;
-impl<'a> Field<'a> for Length {
-    type Type = std::time::Duration;
-    fn get(tag: &id3::Tag) -> Option<Self::Type> {
+impl Field for Length {
+    type Type<'a> = std::time::Duration;
+    fn get(tag: &id3::Tag) -> Option<Self::Type<'_>> {
         tag.duration().map(|it| Self::Type::from_secs(it as u64))
     }
-    fn set(tag: &mut id3::Tag, value: Self::Type) -> bool {
+    fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
         if tag
             .duration()
             .is_some_and(|it| it == value.as_secs() as u32)
@@ -118,14 +173,14 @@ impl<'a> Field<'a> for Length {
         tag.set_duration(value.as_secs() as u32);
         true
     }
-    fn remove(tag: &'a mut id3::Tag) -> bool {
+    fn remove(tag: &mut id3::Tag) -> bool {
         if tag.duration().is_none() {
             return false;
         }
         tag.remove_duration();
         true
     }
-    fn fill(tag: &mut id3::Tag, value: Self::Type) -> bool {
+    fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
         if tag.duration().is_some() {
             return false;
         }
@@ -210,15 +265,15 @@ impl TaggedFile {
 
     #[must_use]
     /// reads the field `F` and returns the contained value if it exists
-    pub fn get<'a, F: Field<'a>>(&'a self) -> Option<F::Type> {
+    pub fn get<F: Field>(&self) -> Option<F::Type<'_>> {
         F::get(&self.inner)
     }
     /// upates the field `F` with `value` or removes it, if `value` is `None`
-    pub fn set<'a, F: Field<'a>>(&'a mut self, value: impl Into<Option<F::Type>>) {
+    pub fn set<'a, F: Field + 'a>(&'a mut self, value: impl Into<Option<F::Type<'a>>>) {
         self.was_changed |= F::update(&mut self.inner, value.into());
     }
     /// upates the field `F` with `value` if it is currently `None`
-    pub fn fill_from<'a, F: Field<'a>>(&'a mut self, other: &'a Self) {
+    pub fn fill_from<'a, F: Field>(&'a mut self, other: &'a Self) {
         if let Some(v) = other.get::<F>() {
             F::fill(&mut self.inner, v);
         }
