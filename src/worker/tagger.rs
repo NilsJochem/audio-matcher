@@ -1,102 +1,208 @@
 use id3::{Tag, TagLike};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-macro_rules! inner_field {
-    ($ret: ty, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        type Type<'a> = $ret where Self: 'a;
-        fn get(tag: &id3::Tag) -> Option<Self::Type<'_>> {
-            tag.$get_fn()
+macro_rules! field_none_method {
+    (str) => {
+        fn from_str(_: &str) -> Option<Self> {
+            None
         }
-        fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
-            if tag.$get_fn().is_some_and(|it| it == value) {
-                return false;
-            }
-            tag.$set_fn(value);
-            true
+        fn into_str(self) -> Option<&'a str> {
+            None
         }
-        fn remove(tag: &mut id3::Tag) -> bool {
-            if tag.$get_fn().is_none() {
-                return false;
-            }
-            tag.$remove_fn();
-            true
+    };
+    (Duration) => {
+        fn from_duration(_: Duration) -> Option<Self> {
+            None
         }
-        fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
-            if tag.$get_fn().is_some() {
-                return false;
-            }
-            tag.$set_fn(value);
-            true
+        fn into_duration(self) -> Option<Duration> {
+            None
+        }
+    };
+    (u32) => {
+        fn from_u32(_: u32) -> Option<Self> {
+            None
+        }
+        fn into_u32(self) -> Option<u32> {
+            None
+        }
+    };
+    (i32) => {
+        fn from_i32(_: i32) -> Option<Self> {
+            None
+        }
+        fn into_i32(self) -> Option<i32> {
+            None
         }
     };
 }
+
 macro_rules! field {
-    ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
+    ($name: ident, str) => {
         pub struct $name;
         impl Field for $name {
-            inner_field!($ret, $get_fn, $set_fn, $remove_fn);
+            type Type<'a> = &'a str where Self: 'a;
+            const KIND: FieldKind = FieldKind::$name;
         }
     };
-}
-macro_rules! ref_field {
-    ($ret: ty, $name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
+    ($name: ident, u32) => {
         pub struct $name;
         impl Field for $name {
-            inner_field!(&'a $ret, $get_fn, $set_fn, $remove_fn);
+            type Type<'a> = u32 where Self: 'a;
+            const KIND: FieldKind = FieldKind::$name;
+        }
+    };
+    ($name: ident, i32) => {
+        pub struct $name;
+        impl Field for $name {
+            type Type<'a> = i32 where Self: 'a;
+            const KIND: FieldKind = FieldKind::$name;
         }
     };
 }
 
-macro_rules! s_field {
-    ($name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        ref_field!(str, $name, $get_fn, $set_fn, $remove_fn);
-    };
+pub enum FieldKind {
+    Title,
+    Artist,
+    Album,
+    Genre,
+    Year,
+    Track,
+    TotalTracks,
+    Disc,
+    TotalDiscs,
+    Length,
 }
-macro_rules! i_field {
-    ($name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        field!(i32, $name, $get_fn, $set_fn, $remove_fn);
-    };
+
+field!(Title, str);
+field!(Artist, str);
+field!(Album, str);
+field!(Genre, str);
+
+field!(Year, i32);
+
+field!(Track, u32);
+field!(TotalTracks, u32);
+field!(Disc, u32);
+field!(TotalDiscs, u32);
+
+pub struct Length;
+impl Field for Length {
+    type Type<'a> = std::time::Duration;
+    const KIND: FieldKind = FieldKind::Length;
 }
-macro_rules! u_field {
-    ($name: ident, $get_fn: ident, $set_fn: ident, $remove_fn: ident) => {
-        field!(u32, $name, $get_fn, $set_fn, $remove_fn);
-    };
+
+pub trait FieldValue<'a>: Sized {
+    fn from_str(value: &'a str) -> Option<Self>;
+    fn from_duration(value: Duration) -> Option<Self>;
+    fn from_u32(value: u32) -> Option<Self>;
+    fn from_i32(value: i32) -> Option<Self>;
+
+    fn into_str(self) -> Option<&'a str>;
+    fn into_duration(self) -> Option<Duration>;
+    fn into_u32(self) -> Option<u32>;
+    fn into_i32(self) -> Option<i32>;
+}
+impl<'a> FieldValue<'a> for &'a str {
+    fn from_str(value: &'a str) -> Option<Self> {
+        Some(value)
+    }
+    fn into_str(self) -> Option<&'a str> {
+        Some(self)
+    }
+    field_none_method!(Duration);
+    field_none_method!(u32);
+    field_none_method!(i32);
+}
+impl<'a> FieldValue<'a> for Duration {
+    fn from_duration(value: Duration) -> Option<Self> {
+        Some(value)
+    }
+    fn into_duration(self) -> Option<Duration> {
+        Some(self)
+    }
+    field_none_method!(str);
+    field_none_method!(u32);
+    field_none_method!(i32);
+}
+impl<'a> FieldValue<'a> for u32 {
+    fn from_u32(value: u32) -> Option<Self> {
+        Some(value)
+    }
+    fn into_u32(self) -> Option<u32> {
+        Some(self)
+    }
+    field_none_method!(str);
+    field_none_method!(Duration);
+    field_none_method!(i32);
+}
+impl<'a> FieldValue<'a> for i32 {
+    fn from_i32(value: i32) -> Option<Self> {
+        Some(value)
+    }
+    fn into_i32(self) -> Option<i32> {
+        Some(self)
+    }
+    field_none_method!(str);
+    field_none_method!(u32);
+    field_none_method!(Duration);
 }
 
 pub trait Field {
-    type Type<'a>
+    type Type<'a>: FieldValue<'a>
     where
         Self: 'a;
-    /// returns the current value
-    fn get(tag: &id3::Tag) -> Option<Self::Type<'_>>;
-
-    /// sets the value to `value` and returns, if something changed
-    fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool;
-    /// removes the value to `value` and returns, if something changed
-    fn remove(tag: &mut id3::Tag) -> bool;
-    /// sets the value to `value` if it is currently `None`
-    fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool;
-
-    /// updates the value to `value` and returns, if something changed
-    fn update(tag: &mut id3::Tag, value: Option<Self::Type<'_>>) -> bool {
-        match value {
-            Some(value) => Self::set(tag, value),
-            None => Self::remove(tag),
-        }
-    }
+    const KIND: FieldKind;
 }
 
-pub trait MyTrait {
+pub trait MyTag {
     /// returns the current value
     fn get<F: Field>(&self) -> Option<F::Type<'_>>;
-    /// sets the value to `value` and returns, if something changed
-    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    /// sets the value to `value`
+    fn set_unchecked<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>)
     where
         F::Type<'b>: PartialEq;
-    /// removes the value to `value` and returns, if something changed
-    fn remove<F: Field>(&mut self) -> bool;
+
+    /// sets the value to `value` and returns true if something changed
+    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    where
+        F::Type<'b>: PartialEq,
+    {
+        {
+            let ptr = self as *mut Self;
+            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
+            let self_reborrow = unsafe { &*ptr };
+            if MyTag::get::<F>(self_reborrow).is_some_and(|it| it == value) {
+                return false;
+            }
+        }
+        self.set_unchecked::<F>(value);
+        true
+    }
+    /// removes the value to `value`
+    fn remove_unchecked<F: Field>(&mut self);
+    /// removes the value to `value` and returns true, if something changed
+    fn remove<F: Field>(&mut self) -> bool {
+        if MyTag::get::<F>(self).is_none() {
+            return false;
+        }
+        self.remove_unchecked::<F>();
+        true
+    }
+
     /// sets the value to `value` if it is currently `None`
-    fn fill<F: Field>(&mut self, value: F::Type<'_>) -> bool;
+    fn fill<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    where
+        F::Type<'b>: PartialEq,
+    {
+        if self.get::<F>().is_some() {
+            return false;
+        }
+        self.set::<F>(value);
+        true
+    }
 
     /// updates the value to `value` and returns, if something changed
     fn update<'a, F: Field>(&'a mut self, value: Option<F::Type<'a>>) -> bool
@@ -109,83 +215,84 @@ pub trait MyTrait {
         }
     }
 }
-impl MyTrait for id3::Tag {
+
+impl MyTag for id3::Tag {
     fn get<F: Field>(&self) -> Option<F::Type<'_>> {
-        F::get(self)
+        match F::KIND {
+            FieldKind::Title => self
+                .title()
+                .map(|it| F::Type::from_str(it).expect("Title from str failed")),
+            FieldKind::Artist => self
+                .artist()
+                .map(|it| F::Type::from_str(it).expect("Artist from str failed")),
+            FieldKind::Album => self
+                .album()
+                .map(|it| F::Type::from_str(it).expect("Album from str failed")),
+            FieldKind::Genre => self
+                .genre()
+                .map(|it| F::Type::from_str(it).expect("Genre from str failed")),
+            FieldKind::Year => self
+                .year()
+                .map(|it| F::Type::from_i32(it).expect("Year from i32 failed")),
+            FieldKind::Track => self
+                .track()
+                .map(|it| F::Type::from_u32(it).expect("Track from u32 failed")),
+            FieldKind::TotalTracks => self
+                .total_tracks()
+                .map(|it| F::Type::from_u32(it).expect("TotalTracks from u32 failed")),
+            FieldKind::Disc => self
+                .disc()
+                .map(|it| F::Type::from_u32(it).expect("Disc from u32 failed")),
+            FieldKind::TotalDiscs => self
+                .total_discs()
+                .map(|it| F::Type::from_u32(it).expect("TotalDiscs from u32 failed")),
+            FieldKind::Length => self.duration().map(|it| {
+                F::Type::from_duration(Duration::from_secs(it as u64))
+                    .expect("length from Duration failed")
+            }),
+        }
     }
 
-    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
+    fn set_unchecked<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>)
     where
         F::Type<'b>: PartialEq,
     {
-        {
-            let ptr = self as *mut Self;
-            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
-            let self_reborrow = unsafe { &*ptr };
-            if F::get(self_reborrow).is_some_and(|it| it == value) {
-                return false;
+        match F::KIND {
+            FieldKind::Title => self.set_title(value.into_str().expect("Title into str failed")),
+            FieldKind::Artist => self.set_artist(value.into_str().expect("Artist into str failed")),
+            FieldKind::Album => self.set_album(value.into_str().expect("Album into str failed")),
+            FieldKind::Genre => self.set_genre(value.into_str().expect("Genre into str failed")),
+            FieldKind::Year => self.set_year(value.into_i32().expect("Year into i32 failed")),
+            FieldKind::Track => self.set_track(value.into_u32().expect("Track into u32 failed")),
+            FieldKind::TotalTracks => {
+                self.set_total_tracks(value.into_u32().expect("TotalTracks into u32 failed"));
             }
+            FieldKind::Disc => self.set_disc(value.into_u32().expect("Discs into u32 failed")),
+            FieldKind::TotalDiscs => {
+                self.set_total_discs(value.into_u32().expect("TotalDiscs into u32 failed"));
+            }
+            FieldKind::Length => self.set_duration(
+                value
+                    .into_duration()
+                    .expect("Length into Duration failed")
+                    .as_secs() as u32,
+            ),
         }
-
-        F::set(self, value);
-        true
     }
 
-    fn remove<F: Field>(&mut self) -> bool {
-        F::remove(self)
-    }
-
-    fn fill<F: Field>(&mut self, value: F::Type<'_>) -> bool {
-        F::fill(self, value)
-    }
-}
-
-s_field!(Title, title, set_title, remove_title);
-s_field!(Artist, artist, set_artist, remove_artist);
-s_field!(Album, album, set_album, remove_album);
-s_field!(Genre, genre, set_genre, remove_genre);
-
-i_field!(Year, year, set_year, remove_year);
-
-u_field!(Track, track, set_track, remove_track);
-u_field!(
-    TotalTracks,
-    total_tracks,
-    set_total_tracks,
-    remove_total_tracks
-);
-u_field!(Disc, disc, set_disc, remove_disc);
-u_field!(TotalDiscs, total_discs, set_total_discs, remove_total_discs);
-
-pub struct Length;
-impl Field for Length {
-    type Type<'a> = std::time::Duration;
-    fn get(tag: &id3::Tag) -> Option<Self::Type<'_>> {
-        tag.duration().map(|it| Self::Type::from_secs(it as u64))
-    }
-    fn set(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
-        if tag
-            .duration()
-            .is_some_and(|it| it == value.as_secs() as u32)
-        {
-            return false;
+    fn remove_unchecked<F: Field>(&mut self) {
+        match F::KIND {
+            FieldKind::Title => self.remove_title(),
+            FieldKind::Artist => self.remove_artist(),
+            FieldKind::Album => self.remove_album(),
+            FieldKind::Genre => self.remove_genre(),
+            FieldKind::Year => self.remove_year(),
+            FieldKind::Track => self.remove_track(),
+            FieldKind::TotalTracks => self.remove_total_tracks(),
+            FieldKind::Disc => self.remove_disc(),
+            FieldKind::TotalDiscs => self.remove_total_discs(),
+            FieldKind::Length => self.remove_duration(),
         }
-        tag.set_duration(value.as_secs() as u32);
-        true
-    }
-    fn remove(tag: &mut id3::Tag) -> bool {
-        if tag.duration().is_none() {
-            return false;
-        }
-        tag.remove_duration();
-        true
-    }
-    fn fill(tag: &mut id3::Tag, value: Self::Type<'_>) -> bool {
-        if tag.duration().is_some() {
-            return false;
-        }
-        tag.set_duration(value.as_secs() as u32);
-        true
     }
 }
 
@@ -266,16 +373,22 @@ impl TaggedFile {
     #[must_use]
     /// reads the field `F` and returns the contained value if it exists
     pub fn get<F: Field>(&self) -> Option<F::Type<'_>> {
-        F::get(&self.inner)
+        MyTag::get::<F>(&self.inner)
     }
     /// upates the field `F` with `value` or removes it, if `value` is `None`
-    pub fn set<'a, F: Field + 'a>(&'a mut self, value: impl Into<Option<F::Type<'a>>>) {
-        self.was_changed |= F::update(&mut self.inner, value.into());
+    pub fn set<'a, F: Field + 'a>(&'a mut self, value: impl Into<Option<F::Type<'a>>>)
+    where
+        F::Type<'a>: PartialEq,
+    {
+        self.was_changed |= MyTag::update::<F>(&mut self.inner, value.into());
     }
     /// upates the field `F` with `value` if it is currently `None`
-    pub fn fill_from<'a, F: Field>(&'a mut self, other: &'a Self) {
+    pub fn fill_from<'a, F: Field + 'a>(&'a mut self, other: &'a Self)
+    where
+        F::Type<'a>: PartialEq,
+    {
         if let Some(v) = other.get::<F>() {
-            F::fill(&mut self.inner, v);
+            MyTag::fill::<F>(&mut self.inner, v);
         }
     }
     /// fills all fields with the values of `other`
@@ -336,21 +449,27 @@ mod tests {
     #[test]
     fn update_field_return() {
         let mut tags = Tag::new();
-        assert!(Title::set(&mut tags, "test"), "set when empty");
-        assert!(!Title::set(&mut tags, "test"), "set with same");
-        assert!(Title::remove(&mut tags), "remove with some");
-        assert!(!Title::remove(&mut tags), "remove when empty");
+        assert!(MyTag::set::<Title>(&mut tags, "test"), "set when empty");
+        assert!(!MyTag::set::<Title>(&mut tags, "test"), "set with same");
+        assert!(MyTag::remove::<Title>(&mut tags), "remove with some");
+        assert!(!MyTag::remove::<Title>(&mut tags), "remove when empty");
 
         assert!(
-            Title::update(&mut tags, Some("test")),
+            MyTag::update::<Title>(&mut tags, Some("test")),
             "update set when empty"
         );
         assert!(
-            !Title::update(&mut tags, Some("test")),
+            !MyTag::update::<Title>(&mut tags, Some("test")),
             "update set with same"
         );
-        assert!(Title::update(&mut tags, None), "update remove with some");
-        assert!(!Title::update(&mut tags, None), "update remove when empty");
+        assert!(
+            MyTag::update::<Title>(&mut tags, None),
+            "update remove with some"
+        );
+        assert!(
+            !MyTag::update::<Title>(&mut tags, None),
+            "update remove when empty"
+        );
     }
 
     #[test]
