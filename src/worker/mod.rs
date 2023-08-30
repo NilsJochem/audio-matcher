@@ -32,7 +32,7 @@ pub enum Error {
     Launch(#[from] audacity::LaunchError),
     Audacity(#[from] audacity::Error),
     #[error("id3 Error {1} for {0:?}")]
-    Tag(PathBuf, #[source] id3::Error),
+    Tag(PathBuf, #[source] tagger::Error),
 }
 
 #[derive(Debug, Error)]
@@ -204,7 +204,7 @@ async fn rename_labels(
 
             let mut path = args.tmp_path().to_path_buf();
             path.push(format!("{name}.mp3"));
-            let tag = tags.push_return(TaggedFile::new_empty(path));
+            let tag = tags.push_return(TaggedFile::new_empty(path).unwrap());
 
             tag.set::<Title>(format!("{chapter_name} {}", j + 1).as_ref());
             tag.set::<Album>(series.as_ref());

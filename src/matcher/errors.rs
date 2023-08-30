@@ -1,6 +1,8 @@
 use std::path::Path;
 use thiserror::Error;
 
+use crate::worker::tagger;
+
 #[derive(Error, Debug)]
 pub enum CliError {
     #[error(
@@ -24,7 +26,7 @@ pub enum CliError {
     //     found: String,
     // },
     #[error("id3 Error {1} for {0:?}")]
-    ID3(PathWrap, #[source] id3::Error),
+    ID3(PathWrap, #[source] tagger::Error),
 }
 
 // a wrapper for paths, that has display

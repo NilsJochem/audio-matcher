@@ -1,8 +1,9 @@
-use id3::{Tag, TagLike};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+use thiserror::Error;
 
 macro_rules! field_none_method {
     (str) => {
@@ -41,23 +42,12 @@ macro_rules! field_none_method {
 
 macro_rules! field {
     ($name: ident, str) => {
-        pub struct $name;
-        impl Field for $name {
-            type Type<'a> = &'a str where Self: 'a;
-            const KIND: FieldKind = FieldKind::$name;
-        }
+        field!($name, &'a str);
     };
-    ($name: ident, u32) => {
+    ($name: ident, $ref:ty) => {
         pub struct $name;
         impl Field for $name {
-            type Type<'a> = u32 where Self: 'a;
-            const KIND: FieldKind = FieldKind::$name;
-        }
-    };
-    ($name: ident, i32) => {
-        pub struct $name;
-        impl Field for $name {
-            type Type<'a> = i32 where Self: 'a;
+            type Type<'a> = $ref where Self: 'a;
             const KIND: FieldKind = FieldKind::$name;
         }
     };
@@ -75,6 +65,23 @@ pub enum FieldKind {
     TotalDiscs,
     Length,
 }
+pub trait FieldValue<'a>: Sized {
+    fn from_str(value: &'a str) -> Option<Self>;
+    fn from_duration(value: Duration) -> Option<Self>;
+    fn from_u32(value: u32) -> Option<Self>;
+    fn from_i32(value: i32) -> Option<Self>;
+
+    fn into_str(self) -> Option<&'a str>;
+    fn into_duration(self) -> Option<Duration>;
+    fn into_u32(self) -> Option<u32>;
+    fn into_i32(self) -> Option<i32>;
+}
+pub trait Field {
+    type Type<'a>: FieldValue<'a>
+    where
+        Self: 'a;
+    const KIND: FieldKind;
+}
 
 field!(Title, str);
 field!(Artist, str);
@@ -88,23 +95,8 @@ field!(TotalTracks, u32);
 field!(Disc, u32);
 field!(TotalDiscs, u32);
 
-pub struct Length;
-impl Field for Length {
-    type Type<'a> = std::time::Duration;
-    const KIND: FieldKind = FieldKind::Length;
-}
+field!(Length, Duration);
 
-pub trait FieldValue<'a>: Sized {
-    fn from_str(value: &'a str) -> Option<Self>;
-    fn from_duration(value: Duration) -> Option<Self>;
-    fn from_u32(value: u32) -> Option<Self>;
-    fn from_i32(value: i32) -> Option<Self>;
-
-    fn into_str(self) -> Option<&'a str>;
-    fn into_duration(self) -> Option<Duration>;
-    fn into_u32(self) -> Option<u32>;
-    fn into_i32(self) -> Option<i32>;
-}
 impl<'a> FieldValue<'a> for &'a str {
     fn from_str(value: &'a str) -> Option<Self> {
         Some(value)
@@ -150,174 +142,208 @@ impl<'a> FieldValue<'a> for i32 {
     field_none_method!(Duration);
 }
 
-pub trait Field {
-    type Type<'a>: FieldValue<'a>
-    where
-        Self: 'a;
-    const KIND: FieldKind;
+pub trait Tag {
+    fn title(&self) -> Option<&str>;
+    fn artist(&self) -> Option<&str>;
+    fn album(&self) -> Option<&str>;
+    fn genre(&self) -> Option<&str>;
+    fn year(&self) -> Option<i32>;
+    fn track(&self) -> Option<u32>;
+    fn total_tracks(&self) -> Option<u32>;
+    fn disc(&self) -> Option<u32>;
+    fn total_discs(&self) -> Option<u32>;
+    fn duration(&self) -> Option<Duration>;
+
+    fn set_title(&mut self, value: &str);
+    fn set_artist(&mut self, value: &str);
+    fn set_album(&mut self, value: &str);
+    fn set_genre(&mut self, value: &str);
+    fn set_year(&mut self, value: i32);
+    fn set_track(&mut self, value: u32);
+    fn set_total_tracks(&mut self, value: u32);
+    fn set_disc(&mut self, value: u32);
+    fn set_total_discs(&mut self, value: u32);
+    fn set_duration(&mut self, value: Duration);
+
+    fn remove_title(&mut self);
+    fn remove_artist(&mut self);
+    fn remove_album(&mut self);
+    fn remove_genre(&mut self);
+    fn remove_year(&mut self);
+    fn remove_track(&mut self);
+    fn remove_total_tracks(&mut self);
+    fn remove_disc(&mut self);
+    fn remove_total_discs(&mut self);
+    fn remove_duration(&mut self);
+
+    fn write_to_path(&self, path: &Path) -> Result<(), Error>;
 }
 
-pub trait MyTag {
-    /// returns the current value
-    fn get<F: Field>(&self) -> Option<F::Type<'_>>;
-    /// sets the value to `value`
-    fn set_unchecked<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>)
-    where
-        F::Type<'b>: PartialEq;
-
-    /// sets the value to `value` and returns true if something changed
-    fn set<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
-    where
-        F::Type<'b>: PartialEq,
-    {
-        {
-            let ptr = self as *mut Self;
-            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
-            let self_reborrow = unsafe { &*ptr };
-            if MyTag::get::<F>(self_reborrow).is_some_and(|it| it == value) {
-                return false;
-            }
-        }
-        self.set_unchecked::<F>(value);
-        true
+impl Tag for id3::Tag {
+    fn title(&self) -> Option<&str> {
+        id3::TagLike::title(self)
     }
-    /// removes the value to `value`
-    fn remove_unchecked<F: Field>(&mut self);
-    /// removes the value to `value` and returns true, if something changed
-    fn remove<F: Field>(&mut self) -> bool {
-        if MyTag::get::<F>(self).is_none() {
-            return false;
-        }
-        self.remove_unchecked::<F>();
-        true
+    fn artist(&self) -> Option<&str> {
+        id3::TagLike::artist(self)
+    }
+    fn album(&self) -> Option<&str> {
+        id3::TagLike::album(self)
+    }
+    fn genre(&self) -> Option<&str> {
+        id3::TagLike::genre(self)
+    }
+    fn year(&self) -> Option<i32> {
+        id3::TagLike::year(self)
+    }
+    fn track(&self) -> Option<u32> {
+        id3::TagLike::track(self)
+    }
+    fn total_tracks(&self) -> Option<u32> {
+        id3::TagLike::total_tracks(self)
+    }
+    fn disc(&self) -> Option<u32> {
+        id3::TagLike::disc(self)
+    }
+    fn total_discs(&self) -> Option<u32> {
+        id3::TagLike::total_discs(self)
+    }
+    fn duration(&self) -> Option<Duration> {
+        id3::TagLike::duration(self).map(|it| Duration::from_secs(it as u64))
     }
 
-    /// sets the value to `value` if it is currently `None`
-    fn fill<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>) -> bool
-    where
-        F::Type<'b>: PartialEq,
-    {
-        if self.get::<F>().is_some() {
-            return false;
-        }
-        self.set::<F>(value);
-        true
+    fn set_title(&mut self, value: &str) {
+        id3::TagLike::set_title(self, value);
+    }
+    fn set_artist(&mut self, value: &str) {
+        id3::TagLike::set_artist(self, value);
+    }
+    fn set_album(&mut self, value: &str) {
+        id3::TagLike::set_album(self, value);
+    }
+    fn set_genre(&mut self, value: &str) {
+        id3::TagLike::set_genre(self, value);
+    }
+    fn set_year(&mut self, value: i32) {
+        id3::TagLike::set_year(self, value);
+    }
+    fn set_track(&mut self, value: u32) {
+        id3::TagLike::set_track(self, value);
+    }
+    fn set_total_tracks(&mut self, value: u32) {
+        id3::TagLike::set_total_tracks(self, value);
+    }
+    fn set_disc(&mut self, value: u32) {
+        id3::TagLike::set_disc(self, value);
+    }
+    fn set_total_discs(&mut self, value: u32) {
+        id3::TagLike::set_total_discs(self, value);
+    }
+    fn set_duration(&mut self, value: Duration) {
+        id3::TagLike::set_duration(self, value.as_secs() as u32);
     }
 
-    /// updates the value to `value` and returns, if something changed
-    fn update<'a, F: Field>(&'a mut self, value: Option<F::Type<'a>>) -> bool
-    where
-        F::Type<'a>: PartialEq,
-    {
-        match value {
-            Some(value) => self.set::<F>(value),
-            None => self.remove::<F>(),
+    fn remove_title(&mut self) {
+        id3::TagLike::remove_title(self);
+    }
+    fn remove_artist(&mut self) {
+        id3::TagLike::remove_artist(self);
+    }
+    fn remove_album(&mut self) {
+        id3::TagLike::remove_album(self);
+    }
+    fn remove_genre(&mut self) {
+        id3::TagLike::remove_genre(self);
+    }
+    fn remove_year(&mut self) {
+        id3::TagLike::remove_year(self);
+    }
+    fn remove_track(&mut self) {
+        id3::TagLike::remove_track(self);
+    }
+    fn remove_total_tracks(&mut self) {
+        id3::TagLike::remove_total_tracks(self);
+    }
+    fn remove_disc(&mut self) {
+        id3::TagLike::remove_disc(self);
+    }
+    fn remove_total_discs(&mut self) {
+        id3::TagLike::remove_total_discs(self);
+    }
+    fn remove_duration(&mut self) {
+        id3::TagLike::remove_duration(self);
+    }
+
+    fn write_to_path(&self, path: &Path) -> Result<(), Error> {
+        Ok(self.write_to_path(path, self.version())?)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("extention {0:?} not supportet")]
+    UnSupported(Option<String>),
+    #[error("file hat no Tag info")]
+    NoTag,
+    #[error(transparent)]
+    Other(Box<dyn std::error::Error>),
+}
+impl From<Option<&str>> for Error {
+    fn from(value: Option<&str>) -> Self {
+        Self::UnSupported(value.map(ToOwned::to_owned))
+    }
+}
+impl From<id3::Error> for Error {
+    fn from(value: id3::Error) -> Self {
+        match value.kind {
+            id3::ErrorKind::NoTag => Self::NoTag,
+            _ => Self::Other(Box::new(value)),
         }
     }
 }
 
-impl MyTag for id3::Tag {
-    fn get<F: Field>(&self) -> Option<F::Type<'_>> {
-        match F::KIND {
-            FieldKind::Title => self
-                .title()
-                .map(|it| F::Type::from_str(it).expect("Title from str failed")),
-            FieldKind::Artist => self
-                .artist()
-                .map(|it| F::Type::from_str(it).expect("Artist from str failed")),
-            FieldKind::Album => self
-                .album()
-                .map(|it| F::Type::from_str(it).expect("Album from str failed")),
-            FieldKind::Genre => self
-                .genre()
-                .map(|it| F::Type::from_str(it).expect("Genre from str failed")),
-            FieldKind::Year => self
-                .year()
-                .map(|it| F::Type::from_i32(it).expect("Year from i32 failed")),
-            FieldKind::Track => self
-                .track()
-                .map(|it| F::Type::from_u32(it).expect("Track from u32 failed")),
-            FieldKind::TotalTracks => self
-                .total_tracks()
-                .map(|it| F::Type::from_u32(it).expect("TotalTracks from u32 failed")),
-            FieldKind::Disc => self
-                .disc()
-                .map(|it| F::Type::from_u32(it).expect("Disc from u32 failed")),
-            FieldKind::TotalDiscs => self
-                .total_discs()
-                .map(|it| F::Type::from_u32(it).expect("TotalDiscs from u32 failed")),
-            FieldKind::Length => self.duration().map(|it| {
-                F::Type::from_duration(Duration::from_secs(it as u64))
-                    .expect("length from Duration failed")
-            }),
-        }
-    }
-
-    fn set_unchecked<'b, 'a: 'b, F: Field>(&'a mut self, value: F::Type<'b>)
-    where
-        F::Type<'b>: PartialEq,
-    {
-        match F::KIND {
-            FieldKind::Title => self.set_title(value.into_str().expect("Title into str failed")),
-            FieldKind::Artist => self.set_artist(value.into_str().expect("Artist into str failed")),
-            FieldKind::Album => self.set_album(value.into_str().expect("Album into str failed")),
-            FieldKind::Genre => self.set_genre(value.into_str().expect("Genre into str failed")),
-            FieldKind::Year => self.set_year(value.into_i32().expect("Year into i32 failed")),
-            FieldKind::Track => self.set_track(value.into_u32().expect("Track into u32 failed")),
-            FieldKind::TotalTracks => {
-                self.set_total_tracks(value.into_u32().expect("TotalTracks into u32 failed"));
-            }
-            FieldKind::Disc => self.set_disc(value.into_u32().expect("Discs into u32 failed")),
-            FieldKind::TotalDiscs => {
-                self.set_total_discs(value.into_u32().expect("TotalDiscs into u32 failed"));
-            }
-            FieldKind::Length => self.set_duration(
-                value
-                    .into_duration()
-                    .expect("Length into Duration failed")
-                    .as_secs() as u32,
-            ),
-        }
-    }
-
-    fn remove_unchecked<F: Field>(&mut self) {
-        match F::KIND {
-            FieldKind::Title => self.remove_title(),
-            FieldKind::Artist => self.remove_artist(),
-            FieldKind::Album => self.remove_album(),
-            FieldKind::Genre => self.remove_genre(),
-            FieldKind::Year => self.remove_year(),
-            FieldKind::Track => self.remove_track(),
-            FieldKind::TotalTracks => self.remove_total_tracks(),
-            FieldKind::Disc => self.remove_disc(),
-            FieldKind::TotalDiscs => self.remove_total_discs(),
-            FieldKind::Length => self.remove_duration(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Supportet {
+    Mp3,
+}
+impl TryFrom<&Path> for Supportet {
+    type Error = Error;
+    fn try_from(value: &Path) -> Result<Self, Self::Error> {
+        match value.extension().and_then(std::ffi::OsStr::to_str) {
+            Some("mp3") => Ok(Self::Mp3),
+            x => Err(x.into()),
         }
     }
 }
 
 #[must_use]
 pub struct TaggedFile {
-    inner: id3::Tag,
+    inner: Box<dyn Tag + Send>,
     path: PathBuf,
     was_changed: bool,
 }
 impl TaggedFile {
-    fn inner_from_path(path: &Path, default_empty: bool) -> Result<Tag, id3::Error> {
-        match Tag::read_from_path(path) {
-            Ok(tag) => Ok(tag),
-            Err(id3::Error {
-                kind: id3::ErrorKind::NoTag,
-                ..
-            }) if default_empty => {
-                log::debug!("file {path:?} didn't have Tags, using empty");
-                Ok(Tag::new())
+    fn inner_from_path(path: &Path, default_empty: bool) -> Result<Box<dyn Tag + Send>, Error> {
+        match path.try_into()? {
+            Supportet::Mp3 => {
+                match id3::Tag::read_from_path(path).map_err(std::convert::Into::into) {
+                    Ok(tag) => Ok(Box::new(tag)),
+                    Err(Error::NoTag) if default_empty => {
+                        log::debug!("file {path:?} didn't have Tags, using empty");
+                        Ok(Self::inner_empty(Supportet::Mp3))
+                    }
+                    Err(err) => Err(err),
+                }
             }
-            Err(err) => Err(err),
         }
     }
+    fn inner_empty(format: Supportet) -> Box<dyn Tag + Send> {
+        match format {
+            Supportet::Mp3 => Box::new(id3::Tag::new()),
+        }
+    }
+
     /// reads the tags from `path` or returns empty tag, when the file doesn't have tags
-    pub fn from_path(path: PathBuf, default_empty: bool) -> Result<Self, id3::Error> {
+    pub fn from_path(path: PathBuf, default_empty: bool) -> Result<Self, Error> {
         Ok(Self {
             inner: Self::inner_from_path(&path, default_empty)?,
             path,
@@ -325,21 +351,21 @@ impl TaggedFile {
         })
     }
     /// creates a new set of tags
-    pub fn new_empty(path: PathBuf) -> Self {
-        Self {
-            inner: Tag::new(),
+    pub fn new_empty(path: PathBuf) -> Result<Self, Error> {
+        Ok(Self {
+            inner: Self::inner_empty(path.as_path().try_into()?),
             path,
             was_changed: false,
-        }
+        })
     }
     /// drops all changes and loads the current tags
-    pub fn reload(&mut self, default_empty: bool) -> Result<(), id3::Error> {
+    pub fn reload(&mut self, default_empty: bool) -> Result<(), Error> {
         self.was_changed = false;
         self.inner = Self::inner_from_path(&self.path, default_empty)?;
         Ok(())
     }
     /// rereads tags and fills all that are currently empty
-    pub fn reload_empty(&mut self) -> Result<(), id3::Error> {
+    pub fn reload_empty(&mut self) -> Result<(), Error> {
         self.fill_all_from(&Self::from_path(self.path.clone(), true)?);
         Ok(())
     }
@@ -357,11 +383,11 @@ impl TaggedFile {
     /// this function should be used instead of the implicit save in Drop, to react to errors
     ///
     /// returns if changes where
-    pub fn save_changes(&mut self, force_save: bool) -> Result<bool, id3::Error> {
+    pub fn save_changes(&mut self, force_save: bool) -> Result<bool, Error> {
         if !(force_save || self.was_changed) {
             return Ok(false);
         }
-        self.inner.write_to_path(&self.path, self.inner.version())?;
+        self.inner.write_to_path(&self.path)?;
         self.was_changed = false;
         Ok(true)
     }
@@ -373,23 +399,120 @@ impl TaggedFile {
     #[must_use]
     /// reads the field `F` and returns the contained value if it exists
     pub fn get<F: Field>(&self) -> Option<F::Type<'_>> {
-        MyTag::get::<F>(&self.inner)
+        match F::KIND {
+            FieldKind::Title => self
+                .inner
+                .title()
+                .map(|it| F::Type::from_str(it).expect("Title from str failed")),
+            FieldKind::Artist => self
+                .inner
+                .artist()
+                .map(|it| F::Type::from_str(it).expect("Artist from str failed")),
+            FieldKind::Album => self
+                .inner
+                .album()
+                .map(|it| F::Type::from_str(it).expect("Album from str failed")),
+            FieldKind::Genre => self
+                .inner
+                .genre()
+                .map(|it| F::Type::from_str(it).expect("Genre from str failed")),
+            FieldKind::Year => self
+                .inner
+                .year()
+                .map(|it| F::Type::from_i32(it).expect("Year from i32 failed")),
+            FieldKind::Track => self
+                .inner
+                .track()
+                .map(|it| F::Type::from_u32(it).expect("Track from u32 failed")),
+            FieldKind::TotalTracks => self
+                .inner
+                .total_tracks()
+                .map(|it| F::Type::from_u32(it).expect("TotalTracks from u32 failed")),
+            FieldKind::Disc => self
+                .inner
+                .disc()
+                .map(|it| F::Type::from_u32(it).expect("Disc from u32 failed")),
+            FieldKind::TotalDiscs => self
+                .inner
+                .total_discs()
+                .map(|it| F::Type::from_u32(it).expect("TotalDiscs from u32 failed")),
+            FieldKind::Length => self
+                .inner
+                .duration()
+                .map(|it| F::Type::from_duration(it).expect("length from Duration failed")),
+        }
     }
     /// upates the field `F` with `value` or removes it, if `value` is `None`
     pub fn set<'a, F: Field + 'a>(&'a mut self, value: impl Into<Option<F::Type<'a>>>)
     where
         F::Type<'a>: PartialEq,
     {
-        self.was_changed |= MyTag::update::<F>(&mut self.inner, value.into());
+        let value = value.into();
+        {
+            let ptr = self as *mut Self;
+            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
+            if unsafe { &*ptr }.get::<F>() == value {
+                return;
+            }
+        }
+
+        match value {
+            Some(value) => match F::KIND {
+                FieldKind::Title => self
+                    .inner
+                    .set_title(value.into_str().expect("Title into str failed")),
+                FieldKind::Artist => self
+                    .inner
+                    .set_artist(value.into_str().expect("Artist into str failed")),
+                FieldKind::Album => self
+                    .inner
+                    .set_album(value.into_str().expect("Album into str failed")),
+                FieldKind::Genre => self
+                    .inner
+                    .set_genre(value.into_str().expect("Genre into str failed")),
+                FieldKind::Year => self
+                    .inner
+                    .set_year(value.into_i32().expect("Year into i32 failed")),
+                FieldKind::Track => self
+                    .inner
+                    .set_track(value.into_u32().expect("Track into u32 failed")),
+                FieldKind::TotalTracks => self
+                    .inner
+                    .set_total_tracks(value.into_u32().expect("TotalTracks into u32 failed")),
+                FieldKind::Disc => self
+                    .inner
+                    .set_disc(value.into_u32().expect("Discs into u32 failed")),
+                FieldKind::TotalDiscs => self
+                    .inner
+                    .set_total_discs(value.into_u32().expect("TotalDiscs into u32 failed")),
+                FieldKind::Length => self
+                    .inner
+                    .set_duration(value.into_duration().expect("Length into Duration failed")),
+            },
+            None => match F::KIND {
+                FieldKind::Title => self.inner.remove_title(),
+                FieldKind::Artist => self.inner.remove_artist(),
+                FieldKind::Album => self.inner.remove_album(),
+                FieldKind::Genre => self.inner.remove_genre(),
+                FieldKind::Year => self.inner.remove_year(),
+                FieldKind::Track => self.inner.remove_track(),
+                FieldKind::TotalTracks => self.inner.remove_total_tracks(),
+                FieldKind::Disc => self.inner.remove_disc(),
+                FieldKind::TotalDiscs => self.inner.remove_total_discs(),
+                FieldKind::Length => self.inner.remove_duration(),
+            },
+        }
+        self.was_changed = true;
     }
     /// upates the field `F` with `value` if it is currently `None`
     pub fn fill_from<'a, F: Field + 'a>(&'a mut self, other: &'a Self)
     where
         F::Type<'a>: PartialEq,
     {
-        if let Some(v) = other.get::<F>() {
-            MyTag::fill::<F>(&mut self.inner, v);
+        if self.get::<F>().is_some() {
+            return;
         }
+        self.set::<F>(other.get::<F>());
     }
     /// fills all fields with the values of `other`
     pub fn fill_all_from(&mut self, other: &Self) {
@@ -446,31 +569,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn update_field_return() {
-        let mut tags = Tag::new();
-        assert!(MyTag::set::<Title>(&mut tags, "test"), "set when empty");
-        assert!(!MyTag::set::<Title>(&mut tags, "test"), "set with same");
-        assert!(MyTag::remove::<Title>(&mut tags), "remove with some");
-        assert!(!MyTag::remove::<Title>(&mut tags), "remove when empty");
+    // #[test]
+    // fn update_field_return() {
+    //     let mut tags = id3::Tag::new();
+    //     assert!(Tag::set::<Title>(&mut tags, "test"), "set when empty");
+    //     assert!(!Tag::set::<Title>(&mut tags, "test"), "set with same");
+    //     assert!(Tag::remove::<Title>(&mut tags), "remove with some");
+    //     assert!(!Tag::remove::<Title>(&mut tags), "remove when empty");
 
-        assert!(
-            MyTag::update::<Title>(&mut tags, Some("test")),
-            "update set when empty"
-        );
-        assert!(
-            !MyTag::update::<Title>(&mut tags, Some("test")),
-            "update set with same"
-        );
-        assert!(
-            MyTag::update::<Title>(&mut tags, None),
-            "update remove with some"
-        );
-        assert!(
-            !MyTag::update::<Title>(&mut tags, None),
-            "update remove when empty"
-        );
-    }
+    //     assert!(
+    //         Tag::update::<Title>(&mut tags, Some("test")),
+    //         "update set when empty"
+    //     );
+    //     assert!(
+    //         !Tag::update::<Title>(&mut tags, Some("test")),
+    //         "update set with same"
+    //     );
+    //     assert!(
+    //         Tag::update::<Title>(&mut tags, None),
+    //         "update remove with some"
+    //     );
+    //     assert!(
+    //         !Tag::update::<Title>(&mut tags, None),
+    //         "update remove when empty"
+    //     );
+    // }
 
     #[test]
     fn save_when_needed() {
@@ -509,7 +632,7 @@ mod tests {
     }
     #[test]
     fn new_empty_is_empty() {
-        let tag = TaggedFile::new_empty(PathBuf::from("/nofile"));
+        let tag = TaggedFile::new_empty(PathBuf::from("/nofile.mp3")).unwrap();
 
         assert_eq!(None, tag.get::<Title>());
         assert_eq!(None, tag.get::<Artist>());

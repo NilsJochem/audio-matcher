@@ -1,0 +1,12 @@
+# Folgen Mergen
+	- interlude Filtern
+	- parts zusammenkleben / zusammen exportortiern
+
+# archiv komprimieren
+	- subordner für Jahr, Monat
+	- tarball?
+	- wenn export als ogg-vorbis optivorbis crate
+
+# mehr datentypen
+	- opus
+	- variable samplerate
