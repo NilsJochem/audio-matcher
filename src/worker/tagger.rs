@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use opus_tag::opus_tagger::{Comment, OpusMeta, VorbisComment};
 use thiserror::Error;
 
 macro_rules! field_none_method {
@@ -278,6 +279,232 @@ impl Tag for id3::Tag {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum VorbisKeys {
+    Title,
+    Artist,
+    Album,
+    Genre,
+    DiskNumber,
+    TrackNumber,
+    TotalDiskNumber,
+    TotalTrackNumber,
+    Year,
+    Duration,
+}
+impl VorbisKeys {
+    /// [spec](https://picard-docs.musicbrainz.org/downloads/MusicBrainz_Picard_Tag_Map.html)
+    /// "author" for artits is used by audacity, when converting from mp3
+    const fn get_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Title => &["TITLE"],
+            Self::Artist => &["ARTIST", "AUTHOR"],
+            Self::Album => &["ALBUM"],
+            Self::Genre => &["GENRE"],
+            Self::DiskNumber => &["DISKNUMBER"],
+            Self::TrackNumber => &["TRACKNUMBER"],
+            Self::Year => &["YEAR"],
+            Self::TotalDiskNumber => &["TOTALDISCS", "DISCTOTAL"],
+            Self::TotalTrackNumber => &["TOTALTRACKS", "TRACKTOTAL"],
+            Self::Duration => &["DURATIONHINT", "DURATION"],
+        }
+    }
+
+    fn get_first(self, tag: &VorbisComment) -> Option<&'_ str> {
+        let comments = self
+            .get_all(tag)
+            .map(|Comment { key: _, value }| value.as_str())
+            .collect::<Vec<_>>();
+        if comments.len() >= 2 {
+            log::warn!("more than one comment for {self:?} found: {comments:?}");
+        }
+        comments.first().copied()
+    }
+    fn get_first_map<'a, T>(
+        self,
+        tag: &'a VorbisComment,
+        map: impl Fn(&'a str) -> Option<T>,
+    ) -> Option<T> {
+        let value = self.get_first(tag)?;
+        let value = map(value);
+        if value.is_some() {
+            return value;
+        }
+        // TODO remove invalid key
+        // self.remove()
+        None
+    }
+    fn get_all(self, tag: &VorbisComment) -> impl Iterator<Item = &'_ Comment> {
+        let keys = self.get_keys();
+        keys.iter().flat_map(|key| tag.find_comments(key))
+    }
+
+    fn set_first(self, tag: &mut VorbisComment, value: &impl ToString) {
+        let comments = self.get_all(tag).collect::<Vec<_>>();
+        let keys = self.get_keys();
+        match comments.as_slice() {
+            [] => {
+                log::warn!("more than one comment for {self:?} found: {comments:?}");
+            }
+            [_] => {
+                log::warn!("one comment for {self:?} found: {comments:?}, will overwrite");
+                for key in keys {
+                    if tag.remove_first(key).is_some() {
+                        break;
+                    }
+                }
+            }
+            [..] => {
+                log::warn!("more than one comment for {self:?} found: {comments:?}, will append");
+                todo!("handle better")
+            }
+        }
+        tag.add_comment((keys[0], value.to_string()));
+    }
+
+    fn remove_all(self, tag: &mut VorbisComment) {
+        let keys = self.get_keys();
+        for key in keys {
+            tag.remove_all(key);
+        }
+    }
+}
+
+impl Tag for VorbisComment {
+    fn title(&self) -> Option<&str> {
+        VorbisKeys::Title.get_first(self)
+    }
+
+    fn artist(&self) -> Option<&str> {
+        VorbisKeys::Artist.get_first(self)
+    }
+
+    fn album(&self) -> Option<&str> {
+        VorbisKeys::Album.get_first(self)
+    }
+
+    fn genre(&self) -> Option<&str> {
+        VorbisKeys::Genre.get_first(self)
+    }
+
+    fn year(&self) -> Option<i32> {
+        VorbisKeys::Year.get_first_map(self, |it| it.parse().ok())
+    }
+
+    fn track(&self) -> Option<u32> {
+        VorbisKeys::TrackNumber.get_first_map(self, |it| {
+            it.split('/').next().and_then(|it| it.parse().ok())
+        })
+    }
+
+    fn total_tracks(&self) -> Option<u32> {
+        VorbisKeys::TotalTrackNumber
+            .get_first_map(self, |it| it.parse().ok())
+            .or_else(|| {
+                VorbisKeys::TrackNumber.get_first_map(self, |it| {
+                    it.split('/').nth(1).and_then(|it| it.parse().ok())
+                })
+            })
+    }
+
+    fn disc(&self) -> Option<u32> {
+        VorbisKeys::DiskNumber.get_first_map(self, |it| it.parse().ok())
+    }
+
+    fn total_discs(&self) -> Option<u32> {
+        VorbisKeys::TotalDiskNumber.get_first_map(self, |it| it.parse().ok())
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        VorbisKeys::Duration.get_first_map(self, |it| it.parse().ok().map(Duration::from_secs))
+    }
+
+    fn set_title(&mut self, value: &str) {
+        VorbisKeys::Title.set_first(self, &value);
+    }
+
+    fn set_artist(&mut self, value: &str) {
+        VorbisKeys::Artist.set_first(self, &value);
+    }
+
+    fn set_album(&mut self, value: &str) {
+        VorbisKeys::Album.set_first(self, &value);
+    }
+
+    fn set_genre(&mut self, value: &str) {
+        VorbisKeys::Genre.set_first(self, &value);
+    }
+
+    fn set_year(&mut self, value: i32) {
+        VorbisKeys::Year.set_first(self, &value);
+    }
+
+    fn set_track(&mut self, value: u32) {
+        VorbisKeys::TrackNumber.set_first(self, &value);
+    }
+
+    fn set_total_tracks(&mut self, value: u32) {
+        VorbisKeys::TotalTrackNumber.set_first(self, &value);
+    }
+
+    fn set_disc(&mut self, value: u32) {
+        VorbisKeys::DiskNumber.set_first(self, &value);
+    }
+
+    fn set_total_discs(&mut self, value: u32) {
+        VorbisKeys::TotalDiskNumber.set_first(self, &value);
+    }
+
+    fn set_duration(&mut self, value: Duration) {
+        VorbisKeys::Duration.set_first(self, &value.as_secs());
+    }
+
+    fn remove_title(&mut self) {
+        VorbisKeys::Title.remove_all(self);
+    }
+
+    fn remove_artist(&mut self) {
+        VorbisKeys::Artist.remove_all(self);
+    }
+
+    fn remove_album(&mut self) {
+        VorbisKeys::Album.remove_all(self);
+    }
+
+    fn remove_genre(&mut self) {
+        VorbisKeys::Genre.remove_all(self);
+    }
+
+    fn remove_year(&mut self) {
+        VorbisKeys::Year.remove_all(self);
+    }
+
+    fn remove_track(&mut self) {
+        VorbisKeys::TrackNumber.remove_all(self);
+    }
+
+    fn remove_total_tracks(&mut self) {
+        VorbisKeys::TotalTrackNumber.remove_all(self);
+    }
+
+    fn remove_disc(&mut self) {
+        VorbisKeys::DiskNumber.remove_all(self);
+    }
+
+    fn remove_total_discs(&mut self) {
+        VorbisKeys::TotalDiskNumber.remove_all(self);
+    }
+
+    fn remove_duration(&mut self) {
+        VorbisKeys::Duration.remove_all(self);
+    }
+
+    fn write_to_path(&self, path: &Path) -> Result<(), Error> {
+        self.write_opus_file(path)
+            .map_err(|err| Error::Other(Box::new(err)))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("extention {0:?} not supportet")]
@@ -304,12 +531,14 @@ impl From<id3::Error> for Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Supportet {
     Mp3,
+    Opus,
 }
 impl TryFrom<&Path> for Supportet {
     type Error = Error;
     fn try_from(value: &Path) -> Result<Self, Self::Error> {
         match value.extension().and_then(std::ffi::OsStr::to_str) {
             Some("mp3") => Ok(Self::Mp3),
+            Some("opus") => Ok(Self::Opus),
             x => Err(x.into()),
         }
     }
@@ -334,11 +563,16 @@ impl TaggedFile {
                     Err(err) => Err(err),
                 }
             }
+            Supportet::Opus => match OpusMeta::read_from_file(path) {
+                Ok(meta) => Ok(Box::new(meta.tags)),
+                Err(err) => Err(Error::Other(Box::new(err))),
+            },
         }
     }
     fn inner_empty(format: Supportet) -> Box<dyn Tag + Send> {
         match format {
             Supportet::Mp3 => Box::new(id3::Tag::new()),
+            Supportet::Opus => Box::new(VorbisComment::empty("Lavf60.3.100")), // better vendor
         }
     }
 
@@ -569,37 +803,67 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn update_field_return() {
-    //     let mut tags = id3::Tag::new();
-    //     assert!(Tag::set::<Title>(&mut tags, "test"), "set when empty");
-    //     assert!(!Tag::set::<Title>(&mut tags, "test"), "set with same");
-    //     assert!(Tag::remove::<Title>(&mut tags), "remove with some");
-    //     assert!(!Tag::remove::<Title>(&mut tags), "remove when empty");
+    mod mp3 {
+        use super::*;
+        const FILE: &str = "res/id3test.mp3";
 
-    //     assert!(
-    //         Tag::update::<Title>(&mut tags, Some("test")),
-    //         "update set when empty"
-    //     );
-    //     assert!(
-    //         !Tag::update::<Title>(&mut tags, Some("test")),
-    //         "update set with same"
-    //     );
-    //     assert!(
-    //         Tag::update::<Title>(&mut tags, None),
-    //         "update remove with some"
-    //     );
-    //     assert!(
-    //         !Tag::update::<Title>(&mut tags, None),
-    //         "update remove when empty"
-    //     );
-    // }
+        #[test]
+        fn save_when_needed() {
+            let file = TestFile::new(FILE);
+            let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
 
-    #[test]
-    fn save_when_needed() {
-        let file = TestFile::new("res/id3test.mp3");
-        let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+            super::save_when_needed_helper(&mut tag);
+        }
 
+        #[test]
+        fn read() {
+            let tag = TaggedFile::from_path(PathBuf::from(FILE), false).unwrap();
+            super::read(&tag);
+        }
+        #[test]
+        fn new_empty_is_empty() {
+            let tag = TaggedFile::new_empty(PathBuf::from("/nofile.mp3")).unwrap();
+
+            super::new_empty_is_empty(&tag);
+        }
+        #[test]
+        fn read_saved() {
+            let file = TestFile::new(FILE);
+            super::read_saved(&file);
+        }
+    }
+
+    mod opus {
+        use super::*;
+        const FILE: &str = "res/tag_test.opus";
+
+        #[test]
+        fn save_when_needed() {
+            let file = TestFile::new(FILE);
+            let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+
+            super::save_when_needed_helper(&mut tag);
+        }
+
+        #[test]
+        fn read() {
+            let tag = TaggedFile::from_path(PathBuf::from(FILE), false).unwrap();
+            super::read(&tag);
+        }
+        #[test]
+        fn new_empty_is_empty() {
+            let tag = TaggedFile::new_empty(PathBuf::from("/nofile.opus")).unwrap();
+
+            super::new_empty_is_empty(&tag);
+        }
+        #[test]
+        fn read_saved() {
+            let file = TestFile::new(FILE);
+            super::read_saved(&file);
+        }
+    }
+
+    fn save_when_needed_helper(tag: &mut TaggedFile) {
         assert!(
             tag.save_changes(true).unwrap(),
             "force save without changes"
@@ -616,10 +880,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read() {
-        let tag = TaggedFile::from_path(PathBuf::from("res/id3test.mp3"), false).unwrap();
-
+    fn read(tag: &TaggedFile) {
         assert_eq!(Some("title"), tag.get::<Title>());
         assert_eq!(Some("artist"), tag.get::<Artist>());
         assert_eq!(Some("album"), tag.get::<Album>());
@@ -630,10 +891,8 @@ mod tests {
         assert_eq!(Some(2), tag.get::<Disc>());
         assert_eq!(Some(Duration::from_secs(7)), tag.get::<Length>());
     }
-    #[test]
-    fn new_empty_is_empty() {
-        let tag = TaggedFile::new_empty(PathBuf::from("/nofile.mp3")).unwrap();
 
+    fn new_empty_is_empty(tag: &TaggedFile) {
         assert_eq!(None, tag.get::<Title>());
         assert_eq!(None, tag.get::<Artist>());
         assert_eq!(None, tag.get::<Album>());
@@ -646,9 +905,7 @@ mod tests {
         assert_eq!(None, tag.get::<Length>());
     }
 
-    #[test]
-    fn read_saved() {
-        let file = TestFile::new("res/id3test.mp3");
+    fn read_saved(file: &TestFile) {
         let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
         let new_title = "example";
 

@@ -157,8 +157,8 @@ pub struct VorbisComment {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Comment {
-    key: String,
-    value: String,
+    pub key: String,
+    pub value: String,
 }
 impl<IntoK: Into<String>, IntoV: Into<String>> From<(IntoK, IntoV)> for Comment {
     fn from(value: (IntoK, IntoV)) -> Self {
@@ -169,6 +169,12 @@ impl<IntoK: Into<String>, IntoV: Into<String>> From<(IntoK, IntoV)> for Comment 
     }
 }
 impl VorbisComment {
+    pub fn empty(vendor: impl Into<String>) -> Self {
+        Self {
+            vendor: vendor.into(),
+            comments: Vec::new(),
+        }
+    }
     pub fn new<Iter: IntoIterator>(vendor: impl Into<String>, comments: Iter) -> Self
     where
         Iter::Item: Into<Comment>,
@@ -181,6 +187,28 @@ impl VorbisComment {
                 .collect_vec(),
         }
     }
+    pub fn add_comment(&mut self, comment: impl Into<Comment>) {
+        self.comments.push(comment.into());
+    }
+    pub fn find_comments(&self, key: impl AsRef<str>) -> impl Iterator<Item = &Comment> {
+        self.comments
+            .iter()
+            .filter(move |it| it.key.eq_ignore_ascii_case(key.as_ref()))
+    }
+    pub fn remove_first(&mut self, key: impl AsRef<str>) -> Option<Comment> {
+        let element = self
+            .comments
+            .iter()
+            .enumerate()
+            .find_map(|it| (it.1.key.eq_ignore_ascii_case(key.as_ref())).then_some(it.0));
+        element.map(|i| self.comments.remove(i))
+    }
+    pub fn remove_all(&mut self, key: impl AsRef<str>) {
+        // todo return removed
+        self.comments
+            .retain(|it| !it.key.eq_ignore_ascii_case(key.as_ref()));
+    }
+
     /// reads opus metadata from `from`, updates the [`OpusTags`] and writes the whole updated stream to `to`
     fn update_opus_tags(&self, mut from: impl Read, mut to: impl Write) -> Result<(), Error> {
         let mut iter = OggPage::iterate_read(&mut from);
@@ -216,7 +244,10 @@ impl VorbisComment {
         let tmp_name = path.with_file_name(format!(".{tmp_name}"));
         let tmp_file = std::fs::OpenOptions::new()
             .create_new(true)
+            .read(true)
+            .write(true)
             .open(&tmp_name)
+            // .unwrap();
             .expect("tmp file already exists");
 
         self.update_opus_tags(file, tmp_file)?;
@@ -271,8 +302,8 @@ impl VorbisComment {
 const TAGS_MAGIC_STR: &str = "OpusTags";
 #[derive(Debug, PartialEq, Eq)]
 pub struct OpusMeta {
-    head: OpusHead,
-    tags: VorbisComment,
+    pub head: OpusHead,
+    pub tags: VorbisComment,
 }
 impl OpusMeta {
     pub fn read_from<R: Read>(data: R) -> Result<Self, error::Error> {
