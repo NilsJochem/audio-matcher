@@ -16,8 +16,8 @@ mod field_kind {
         Year(Option<i32>),
         Track(Option<u32>),
         TotalTracks(Option<u32>),
-        Disc(Option<u32>),
-        TotalDiscs(Option<u32>),
+        Disk(Option<u32>),
+        TotalDisks(Option<u32>),
         Length(Option<Duration>),
     }
 
@@ -29,8 +29,8 @@ mod field_kind {
         Year,
         Track,
         TotalTracks,
-        Disc,
-        TotalDiscs,
+        Disk,
+        TotalDisks,
         Length,
     }
 }
@@ -69,8 +69,8 @@ field!(Year, i32);
 
 field!(Track, u32);
 field!(TotalTracks, u32);
-field!(Disc, u32);
-field!(TotalDiscs, u32);
+field!(Disk, u32);
+field!(TotalDisks, u32);
 
 field!(Length, Duration);
 
@@ -121,8 +121,8 @@ pub trait Tag {
     fn year(&self) -> Option<i32>;
     fn track(&self) -> Option<u32>;
     fn total_tracks(&self) -> Option<u32>;
-    fn disc(&self) -> Option<u32>;
-    fn total_discs(&self) -> Option<u32>;
+    fn disk(&self) -> Option<u32>;
+    fn total_disks(&self) -> Option<u32>;
     fn duration(&self) -> Option<Duration>;
 
     fn set(&mut self, value: field_kind::Set);
@@ -162,10 +162,10 @@ mod mp3 {
         fn total_tracks(&self) -> Option<u32> {
             id3::TagLike::total_tracks(self)
         }
-        fn disc(&self) -> Option<u32> {
+        fn disk(&self) -> Option<u32> {
             id3::TagLike::disc(self)
         }
-        fn total_discs(&self) -> Option<u32> {
+        fn total_disks(&self) -> Option<u32> {
             id3::TagLike::total_discs(self)
         }
         fn duration(&self) -> Option<Duration> {
@@ -183,8 +183,8 @@ mod mp3 {
                 Kind::Year(Some(value)) => self.set_year(value),
                 Kind::Track(Some(value)) => self.set_track(value),
                 Kind::TotalTracks(Some(value)) => self.set_total_tracks(value),
-                Kind::Disc(Some(value)) => self.set_disc(value),
-                Kind::TotalDiscs(Some(value)) => self.set_total_discs(value),
+                Kind::Disk(Some(value)) => self.set_disc(value),
+                Kind::TotalDisks(Some(value)) => self.set_total_discs(value),
                 Kind::Length(Some(value)) => self.set_duration(value.as_secs() as u32),
 
                 Kind::Title(None) => self.remove_title(),
@@ -194,8 +194,8 @@ mod mp3 {
                 Kind::Year(None) => self.remove_year(),
                 Kind::Track(None) => self.remove_track(),
                 Kind::TotalTracks(None) => self.remove_total_tracks(),
-                Kind::Disc(None) => self.remove_disc(),
-                Kind::TotalDiscs(None) => self.remove_total_discs(),
+                Kind::Disk(None) => self.remove_disc(),
+                Kind::TotalDisks(None) => self.remove_total_discs(),
                 Kind::Length(None) => self.remove_duration(),
             }
         }
@@ -359,11 +359,11 @@ mod opus {
                 })
         }
 
-        fn disc(&self) -> Option<u32> {
+        fn disk(&self) -> Option<u32> {
             VorbisKeys::DiskNumber.get_first_map(self, |it| it.parse().ok())
         }
 
-        fn total_discs(&self) -> Option<u32> {
+        fn total_disks(&self) -> Option<u32> {
             VorbisKeys::TotalDiskNumber.get_first_map(self, |it| it.parse().ok())
         }
 
@@ -382,8 +382,8 @@ mod opus {
                 Kind::Year(Some(value)) => Key::Year.set_first(self, &value),
                 Kind::Track(Some(value)) => Key::TrackNumber.set_first(self, &value),
                 Kind::TotalTracks(Some(value)) => Key::TotalTrackNumber.set_first(self, &value),
-                Kind::Disc(Some(value)) => Key::DiskNumber.set_first(self, &value),
-                Kind::TotalDiscs(Some(value)) => Key::TotalDiskNumber.set_first(self, &value),
+                Kind::Disk(Some(value)) => Key::DiskNumber.set_first(self, &value),
+                Kind::TotalDisks(Some(value)) => Key::TotalDiskNumber.set_first(self, &value),
                 Kind::Length(Some(value)) => Key::Duration.set_first(self, &value.as_secs()),
 
                 Kind::Title(None) => Key::Title.remove_all(self),
@@ -393,8 +393,8 @@ mod opus {
                 Kind::Year(None) => Key::Year.remove_all(self),
                 Kind::Track(None) => Key::TrackNumber.remove_all(self),
                 Kind::TotalTracks(None) => Key::TotalTrackNumber.remove_all(self),
-                Kind::Disc(None) => Key::DiskNumber.remove_all(self),
-                Kind::TotalDiscs(None) => Key::TotalDiskNumber.remove_all(self),
+                Kind::Disk(None) => Key::DiskNumber.remove_all(self),
+                Kind::TotalDisks(None) => Key::TotalDiskNumber.remove_all(self),
                 Kind::Length(None) => Key::Duration.remove_all(self),
             }
         }
@@ -573,14 +573,14 @@ impl TaggedFile {
                 .inner
                 .total_tracks()
                 .map(|it| F::Type::from_u32(it).expect("TotalTracks from u32 failed")),
-            Kind::Disc => self
+            Kind::Disk => self
                 .inner
-                .disc()
-                .map(|it| F::Type::from_u32(it).expect("Disc from u32 failed")),
-            Kind::TotalDiscs => self
+                .disk()
+                .map(|it| F::Type::from_u32(it).expect("Disk from u32 failed")),
+            Kind::TotalDisks => self
                 .inner
-                .total_discs()
-                .map(|it| F::Type::from_u32(it).expect("TotalDiscs from u32 failed")),
+                .total_disks()
+                .map(|it| F::Type::from_u32(it).expect("TotalDisks from u32 failed")),
             Kind::Length => self
                 .inner
                 .duration()
@@ -623,8 +623,8 @@ impl TaggedFile {
         self.fill_from::<Year>(other);
         self.fill_from::<Track>(other);
         self.fill_from::<TotalTracks>(other);
-        self.fill_from::<Disc>(other);
-        self.fill_from::<TotalDiscs>(other);
+        self.fill_from::<Disk>(other);
+        self.fill_from::<TotalDisks>(other);
         self.fill_from::<Length>(other);
     }
 }
@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(Some(2023), tag.get::<Year>());
         assert_eq!(Some(5), tag.get::<Track>());
         assert_eq!(Some(7), tag.get::<TotalTracks>());
-        assert_eq!(Some(2), tag.get::<Disc>());
+        assert_eq!(Some(2), tag.get::<Disk>());
         assert_eq!(Some(Duration::from_secs(7)), tag.get::<Length>());
     }
 
@@ -766,8 +766,8 @@ mod tests {
         assert_eq!(None, tag.get::<Year>());
         assert_eq!(None, tag.get::<Track>());
         assert_eq!(None, tag.get::<TotalTracks>());
-        assert_eq!(None, tag.get::<Disc>());
-        assert_eq!(None, tag.get::<TotalDiscs>());
+        assert_eq!(None, tag.get::<Disk>());
+        assert_eq!(None, tag.get::<TotalDisks>());
         assert_eq!(None, tag.get::<Length>());
     }
 

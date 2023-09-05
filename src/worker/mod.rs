@@ -14,7 +14,7 @@ use crate::{
     extensions::vec::PushReturn,
     iter::{CloneIteratorExt, FutIterExt},
     worker::tagger::{
-        Album, Artist, Disc, Genre, TaggedFile, Title, TotalDiscs, TotalTracks, Track, Year,
+        Album, Artist, Disk, Genre, TaggedFile, Title, TotalDisks, TotalTracks, Track, Year,
     },
 };
 
@@ -211,9 +211,9 @@ async fn rename_labels(
             tag.set::<Track>((j + 1) as u32);
             tag.set::<TotalTracks>(number as u32);
             tag.set::<Genre>(args.genre());
-            tag.set::<Disc>(chapter_number.nr() as u32);
+            tag.set::<Disk>(chapter_number.nr() as u32);
             if let Some(l) = index_len {
-                tag.set::<TotalDiscs>(l as u32);
+                tag.set::<TotalDisks>(l as u32);
             }
             if let Some(artist) = artist.as_deref() {
                 tag.set::<Artist>(artist);
