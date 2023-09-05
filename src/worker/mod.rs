@@ -203,7 +203,7 @@ async fn rename_labels(
             let name = build_timelabel_name(&series, &chapter_number, j + 1, &chapter_name);
 
             let mut path = args.tmp_path().to_path_buf();
-            path.push(format!("{name}.mp3"));
+            path.push(format!("{name}.{}", args.export_ext()));
             let tag = tags.push_return(TaggedFile::new_empty(path).unwrap());
 
             tag.set::<Title>(format!("{chapter_name} {}", j + 1).as_ref());
@@ -340,7 +340,7 @@ async fn move_results(
             ));
 
             let mut glob_path = tmp_path.as_ref().to_path_buf();
-            glob_path.push(format!("{series} {nr}.* {chapter}.mp3"));
+            glob_path.push(format!("{series} {nr}.* {chapter}.{}", args.export_ext()));
             move_result(
                 dir,
                 glob_path

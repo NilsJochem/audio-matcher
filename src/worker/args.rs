@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -21,6 +22,14 @@ pub struct Parameter {
     )]
     #[arg(value_parser = parse_duration)]
     pub timeout: Option<Duration>,
+
+    #[clap(
+        long,
+        default_value_t = Cow::Borrowed("mp3"),
+        value_name = "FORMAT",
+        help = "expected format of exported files"
+    )]
+    pub export_ext: Cow<'static, str>,
 
     #[clap(long, help = "skips loading of data, assumes project is set up")]
     pub skip_load: bool,
@@ -136,5 +145,9 @@ impl Arguments {
             .audio_paths
             .iter()
             .map(|label_path| label_path.with_extension("txt"))
+    }
+    #[must_use]
+    pub fn export_ext(&self) -> &str {
+        self.parameter.export_ext.as_ref()
     }
 }
