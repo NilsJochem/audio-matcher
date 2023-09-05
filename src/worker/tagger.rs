@@ -173,51 +173,54 @@ mod mp3 {
         }
 
         fn set(&mut self, value: field_kind::Set) {
+            use field_kind::Set as Kind;
+            use id3::TagLike;
             match value {
-                field_kind::Set::Title(Some(value)) => id3::TagLike::set_title(self, value),
-                field_kind::Set::Artist(Some(value)) => id3::TagLike::set_artist(self, value),
-                field_kind::Set::Album(Some(value)) => id3::TagLike::set_album(self, value),
-                field_kind::Set::Genre(Some(value)) => id3::TagLike::set_genre(self, value),
-                field_kind::Set::Year(Some(value)) => id3::TagLike::set_year(self, value),
-                field_kind::Set::Track(Some(value)) => id3::TagLike::set_track(self, value),
-                field_kind::Set::TotalTracks(Some(value)) => {
-                    id3::TagLike::set_total_tracks(self, value);
-                }
-                field_kind::Set::Disc(Some(value)) => id3::TagLike::set_disc(self, value),
-                field_kind::Set::TotalDiscs(Some(value)) => {
-                    id3::TagLike::set_total_discs(self, value);
-                }
-                field_kind::Set::Length(Some(value)) => {
-                    id3::TagLike::set_duration(self, value.as_secs() as u32);
-                }
-                field_kind::Set::Title(None) => id3::TagLike::remove_title(self),
-                field_kind::Set::Artist(None) => id3::TagLike::remove_artist(self),
-                field_kind::Set::Album(None) => id3::TagLike::remove_album(self),
-                field_kind::Set::Genre(None) => id3::TagLike::remove_genre(self),
-                field_kind::Set::Year(None) => id3::TagLike::remove_year(self),
-                field_kind::Set::Track(None) => id3::TagLike::remove_track(self),
-                field_kind::Set::TotalTracks(None) => id3::TagLike::remove_total_tracks(self),
-                field_kind::Set::Disc(None) => id3::TagLike::remove_disc(self),
-                field_kind::Set::TotalDiscs(None) => id3::TagLike::remove_total_discs(self),
-                field_kind::Set::Length(None) => id3::TagLike::remove_duration(self),
+                Kind::Title(Some(value)) => self.set_title(value),
+                Kind::Artist(Some(value)) => self.set_artist(value),
+                Kind::Album(Some(value)) => self.set_album(value),
+                Kind::Genre(Some(value)) => self.set_genre(value),
+                Kind::Year(Some(value)) => self.set_year(value),
+                Kind::Track(Some(value)) => self.set_track(value),
+                Kind::TotalTracks(Some(value)) => self.set_total_tracks(value),
+                Kind::Disc(Some(value)) => self.set_disc(value),
+                Kind::TotalDiscs(Some(value)) => self.set_total_discs(value),
+                Kind::Length(Some(value)) => self.set_duration(value.as_secs() as u32),
+
+                Kind::Title(None) => self.remove_title(),
+                Kind::Artist(None) => self.remove_artist(),
+                Kind::Album(None) => self.remove_album(),
+                Kind::Genre(None) => self.remove_genre(),
+                Kind::Year(None) => self.remove_year(),
+                Kind::Track(None) => self.remove_track(),
+                Kind::TotalTracks(None) => self.remove_total_tracks(),
+                Kind::Disc(None) => self.remove_disc(),
+                Kind::TotalDiscs(None) => self.remove_total_discs(),
+                Kind::Length(None) => self.remove_duration(),
             }
         }
 
         fn write_to_path(&self, path: &Path) -> Result<(), Error> {
-            Ok(self.write_to_path(path, self.version())?)
+            self.write_to_path(path, self.version()).map_err(map_err)
         }
-
         fn read_from_path(path: impl AsRef<Path>) -> Result<Self, Error>
         where
             Self: Sized,
         {
-            Ok(Self::read_from_path(path)?)
+            Self::read_from_path(path).map_err(map_err)
         }
         fn new_empty() -> Self
         where
             Self: Sized,
         {
             Self::new()
+        }
+    }
+
+    fn map_err(err: id3::Error) -> Error {
+        match err.kind {
+            id3::ErrorKind::NoTag => Error::NoTag,
+            _ => Error::Other(Box::new(err)),
         }
     }
 }
@@ -292,9 +295,7 @@ mod opus {
             let comments = self.get_all(tag).collect::<Vec<_>>();
             let keys = self.get_keys();
             match comments.as_slice() {
-                [] => {
-                    log::warn!("more than one comment for {self:?} found: {comments:?}");
-                }
+                [] => {}
                 [_] => {
                     log::warn!("one comment for {self:?} found: {comments:?}, will overwrite");
                     for key in keys {
@@ -372,54 +373,52 @@ mod opus {
 
         fn set(&mut self, value: field_kind::Set) {
             use field_kind::Set as Kind;
+            use VorbisKeys as Key;
             match value {
-                Kind::Title(Some(value)) => VorbisKeys::Title.set_first(self, &value),
-                Kind::Artist(Some(value)) => VorbisKeys::Artist.set_first(self, &value),
-                Kind::Album(Some(value)) => VorbisKeys::Album.set_first(self, &value),
-                Kind::Genre(Some(value)) => VorbisKeys::Genre.set_first(self, &value),
-                Kind::Year(Some(value)) => VorbisKeys::Year.set_first(self, &value),
-                Kind::Track(Some(value)) => VorbisKeys::TrackNumber.set_first(self, &value),
-                Kind::TotalTracks(Some(value)) => {
-                    VorbisKeys::TotalTrackNumber.set_first(self, &value);
-                }
-                Kind::Disc(Some(value)) => VorbisKeys::DiskNumber.set_first(self, &value),
-                Kind::TotalDiscs(Some(value)) => {
-                    VorbisKeys::TotalDiskNumber.set_first(self, &value);
-                }
-                Kind::Length(Some(value)) => VorbisKeys::Duration.set_first(self, &value.as_secs()),
+                Kind::Title(Some(value)) => Key::Title.set_first(self, &value),
+                Kind::Artist(Some(value)) => Key::Artist.set_first(self, &value),
+                Kind::Album(Some(value)) => Key::Album.set_first(self, &value),
+                Kind::Genre(Some(value)) => Key::Genre.set_first(self, &value),
+                Kind::Year(Some(value)) => Key::Year.set_first(self, &value),
+                Kind::Track(Some(value)) => Key::TrackNumber.set_first(self, &value),
+                Kind::TotalTracks(Some(value)) => Key::TotalTrackNumber.set_first(self, &value),
+                Kind::Disc(Some(value)) => Key::DiskNumber.set_first(self, &value),
+                Kind::TotalDiscs(Some(value)) => Key::TotalDiskNumber.set_first(self, &value),
+                Kind::Length(Some(value)) => Key::Duration.set_first(self, &value.as_secs()),
 
-                Kind::Title(None) => VorbisKeys::Title.remove_all(self),
-                Kind::Artist(None) => VorbisKeys::Artist.remove_all(self),
-                Kind::Album(None) => VorbisKeys::Album.remove_all(self),
-                Kind::Genre(None) => VorbisKeys::Genre.remove_all(self),
-                Kind::Year(None) => VorbisKeys::DiskNumber.remove_all(self),
-                Kind::Track(None) => VorbisKeys::TrackNumber.remove_all(self),
-                Kind::TotalTracks(None) => VorbisKeys::TotalDiskNumber.remove_all(self),
-                Kind::Disc(None) => VorbisKeys::TotalTrackNumber.remove_all(self),
-                Kind::TotalDiscs(None) => VorbisKeys::Year.remove_all(self),
-                Kind::Length(None) => VorbisKeys::Duration.remove_all(self),
+                Kind::Title(None) => Key::Title.remove_all(self),
+                Kind::Artist(None) => Key::Artist.remove_all(self),
+                Kind::Album(None) => Key::Album.remove_all(self),
+                Kind::Genre(None) => Key::Genre.remove_all(self),
+                Kind::Year(None) => Key::Year.remove_all(self),
+                Kind::Track(None) => Key::TrackNumber.remove_all(self),
+                Kind::TotalTracks(None) => Key::TotalTrackNumber.remove_all(self),
+                Kind::Disc(None) => Key::DiskNumber.remove_all(self),
+                Kind::TotalDiscs(None) => Key::TotalDiskNumber.remove_all(self),
+                Kind::Length(None) => Key::Duration.remove_all(self),
             }
         }
 
         fn write_to_path(&self, path: &Path) -> Result<(), Error> {
-            self.write_opus_file(path)
-                .map_err(|err| Error::Other(Box::new(err)))
+            self.write_opus_file(path).map_err(map_err)
         }
         fn read_from_path(path: impl AsRef<Path>) -> Result<Self, Error>
         where
             Self: Sized,
         {
-            match opus_tag::opus_tagger::OpusMeta::read_from_file(path) {
-                Ok(meta) => Ok(meta.tags),
-                Err(err) => Err(Error::Other(Box::new(err))),
-            }
+            opus_tag::opus_tagger::OpusMeta::read_from_file(path)
+                .map(|it| it.tags)
+                .map_err(map_err)
         }
         fn new_empty() -> Self
         where
             Self: Sized,
         {
-            Self::empty("Lavf60.3.100") // better vendor
+            Self::empty("Lavf60.3.100") // vendor should be read from the file
         }
+    }
+    fn map_err(err: opus_tag::error::Error) -> Error {
+        Error::Other(Box::new(err))
     }
 }
 
@@ -435,14 +434,6 @@ pub enum Error {
 impl From<Option<&str>> for Error {
     fn from(value: Option<&str>) -> Self {
         Self::UnSupported(value.map(ToOwned::to_owned))
-    }
-}
-impl From<id3::Error> for Error {
-    fn from(value: id3::Error) -> Self {
-        match value.kind {
-            id3::ErrorKind::NoTag => Self::NoTag,
-            _ => Self::Other(Box::new(value)),
-        }
     }
 }
 
