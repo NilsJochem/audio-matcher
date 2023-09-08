@@ -226,7 +226,7 @@ impl VorbisComment {
 
         let table = self
             .to_bytes(TAGS_MAGIC_STR)
-            .chunks(256)
+            .chunks(255)
             .map(<[u8]>::to_vec)
             .collect_vec();
         tags_ogg.set_segment_table(table).unwrap();
@@ -250,7 +250,10 @@ impl VorbisComment {
             // .unwrap();
             .expect("tmp file already exists");
 
-        self.update_opus_tags(file, tmp_file)?;
+        self.update_opus_tags(file, tmp_file).map_err(|err| {
+            std::fs::remove_file(&tmp_name).expect("failed to clean tmp file");
+            err
+        })?;
 
         std::fs::remove_file(path)?;
         std::fs::rename(tmp_name, path)?;
