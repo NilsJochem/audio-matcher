@@ -25,10 +25,15 @@ use crate::{
 pub fn build_timelabel_name(
     series_name: &str,
     nr: &ChapterNumber,
-    part: usize,
+    part: impl Into<Option<usize>>,
     chapter_name: &str,
 ) -> String {
-    format!("{series_name} {nr}.{part} {chapter_name}")
+    let mut name = format!("{series_name} {nr}");
+    if let Some(part) = part.into() {
+        let _ = write!(name, ".{part}");
+    }
+    let _ = write!(name, " {chapter_name}");
+    name
 }
 
 pub fn timelabel_from_peaks<'a, Iter>(
