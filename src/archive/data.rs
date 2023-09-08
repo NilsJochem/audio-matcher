@@ -76,24 +76,45 @@ impl Archive {
         Self::from(tmp)
     }
 
+    #[must_use]
+    pub fn parse_line(line: &str) -> Option<(&str, ChapterNumber, Option<usize>, Option<&str>)> {
+        const REG_SERIES: &str = "series";
+        const REG_NUMBER: &str = "nr";
+        const REG_EXTRA: &str = "extra";
+        const REG_CHAPTER: &str = "chapter";
+        const REG_PART: &str = "part";
+        lazy_static! {
+            static ref RE: Regex = Regex::new(&format!("^(?P<{REG_SERIES}>.+?) (?P<{REG_NUMBER}>\\d+)(?P<{REG_EXTRA}>\\?)?(?:\\.(?P<{REG_PART}>\\d+))?(?: (?P<{REG_CHAPTER}>.+))?$")).unwrap();
+        }
+        let captures = RE.captures(line)?;
+
+        let series = captures.name(REG_SERIES).unwrap().as_str();
+        let ch_nr = ChapterNumber::new(
+            captures.name(REG_NUMBER).unwrap().as_str().parse().unwrap(),
+            captures.name(REG_EXTRA).is_some(),
+        );
+        let part = captures
+            .name(REG_PART)
+            .and_then(|it| it.as_str().parse().ok());
+        let chapter = captures.name(REG_CHAPTER).map(|it| it.as_str());
+
+        Some((series, ch_nr, part, chapter))
+    }
+
     fn from<InnerIter, Iter>(value: Iter) -> Self
     where
         InnerIter: Iterator<Item = TimeLabel>,
         Iter: Iterator<Item = (Source, InnerIter)>,
     {
         let mut archive = Self { data: Vec::new() };
-        lazy_static! {
-            static ref RE: Regex = Regex::new("(?:(?P<series>.*) )(?:(?P<nr>[\\d]+)(?P<extra>\\??)(?:\\.[\\d?]+)+)(?: (?P<chapter>.*))?").unwrap();
-        }
         for (source, labels) in value {
             for label in labels {
-                let Some(captures) = RE.captures(label.name.as_ref().map_or("", |it| it.as_str())) else {
+                let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", |it| it.as_str())) else {
                     warn!("name of {label:?} couldn't be parsed to Series");
                     continue;
                 };
 
                 let series = {
-                    let series_name = captures.name("series").unwrap().as_str();
                     archive.data.find_or_push_else(
                         || Series::new(series_name.to_owned()),
                         |it| it.name == series_name,
@@ -101,15 +122,8 @@ impl Archive {
                 };
 
                 let chapter = {
-                    let ch_nr = ChapterNumber::new(
-                        captures.name("nr").unwrap().as_str().parse().unwrap(),
-                        !captures.name("extra").unwrap().is_empty(),
-                    );
                     series.chapters.find_or_push_else(
-                        || {
-                            let chapter_name = captures.name("chapter").map(|it| it.as_str());
-                            Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned))
-                        },
+                        || Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned)),
                         |it| it.nr == ch_nr,
                     )
                 };
@@ -340,7 +354,7 @@ impl<'a> Display for ChapterDisplay<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct ChapterNumber {
     nr: usize,
@@ -513,6 +527,37 @@ impl FromStr for Source {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod parser {
+        use super::*;
+        #[test]
+        fn full_match() {
+            let cap = Archive::parse_line("Gruselkabinett 6.2 Das verfluchte Haus")
+                .expect("failed to match");
+
+            assert_eq!("Gruselkabinett", cap.0);
+            assert_eq!(ChapterNumber::new(6, false), cap.1);
+            assert_eq!(Some(2), cap.2);
+            assert_eq!(Some("Das verfluchte Haus"), cap.3);
+        }
+        #[test]
+        fn patial_match() {
+            let cap = Archive::parse_line("Gruselkabinett 6").expect("failed to match");
+
+            assert_eq!("Gruselkabinett", cap.0);
+            assert_eq!(ChapterNumber::new(6, false), cap.1);
+        }
+
+        #[test]
+        fn extra_number() {
+            let cap = Archive::parse_line("Gruselkabinett 6 Multipart 1").expect("failed to match");
+
+            assert_eq!("Gruselkabinett", cap.0);
+            assert_eq!(ChapterNumber::new(6, false), cap.1);
+            assert_eq!(None, cap.2);
+            assert_eq!(Some("Multipart 1"), cap.3);
+        }
+    }
 
     mod series_tests {
         use super::*;
