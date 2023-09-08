@@ -201,6 +201,8 @@ pub enum NoOut<'a> {
 
     MuteTracks,
     UnmuteTracks,
+    ///Removes the selected track(s) from the project. Even if only part of a track is selected, the entire track is removed.
+    RemoveTracks,
 }
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, derive_more::Display)]
