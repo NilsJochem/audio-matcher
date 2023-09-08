@@ -126,6 +126,7 @@ pub trait Tag {
     fn duration(&self) -> Option<Duration>;
 
     fn set(&mut self, value: field_kind::Set);
+    fn set_chapter(&mut self, index: usize, time: Duration, name: Option<&str>);
 
     fn write_to_path(&self, path: &Path) -> Result<(), Error>;
 
@@ -199,6 +200,9 @@ mod mp3 {
                 Kind::Length(None) => self.remove_duration(),
             }
         }
+        fn set_chapter(&mut self, _index: usize, _time: Duration, _name: Option<&str>) {
+            unimplemented!("tried to set chapter on mp3")
+        }
 
         fn write_to_path(&self, path: &Path) -> Result<(), Error> {
             self.write_to_path(path, self.version()).map_err(map_err)
@@ -227,6 +231,8 @@ mod mp3 {
 
 mod opus {
     use opus_tag::opus_tagger::{Comment, VorbisComment};
+
+    use crate::split_duration;
 
     use super::{field_kind, Duration, Error, Path, Tag};
 
@@ -396,6 +402,16 @@ mod opus {
                 Kind::Disk(None) => Key::DiskNumber.remove_all(self),
                 Kind::TotalDisks(None) => Key::TotalDiskNumber.remove_all(self),
                 Kind::Length(None) => Key::Duration.remove_all(self),
+            }
+        }
+        fn set_chapter(&mut self, index: usize, time: Duration, name: Option<&str>) {
+            let (h, m, s) = split_duration(&time);
+            self.add_comment((
+                format!("CHAPTER{index:0>3}"),
+                format!("{h:0>2}:{m:0>2}:{s:0>2}.{:0>3}", time.subsec_millis()),
+            ));
+            if let Some(name) = name {
+                self.add_comment((format!("CHAPTER{index:0>3}NAME"), name));
             }
         }
 
@@ -604,6 +620,10 @@ impl TaggedFile {
         self.inner.set(F::wrap_value(value));
         self.was_changed = true;
     }
+    #[allow(clippy::semicolon_if_nothing_returned)] // just forward, if impl changes, missing return will be a complier warning
+    pub fn set_chapter(&mut self, index: usize, time: Duration, name: Option<&str>) {
+        self.inner.set_chapter(index, time, name)
+    }
     /// upates the field `F` with `value` if it is currently `None`
     pub fn fill_from<'a, F: Field + 'a>(&'a mut self, other: &'a Self)
     where
@@ -626,6 +646,7 @@ impl TaggedFile {
         self.fill_from::<Disk>(other);
         self.fill_from::<TotalDisks>(other);
         self.fill_from::<Length>(other);
+        //TODO chapters
     }
 }
 
