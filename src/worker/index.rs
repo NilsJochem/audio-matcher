@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::{
     borrow::Cow,
+    collections::{hash_map::Entry, HashMap},
     ffi::OsStr,
     path::{Path, PathBuf},
 };
@@ -290,6 +291,29 @@ impl<'a> Index<'a> {
 
     fn fill(&'a self, it: &'a ChapterEntry<'a>) -> ChapterEntry<'a> {
         it.fill(|| self.artist.reborrow(), || self.release)
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct MultiIndex<'a> {
+    folder: PathBuf,
+    data: HashMap<String, Index<'a>>,
+}
+
+impl<'a> MultiIndex<'a> {
+    #[must_use]
+    pub fn new(folder: PathBuf) -> Self {
+        Self {
+            folder,
+            data: HashMap::new(),
+        }
+    }
+
+    pub async fn get_index(&mut self, series: String) -> Result<&Index<'a>, Error> {
+        if let Entry::Vacant(entry) = self.data.entry(series.clone()) {
+            entry.insert(Index::try_read_index(self.folder.clone(), series.clone()).await?);
+        }
+        Ok(self.data.get(&series).unwrap())
     }
 }
 
