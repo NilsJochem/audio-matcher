@@ -242,6 +242,7 @@ impl VorbisComment {
         let path = path.as_ref();
         let tmp_name = path.file_name().unwrap().to_string_lossy();
         let tmp_name = path.with_file_name(format!(".{tmp_name}"));
+        // TODO use TmpFile from basecrate
         let tmp_file = std::fs::OpenOptions::new()
             .create_new(true)
             .read(true)

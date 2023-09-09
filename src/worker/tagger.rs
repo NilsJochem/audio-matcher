@@ -666,28 +666,15 @@ mod tests {
 
     use super::*;
     static FILE_NR: AtomicUsize = AtomicUsize::new(0);
-    struct TestFile(PathBuf); // a Wrapper, that creates a copy of a file and removes it, when dropped, to allow file write tests with easy setup
-    impl TestFile {
-        fn new<P: AsRef<std::path::Path>>(file: P) -> Self {
-            let mut path = file.as_ref().to_path_buf();
-            path.set_file_name(format!(
-                "tmp_{}_{}",
-                FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed), // give each call a uniqe number to allow parallel tests
-                path.file_name().unwrap().to_str().unwrap()
-            ));
-            std::fs::copy(file, &path).unwrap();
-            Self(path)
-        }
-    }
-    impl AsRef<std::path::Path> for TestFile {
-        fn as_ref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-    impl Drop for TestFile {
-        fn drop(&mut self) {
-            std::fs::remove_file(&self.0).unwrap();
-        }
+
+    fn new_test_file(file: impl AsRef<Path>) -> crate::io::TmpFile {
+        let mut path = file.as_ref().to_path_buf();
+        path.set_file_name(format!(
+            "tmp_{}_{}",
+            FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed), // give each call a uniqe number to allow parallel tests
+            path.file_name().unwrap().to_str().unwrap()
+        ));
+        crate::io::TmpFile::new_copy(path, file).unwrap()
     }
 
     mod mp3 {
@@ -696,8 +683,8 @@ mod tests {
 
         #[test]
         fn save_when_needed() {
-            let file = TestFile::new(FILE);
-            let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+            let file = new_test_file(FILE);
+            let mut tag = TaggedFile::from_path(file.as_ref().to_path_buf(), false).unwrap();
 
             super::save_when_needed_helper(&mut tag);
         }
@@ -715,7 +702,7 @@ mod tests {
         }
         #[test]
         fn read_saved() {
-            let file = TestFile::new(FILE);
+            let file = new_test_file(FILE);
             super::read_saved(&file);
         }
     }
@@ -726,8 +713,8 @@ mod tests {
 
         #[test]
         fn save_when_needed() {
-            let file = TestFile::new(FILE);
-            let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+            let file = new_test_file(FILE);
+            let mut tag = TaggedFile::from_path(file.as_ref().to_path_buf(), false).unwrap();
 
             super::save_when_needed_helper(&mut tag);
         }
@@ -745,7 +732,7 @@ mod tests {
         }
         #[test]
         fn read_saved() {
-            let file = TestFile::new(FILE);
+            let file = new_test_file(FILE);
             super::read_saved(&file);
         }
     }
@@ -792,8 +779,8 @@ mod tests {
         assert_eq!(None, tag.get::<Length>());
     }
 
-    fn read_saved(file: &TestFile) {
-        let mut tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+    fn read_saved(file: &crate::io::TmpFile) {
+        let mut tag = TaggedFile::from_path(file.as_ref().to_path_buf(), false).unwrap();
         let new_title = "example";
 
         assert_ne!(
@@ -804,7 +791,7 @@ mod tests {
         tag.set::<Title>(Some(new_title));
         tag.save_changes(false).unwrap();
 
-        let tag = TaggedFile::from_path(file.0.clone(), false).unwrap();
+        let tag = TaggedFile::from_path(file.as_ref().to_path_buf(), false).unwrap();
         assert_eq!(
             Some(new_title),
             tag.get::<Title>(),

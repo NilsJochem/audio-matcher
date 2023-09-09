@@ -55,10 +55,12 @@ pub const fn split_duration(duration: &Duration) -> (usize, usize, usize) {
 // }
 
 pub mod io {
-    use std::path::Path;
-
     use log::{debug, trace};
+    use std::path::{Path, PathBuf};
     use thiserror::Error;
+
+    use std::io::Error as IoError;
+    use std::io::ErrorKind;
 
     #[derive(Debug, Error)]
     pub enum MoveError {
@@ -67,15 +69,14 @@ pub mod io {
         #[error("target folder not found")]
         TargetNotFound,
         #[error(transparent)]
-        OtherIO(std::io::Error),
+        OtherIO(IoError),
     }
-    impl From<std::io::Error> for MoveError {
-        fn from(value: std::io::Error) -> Self {
-            use std::io::ErrorKind as Kind;
+    impl From<IoError> for MoveError {
+        fn from(value: IoError) -> Self {
             match value.kind() {
                 // some kinds are commented out because they are unstable
-                Kind::NotFound /*| Kind::IsADirectory*/ => Self::FileNotFound,
-                // Kind::NotADirectory => Self::TargetNotFound,
+                ErrorKind::NotFound /*| ErrorKind::IsADirectory*/ => Self::FileNotFound,
+                // ErrorKind::NotADirectory => Self::TargetNotFound,
                 _ => Self::OtherIO(value),
             }
         }
@@ -104,13 +105,68 @@ pub mod io {
         trace!("moving {file:?} to {dst:?}");
         match tokio::fs::rename(&file, &dst).await {
             Ok(()) => Ok(()),
-            Err(_err) /*if err.kind() == std::io::ErrorKind::CrossesDevices is unstable*/ => {
+            Err(_err) /*if err.kind() == IoErrorKind::CrossesDevices is unstable*/ => {
                 debug!("couldn't just rename file, try to copy and remove old");
                 tokio::fs::copy(&file, &dst).await?;
                 tokio::fs::remove_file(&file).await?;
                 Ok(())
             }
             // Err(err) => Err(err.into()),
+        }
+    }
+
+    /// a Wrapper, that creates a copy of a file and removes it, when dropped
+    pub struct TmpFile {
+        path: PathBuf,
+        is_removed: bool,
+    }
+    impl TmpFile {
+        const fn new(path: PathBuf) -> Self {
+            Self {
+                path,
+                is_removed: false,
+            }
+        }
+        pub fn new_copy(path: PathBuf, orig: impl AsRef<Path>) -> Result<Self, IoError> {
+            match std::fs::metadata(&path) {
+                Ok(_) => Err(IoError::new(
+                    ErrorKind::AlreadyExists,
+                    format!("there is already a file at {path:?}"),
+                )),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }?;
+            std::fs::copy(orig, &path)?;
+            Ok(Self::new(path))
+        }
+        pub fn new_empty(path: PathBuf) -> Result<Self, IoError> {
+            let _ = std::fs::OpenOptions::new()
+                .create_new(true)
+                .read(false)
+                .write(false)
+                .open(&path)?;
+            Ok(Self::new(path))
+        }
+        pub fn remove(&mut self) -> Result<(), IoError> {
+            if !self.is_removed {
+                std::fs::remove_file(&self.path)?;
+                self.was_removed();
+            }
+            Ok(())
+        }
+        pub fn was_removed(&mut self) {
+            self.is_removed = true;
+        }
+    }
+
+    impl AsRef<std::path::Path> for TmpFile {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+    impl Drop for TmpFile {
+        fn drop(&mut self) {
+            self.remove().unwrap();
         }
     }
 }
