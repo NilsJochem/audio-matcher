@@ -83,11 +83,15 @@ impl TmpFile {
         Ok(Self::new(path))
     }
     pub fn new_empty(path: PathBuf) -> Result<Self, IoError> {
-        let _ = std::fs::OpenOptions::new()
-            .create_new(true)
-            .read(false)
-            .write(false)
-            .open(&path)?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Err(IoError::new(
+                ErrorKind::AlreadyExists,
+                format!("there is already a file at {path:?}"),
+            )),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }?;
+        let _ = std::fs::File::create(&path)?;
         Ok(Self::new(path))
     }
     pub fn remove(&mut self) -> Result<(), IoError> {

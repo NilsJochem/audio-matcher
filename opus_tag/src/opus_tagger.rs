@@ -241,23 +241,20 @@ impl VorbisComment {
         let file = std::fs::File::open(&path).expect("file not found");
         let path = path.as_ref();
         let tmp_name = path.file_name().unwrap().to_string_lossy();
-        let tmp_name = path.with_file_name(format!(".{tmp_name}"));
-        // TODO use TmpFile from basecrate
-        let tmp_file = std::fs::OpenOptions::new()
-            .create_new(true)
+        let mut tmp_name =
+            common::io::TmpFile::new_empty(path.with_file_name(format!(".{tmp_name}"))).unwrap();
+        // .expect("tmp file already exists");
+        let tmp_file = std::fs::File::options()
             .read(true)
             .write(true)
             .open(&tmp_name)
-            // .unwrap();
-            .expect("tmp file already exists");
+            .unwrap();
 
-        self.update_opus_tags(file, tmp_file).map_err(|err| {
-            std::fs::remove_file(&tmp_name).expect("failed to clean tmp file");
-            err
-        })?;
+        self.update_opus_tags(file, tmp_file)?;
 
         std::fs::remove_file(path)?;
-        std::fs::rename(tmp_name, path)?;
+        std::fs::rename(&tmp_name, path).unwrap(); // this shouldn't fail, because then the file whill be lost
+        tmp_name.was_removed(); // mark file to not autoremove
 
         Ok(())
     }
