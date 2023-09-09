@@ -1,8 +1,8 @@
 use crate::{
-    iter::CloneIteratorExt,
     matcher::{args::Arguments, mp3_reader::SampleType, start_as_duration},
     offset_range,
 };
+use common::extensions::iter::CloneIteratorExt;
 
 use progress_bar::arrow::{Arrow, Fancy, Simple};
 use progress_bar::callback::Once;
@@ -519,7 +519,7 @@ mod correlate_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::iter::IteratorExt;
+    use common::extensions::iter::IteratorExt;
 
     use super::*;
     use itertools::Itertools;

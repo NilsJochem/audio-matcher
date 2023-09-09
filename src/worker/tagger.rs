@@ -232,7 +232,7 @@ mod mp3 {
 mod opus {
     use opus_tag::opus_tagger::{Comment, VorbisComment};
 
-    use crate::split_duration;
+    use common::extensions::duration::split_duration;
 
     use super::{field_kind, Duration, Error, Path, Tag};
 
@@ -667,14 +667,14 @@ mod tests {
     use super::*;
     static FILE_NR: AtomicUsize = AtomicUsize::new(0);
 
-    fn new_test_file(file: impl AsRef<Path>) -> crate::io::TmpFile {
+    fn new_test_file(file: impl AsRef<Path>) -> common::io::TmpFile {
         let mut path = file.as_ref().to_path_buf();
         path.set_file_name(format!(
             "tmp_{}_{}",
             FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed), // give each call a uniqe number to allow parallel tests
             path.file_name().unwrap().to_str().unwrap()
         ));
-        crate::io::TmpFile::new_copy(path, file).unwrap()
+        common::io::TmpFile::new_copy(path, file).unwrap()
     }
 
     mod mp3 {
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(None, tag.get::<Length>());
     }
 
-    fn read_saved(file: &crate::io::TmpFile) {
+    fn read_saved(file: &common::io::TmpFile) {
         let mut tag = TaggedFile::from_path(file.as_ref().to_path_buf(), false).unwrap();
         let new_title = "example";
 

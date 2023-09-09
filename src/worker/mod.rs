@@ -1,4 +1,8 @@
 use audacity::AudacityApi;
+use common::extensions::{
+    iter::{CloneIteratorExt, FutIterExt, State},
+    vec::PushReturn,
+};
 use futures::TryFutureExt;
 use itertools::Itertools;
 use log::trace;
@@ -14,8 +18,6 @@ use toml::value::{Date, Datetime};
 use crate::{
     archive::data::{build_timelabel_name, ChapterNumber},
     args::Inputs,
-    extensions::vec::PushReturn,
-    iter::{CloneIteratorExt, FutIterExt},
     worker::tagger::{Album, Artist, Genre, TaggedFile, Title, TotalTracks, Track, Year},
 };
 
@@ -310,9 +312,9 @@ pub async fn adjust_labels(
 
     for element in labels.values().flatten().open_border_pairs() {
         let (prev_end, next_start) = match element {
-            crate::iter::State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
-            crate::iter::State::Middle(a, b) => (a.end, b.start),
-            crate::iter::State::End(b) => (b.end, b.end + Duration::from_secs(10)),
+            State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
+            State::Middle(a, b) => (a.end, b.start),
+            State::End(b) => (b.end, b.end + Duration::from_secs(10)),
         };
         audacity
             .zoom_to(
@@ -340,7 +342,7 @@ pub async fn adjust_labels(
 pub struct MoveError {
     file: PathBuf,
     dst: PathBuf,
-    source: crate::io::MoveError,
+    source: common::io::MoveError,
 }
 async fn move_results(
     patterns: Vec<Pattern>,
@@ -356,7 +358,7 @@ async fn move_results(
 
             let mut file = from.as_ref().to_path_buf();
             file.push(format!("{series} {nr} {chapter}.{}", args.export_ext()));
-            crate::io::move_file(file.clone(), dst.clone(), args.dry_run())
+            common::io::move_file(file.clone(), dst.clone(), args.dry_run())
                 .map_err(move |source| MoveError { file, dst, source })
         })
         .join_all()
@@ -458,10 +460,9 @@ fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> u
 #[cfg(test)]
 mod tests {
     use audacity::data::TimeLabel;
+    use common::extensions::duration::Ext;
 
     use super::*;
-
-    use crate::extensions::duration::Ext;
 
     #[test]
     fn calc_offsets() {

@@ -7,7 +7,8 @@ use std::{
 };
 use toml::value::Datetime;
 
-use crate::{archive::data::ChapterNumber, extensions::cow::Ext};
+use crate::archive::data::ChapterNumber;
+use common::extensions::cow::Ext;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {

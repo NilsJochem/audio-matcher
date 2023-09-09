@@ -16,10 +16,8 @@ use log::{debug, warn};
 use regex::Regex;
 use thiserror::Error;
 
-use crate::{
-    extensions::vec::FindOrPush,
-    matcher::{mp3_reader::SampleType, start_as_duration},
-};
+use crate::matcher::{mp3_reader::SampleType, start_as_duration};
+use common::extensions::vec::FindOrPush;
 
 #[must_use]
 pub fn build_timelabel_name(
