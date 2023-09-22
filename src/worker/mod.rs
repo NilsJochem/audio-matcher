@@ -261,6 +261,9 @@ pub async fn read_index_from_args(
     let series = args
         .always_answer()
         .input("Welche Serie ist heute dran: ", None);
+    if let Some(series) = series.strip_prefix('#') {
+        return Ok((series[1..].to_owned(), None));
+    }
     let index = match args.index_folder() {
         Some(folder) => crate::worker::index::Index::try_read_index(folder.to_owned(), &series)
             .await

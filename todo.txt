@@ -1,6 +1,5 @@
 # Folgen Mergen
 	- interlude Filtern
-	- parts zusammenkleben / zusammen exportortiern
 
 # archiv komprimieren
 	- subordner für Jahr, Monat
