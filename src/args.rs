@@ -15,6 +15,14 @@ pub struct Inputs {
     pub trys: u8,
 }
 impl Inputs {
+    pub fn new(bools: impl Into<Option<bool>>, trys: impl Into<Option<u8>>) -> Self {
+        let bools: Option<_> = bools.into();
+        Self {
+            yes: bools.is_some_and(|it| it),
+            no: bools.is_some_and(|it| !it),
+            trys: trys.into().unwrap_or(3),
+        }
+    }
     #[must_use]
     pub fn ask_consent(&self, msg: impl AsRef<str>) -> bool {
         if self.yes || self.no {
@@ -57,6 +65,56 @@ impl Inputs {
     pub fn input(&self, msg: impl AsRef<str>, default: Option<String>) -> String {
         self.try_input(msg, default, Some)
             .unwrap_or_else(|| unreachable!())
+    }
+
+    #[must_use]
+    pub fn input_with_suggestion(
+        &self,
+        msg: impl AsRef<str>,
+        suggestor: impl inquire::Autocomplete + 'static,
+    ) -> String {
+        inquire::Text::new(msg.as_ref())
+            .with_autocomplete(suggestor)
+            .prompt()
+            .unwrap()
+    }
+}
+
+pub mod autocompleter {
+    use inquire::{autocompletion::Replacement, Autocomplete, CustomUserError};
+    use itertools::Itertools;
+
+    #[derive(Debug, Clone)]
+    pub struct VecCompleter {
+        data: Vec<String>,
+    }
+    impl VecCompleter {
+        #[must_use]
+        pub fn new(data: Vec<String>) -> Self {
+            Self { data }
+        }
+        #[allow(clippy::should_implement_trait)] // will prob change signature
+        pub fn from_iter<S: ToString, T: IntoIterator<Item = S>>(iter: T) -> Self {
+            Self::new(iter.into_iter().map(|it| it.to_string()).collect_vec())
+        }
+    }
+    impl Autocomplete for VecCompleter {
+        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+            Ok(self
+                .data
+                .iter()
+                .filter(|option| option.to_lowercase().starts_with(input))
+                .cloned()
+                .collect_vec())
+        }
+
+        fn get_completion(
+            &mut self,
+            _input: &str,
+            highlighted_suggestion: Option<String>,
+        ) -> Result<Replacement, CustomUserError> {
+            Ok(highlighted_suggestion)
+        }
     }
 }
 

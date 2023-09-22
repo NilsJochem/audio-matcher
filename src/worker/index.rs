@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     ffi::OsStr,
     path::{Path, PathBuf},
 };
@@ -181,6 +181,52 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
 }
 
 impl<'a> Index<'a> {
+    pub fn possible(path: impl AsRef<Path>) -> Vec<String> {
+        let path = path.as_ref().to_str().expect("need valid utf-8");
+        let mut known = HashSet::new();
+
+        let paths = glob::glob(&format!("{path}/*.toml"))
+            .unwrap()
+            .chain(glob::glob(&format!("{path}/*.txt")).unwrap())
+            .collect::<Vec<_>>();
+        for path in paths {
+            match path {
+                Ok(index) => {
+                    let index = index.with_extension("");
+                    let index = index
+                        .file_name()
+                        .expect("need filename")
+                        .to_str()
+                        .expect("need valid utf-8");
+                    known.insert(index.to_owned());
+                }
+                Err(err) => Err(err).unwrap(),
+            }
+        }
+
+        let paths = glob::glob(&format!("{path}/*/index.toml"))
+            .unwrap()
+            .chain(glob::glob(&format!("{path}/*/index.txt")).unwrap())
+            .collect::<Vec<_>>();
+        for path in paths {
+            match path {
+                Ok(index) => {
+                    let index = index
+                        .parent()
+                        .unwrap()
+                        .file_name()
+                        .expect("need filename")
+                        .to_str()
+                        .expect("need valid utf-8");
+                    known.insert(index.to_owned());
+                }
+                Err(err) => Err(err).unwrap(),
+            }
+        }
+        let mut known = known.into_iter().collect::<Vec<_>>();
+        known.sort();
+        known
+    }
     pub async fn try_read_from_path(
         path: impl AsRef<Path> + Send + Sync,
     ) -> Result<Index<'a>, Error> {
@@ -329,7 +375,27 @@ impl<'a> MultiIndex<'a> {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+
     use super::*;
+
+    #[test]
+    fn list_possibilitys() {
+        assert_eq!(
+            vec![
+                "Dalans Prophezeiung",
+                "Gruselkabinett",
+                "Rick Future",
+                "Schattensaiten",
+                "Sherlock Holmes",
+                "test"
+            ]
+            .into_iter()
+            .map(std::borrow::ToOwned::to_owned)
+            .collect_vec(),
+            Index::possible("res/local/Aufnahmen/current")
+        );
+    }
 
     #[test]
     fn filter_comments() {

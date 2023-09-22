@@ -258,9 +258,16 @@ async fn rename_labels(
 pub async fn read_index_from_args(
     args: &Arguments,
 ) -> Result<(String, Option<crate::worker::index::Index>), crate::worker::index::Error> {
-    let series = args
-        .always_answer()
-        .input("Welche Serie ist heute dran: ", None);
+    const MSG: &str = "Welche Serie ist heute dran: ";
+
+    let series = args.index_folder().map_or_else(
+        || args.always_answer().input(MSG, None),
+        |path| {
+            let known = index::Index::possible(path);
+            args.always_answer()
+                .input_with_suggestion(MSG, crate::args::autocompleter::VecCompleter::new(known))
+        },
+    );
     if let Some(series) = series.strip_prefix('#') {
         return Ok((series[1..].to_owned(), None));
     }

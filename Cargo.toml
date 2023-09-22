@@ -31,6 +31,7 @@ confy = "0.5"
 serde = "1.0"
 toml = "0.7"
 async-trait = "0.1"
+inquire = "0.6"
 
 threadpool = "1.8"
 rayon = "1.7"
