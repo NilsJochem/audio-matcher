@@ -69,33 +69,41 @@ impl Inputs {
 
     #[must_use]
     pub fn input_with_suggestion(
-        &self,
         msg: impl AsRef<str>,
+        initial: Option<&str>,
         suggestor: impl inquire::Autocomplete + 'static,
     ) -> String {
-        inquire::Text::new(msg.as_ref())
-            .with_autocomplete(suggestor)
-            .prompt()
-            .unwrap()
+        let mut text = inquire::Text::new(msg.as_ref());
+        text.initial_value = initial;
+        text.with_autocomplete(suggestor).prompt().unwrap()
     }
 }
 
 pub mod autocompleter {
+    use std::fmt::Debug;
+
     use inquire::{autocompletion::Replacement, Autocomplete, CustomUserError};
     use itertools::Itertools;
 
     #[derive(Debug, Clone)]
     pub struct VecCompleter {
         data: Vec<String>,
+        filter: std::rc::Rc<dyn StrFilter>,
     }
     impl VecCompleter {
         #[must_use]
-        pub fn new(data: Vec<String>) -> Self {
-            Self { data }
+        pub fn new(data: Vec<String>, filter: std::rc::Rc<dyn StrFilter>) -> Self {
+            Self { data, filter }
         }
         #[allow(clippy::should_implement_trait)] // will prob change signature
-        pub fn from_iter<S: ToString, T: IntoIterator<Item = S>>(iter: T) -> Self {
-            Self::new(iter.into_iter().map(|it| it.to_string()).collect_vec())
+        pub fn from_iter<S: ToString, T: IntoIterator<Item = S>>(
+            iter: T,
+            filter: std::rc::Rc<dyn StrFilter>,
+        ) -> Self {
+            Self::new(
+                iter.into_iter().map(|it| it.to_string()).collect_vec(),
+                filter,
+            )
         }
     }
     impl Autocomplete for VecCompleter {
@@ -103,7 +111,7 @@ pub mod autocompleter {
             Ok(self
                 .data
                 .iter()
-                .filter(|option| option.to_lowercase().starts_with(input))
+                .filter(|option| self.filter.filter(option, input))
                 .cloned()
                 .collect_vec())
         }
@@ -115,6 +123,25 @@ pub mod autocompleter {
         ) -> Result<Replacement, CustomUserError> {
             Ok(highlighted_suggestion)
         }
+    }
+
+    pub trait StrFilter: Debug {
+        fn filter(&self, option: &str, input: &str) -> bool;
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct StartsWithIgnoreCase;
+    impl StrFilter for StartsWithIgnoreCase {
+        fn filter(&self, option: &str, input: &str) -> bool {
+            option.to_lowercase().starts_with(&input.to_lowercase())
+        }
+    }
+    // TODO extract as str filter trait
+    pub fn starts_with_ignore_case(option: impl AsRef<str>, input: impl AsRef<str>) -> bool {
+        option
+            .as_ref()
+            .to_lowercase()
+            .starts_with(&input.as_ref().to_lowercase())
     }
 }
 

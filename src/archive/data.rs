@@ -360,16 +360,12 @@ impl<'a> Display for ChapterDisplay<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct ChapterNumber {
-    nr: usize,
-    is_maybe: bool,
+    pub nr: usize,
+    pub is_maybe: bool,
 }
 impl ChapterNumber {
     pub const fn new(nr: usize, is_maybe: bool) -> Self {
         Self { nr, is_maybe }
-    }
-    #[must_use]
-    pub const fn nr(&self) -> usize {
-        self.nr
     }
     pub const fn next(mut self) -> Self {
         self.nr += 1;

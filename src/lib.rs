@@ -21,7 +21,9 @@
     clippy::cast_sign_loss,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::single_match_else
+    clippy::single_match_else,
+    clippy::option_if_let_else,
+    clippy::too_many_lines
 )]
 
 pub mod archive;

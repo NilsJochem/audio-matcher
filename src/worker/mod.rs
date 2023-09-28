@@ -21,7 +21,7 @@ use crate::{
     worker::tagger::{Album, Artist, Genre, TaggedFile, Title, TotalTracks, Track, Year},
 };
 
-use self::args::Arguments;
+use self::{args::Arguments, index::Index};
 
 pub mod args;
 pub mod index;
@@ -159,6 +159,83 @@ async fn prepare_project(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct ChapterCompleter<'a> {
+    inner: std::sync::Arc<InnerCompleter<'a>>,
+}
+#[derive(Debug)]
+struct InnerCompleter<'a> {
+    index: Index<'a>,
+    filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+}
+impl<'a> ChapterCompleter<'a> {
+    pub fn new(
+        index: Index<'a>,
+        filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
+    ) -> Self {
+        Self::new_boxed(index, Box::new(filter))
+    }
+    #[must_use]
+    pub fn new_boxed(
+        index: Index<'a>,
+        filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+    ) -> Self {
+        Self {
+            inner: std::sync::Arc::new(InnerCompleter { index, filter }),
+        }
+    }
+    #[must_use]
+    pub fn index(&self) -> &Index<'a> {
+        &self.inner.index
+    }
+    fn filter(&self) -> &dyn crate::args::autocompleter::StrFilter {
+        self.inner.filter.as_ref()
+    }
+}
+
+impl<'a> inquire::Autocomplete for ChapterCompleter<'a> {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
+        Ok(match input.parse::<ChapterNumber>() {
+            Ok(number) => {
+                if number.is_maybe {
+                    // number ends  with '?', so nothing more will come
+                    self.index()
+                        .try_get(number)
+                        .map_or_else(Vec::new, |it| vec![(number, it)])
+                } else {
+                    // find all possible numbers starting with current input
+                    (0..self.index().main_len())
+                        .filter_map(|i| {
+                            i.to_string().starts_with(&number.nr.to_string()).then(|| {
+                                let number = ChapterNumber::new(i, false);
+                                (number, self.index().get(number))
+                            })
+                        })
+                        .collect_vec()
+                }
+            }
+            Err(_) => self
+                .index()
+                .chapter_iter()
+                .enumerate()
+                .filter(|(_, option)| self.filter().filter(&option.title, input))
+                .map(|(i, chapter)| (ChapterNumber::new(i + 1, false), chapter.clone()))
+                .collect_vec(),
+        }
+        .into_iter()
+        .map(|(i, chapter)| format!("{i} {}", chapter.title))
+        .collect_vec())
+    }
+
+    fn get_completion(
+        &mut self,
+        _input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
+        Ok(highlighted_suggestion)
+    }
+}
+
 ///expecting that number of parts divides the length of the input or default to 4
 const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
 async fn rename_labels(
@@ -170,8 +247,13 @@ async fn rename_labels(
     let labels = labels.into_values().next().unwrap();
 
     let (series, index) = read_index_from_args(args).await?;
+    let index_rc = index.map(|index| {
+        // TODO better filter
+        ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
+    });
+    let index = index_rc.as_ref().map(ChapterCompleter::index);
 
-    let index_len = index.as_ref().map(index::Index::main_len);
+    let index_len = index.map(index::Index::main_len);
     let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
 
     let mut patterns = Vec::new();
@@ -180,18 +262,33 @@ async fn rename_labels(
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
     let mut i = 0;
     while i < labels.len() {
-        let chapter_number = args
-            .always_answer()
-            .try_input(
+        const MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
+        let chapter_number = match index_rc.as_ref() {
+            Some(index) => {
+                let input = Inputs::input_with_suggestion(
+                    format!("{MSG}: "),
+                    expected_next_chapter_number
+                        .map(|it| it.to_string())
+                        .as_deref(),
+                    index.clone(),
+                );
+                input
+                    .split_once(' ')
+                    .map_or(input.as_ref(), |it| it.0)
+                    .parse::<ChapterNumber>()
+                    .ok()
+            }
+            None => args.always_answer().try_input(
                 &format!(
-                    "Welche Nummer hat die n\u{e4}chste Folge{}: ",
+                    "{MSG}{}: ",
                     expected_next_chapter_number
                         .map_or_else(String::new, |next| format!(", erwarte {next}"))
                 ),
                 expected_next_chapter_number,
                 |rin| rin.parse::<ChapterNumber>().ok(),
-            )
-            .expect("gib was vern\u{fc}nftiges ein");
+            ),
+        }
+        .expect("gib was vern\u{fc}nftiges ein");
         expected_next_chapter_number = Some(chapter_number.next());
 
         let (chapter_name, artist, release) =
@@ -230,7 +327,7 @@ async fn rename_labels(
         tag.set::<Title>(format!("{chapter_name}").as_ref());
         tag.set::<Album>(series.as_ref());
         tag.set::<Genre>(args.genre());
-        tag.set::<Track>(chapter_number.nr() as u32);
+        tag.set::<Track>(chapter_number.nr as u32);
         if let Some(l) = index_len {
             tag.set::<TotalTracks>(l as u32);
         }
@@ -257,15 +354,21 @@ async fn rename_labels(
 
 pub async fn read_index_from_args(
     args: &Arguments,
-) -> Result<(String, Option<crate::worker::index::Index>), crate::worker::index::Error> {
+) -> Result<(String, Option<crate::worker::index::Index<'static>>), crate::worker::index::Error> {
     const MSG: &str = "Welche Serie ist heute dran: ";
 
     let series = args.index_folder().map_or_else(
         || args.always_answer().input(MSG, None),
         |path| {
             let known = index::Index::possible(path);
-            args.always_answer()
-                .input_with_suggestion(MSG, crate::args::autocompleter::VecCompleter::new(known))
+            Inputs::input_with_suggestion(
+                MSG,
+                None,
+                crate::args::autocompleter::VecCompleter::new(
+                    known,
+                    std::rc::Rc::new(crate::args::autocompleter::StartsWithIgnoreCase {}),
+                ),
+            )
         },
     );
     if let Some(series) = series.strip_prefix('#') {

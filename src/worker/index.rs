@@ -98,7 +98,7 @@ pub mod parser {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Index<'a> {
     url: Option<Cow<'a, str>>,
     artist: Option<Cow<'a, str>>,
@@ -107,7 +107,7 @@ pub struct Index<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct Chapters<'a> {
     #[serde(default)]
     main: Vec<ChapterEntry<'a>>,
@@ -316,6 +316,9 @@ impl<'a> Index<'a> {
     pub fn main_len(&self) -> usize {
         self.chapters.main.len()
     }
+    pub fn chapter_iter(&self) -> impl Iterator<Item = &ChapterEntry> {
+        self.chapters.main.iter()
+    }
     #[allow(dead_code)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -324,7 +327,7 @@ impl<'a> Index<'a> {
 
     #[must_use]
     pub fn get(&self, chapter_number: ChapterNumber) -> ChapterEntry {
-        self.fill(&self.chapters.main[chapter_number.nr() - 1])
+        self.fill(&self.chapters.main[chapter_number.nr - 1])
     }
 
     #[allow(dead_code)]
@@ -332,7 +335,7 @@ impl<'a> Index<'a> {
     pub fn try_get(&self, chapter_number: ChapterNumber) -> Option<ChapterEntry> {
         self.chapters
             .main
-            .get(chapter_number.nr() - 1)
+            .get(chapter_number.nr - 1)
             .map(|it| self.fill(it))
     }
 
@@ -384,6 +387,7 @@ mod tests {
         assert_eq!(
             vec![
                 "Dalans Prophezeiung",
+                "Der Schatz der Gl\u{e4}sernen W\u{e4}chter",
                 "Gruselkabinett",
                 "Rick Future",
                 "Schattensaiten",
