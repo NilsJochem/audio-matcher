@@ -387,7 +387,6 @@ mod tests {
         assert_eq!(
             vec![
                 "Dalans Prophezeiung",
-                "Der Schatz der Gl\u{e4}sernen W\u{e4}chter",
                 "Gruselkabinett",
                 "Rick Future",
                 "Schattensaiten",

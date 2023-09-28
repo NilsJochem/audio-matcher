@@ -105,29 +105,42 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 tag.set_chapter(i, offset, Some(&format!("Part {}", i + 1)));
             }
         }
-        if args.dry_run() {
+        let was_exported = if args.dry_run() {
             println!("asking to export audio and labels");
             for tag in tags {
                 tag.drop_changes();
             }
+            true
         } else {
             audacity_api
                 .write_assume_empty(audacity::command::ExportMultiple)
                 .await?;
-            for mut tag in tags {
-                tag.reload_empty()
-                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
-                tag.save_changes(false)
-                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
+            let all_exported = tags.iter().all(|tag| tag.path().exists());
+            if all_exported {
+                for mut tag in tags {
+                    tag.reload_empty()
+                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                    tag.save_changes(false)
+                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                }
+            } else {
+                for tag in tags {
+                    tag.drop_changes();
+                }
             }
+            all_exported
+        };
+        if was_exported {
+            move_results(
+                patterns,
+                args.tmp_path(),
+                args.index_folder().unwrap_or_else(|| args.tmp_path()),
+                args,
+            )
+            .await?;
+        } else {
+            log::warn!("not all files exported, skipping move");
         }
-        move_results(
-            patterns,
-            args.tmp_path(),
-            args.index_folder().unwrap_or_else(|| args.tmp_path()),
-            args,
-        )
-        .await?;
 
         if !args.skip_load() {
             audacity_api
