@@ -93,7 +93,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         audacity_api
             .export_all_labels_to(label_path, args.dry_run())
             .await?;
-        let offsets = merge_parts(audacity_api).await?;
+        let offsets = merge_parts(audacity_api, audacity::TrackHint::LabelTrackNr(0)).await?;
         for (tag, offset) in tags.iter_mut().zip_eq(offsets) {
             if offset.is_empty() {
                 continue; // don't add only label at 0
@@ -495,8 +495,14 @@ async fn move_results(
 
 async fn merge_parts(
     audacity: &mut audacity::AudacityApi,
+    hint: audacity::TrackHint,
 ) -> Result<Vec<Vec<Duration>>, audacity::Error> {
-    let labels = audacity.get_label_info().await?.remove(&1).unwrap();
+    let label_track_nr = hint.get_label_track_nr(audacity).await?;
+    let labels = audacity
+        .get_label_info()
+        .await?
+        .remove(&label_track_nr)
+        .unwrap();
     audacity.select_tracks(std::iter::once(1)).await?;
     audacity
         .write_assume_empty(audacity::command::RemoveTracks)
@@ -507,7 +513,7 @@ async fn merge_parts(
         };
         (series, nr, chapter)
     });
-    let hint = audacity::Hint::Track(audacity.add_label_track(Some("merged")).await?);
+    let hint = audacity::TrackHint::TrackNr(audacity.add_label_track(Some("merged")).await?).into();
     for (group, labels) in grouped_labels.iter().filter(|(_, value)| value.len() > 1) {
         let mut name = format!("{} {}", group.0, group.1);
         if let Some(chapter) = group.2 {

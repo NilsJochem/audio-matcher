@@ -100,22 +100,44 @@ pub enum Save {
     None,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Hint {
-    Track(usize),
+pub enum LabelHint {
+    Track(TrackHint),
     LabelNr(usize),
 }
-impl Hint {
-    const fn try_get_label_nr(&self) -> Option<usize> {
-        match self {
-            Self::Track(_) => None,
-            Self::LabelNr(nr) => Some(*nr),
-        }
+impl From<TrackHint> for LabelHint {
+    fn from(value: TrackHint) -> Self {
+        Self::Track(value)
     }
-    const fn try_get_track(&self) -> Option<usize> {
-        match self {
-            Self::Track(value) => Some(*value),
-            Self::LabelNr(_) => None,
-        }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackHint {
+    TrackNr(usize),
+    LabelTrackNr(usize),
+}
+impl TrackHint {
+    /// gets the tracknumber
+    ///
+    /// # Errors
+    /// relays [`get_track_infos`](AudacityApiGeneric::get_track_info) error
+    pub async fn get_label_track_nr<R: AsyncRead + Send + Unpin, W: AsyncWrite + Send + Unpin>(
+        self,
+        audacity: &mut AudacityApiGeneric<W, R>,
+    ) -> Result<usize, Error> {
+        Ok(match self {
+            Self::TrackNr(nr) => {
+                audacity
+                    .get_track_info()
+                    .await?
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, it)| it.kind == result::Kind::Label)
+                    .nth(nr)
+                    .expect("no labeltrack")
+                    .0
+            }
+            Self::LabelTrackNr(nr) => nr,
+        })
     }
 }
 
@@ -591,7 +613,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .enumerate()
         {
             let _ = self
-                .add_label(label, Some(Hint::LabelNr(offset + label_nr)))
+                .add_label(label, Some(LabelHint::LabelNr(offset + label_nr)))
                 .await?;
         }
         Ok(())
@@ -669,7 +691,8 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             focused: Some(true),
         })
         .await?;
-        self.add_label(label, Some(Hint::Track(track_nr))).await
+        self.add_label(label, Some(TrackHint::TrackNr(track_nr).into()))
+            .await
     }
     /// Creates a new label on track `track_nr` from `start` to `end` with Some(text).
     ///
@@ -684,7 +707,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn add_label(
         &mut self,
         label: TimeLabel,
-        hint: Option<Hint>,
+        hint: Option<LabelHint>,
     ) -> Result<usize, Error> {
         self.select(Selection::Part {
             start: label.start,
@@ -694,31 +717,20 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         .await?;
         self.write_assume_empty(command::AddLabel).await?;
 
-        let new_id = match hint.as_ref().and_then(Hint::try_get_label_nr) {
-            Some(nr) => nr,
+        let predicate = |(_, candidate): &(usize, &TimeLabel)| {
+            candidate.name.is_none()
+                && is_near_to(candidate.start, label.start, Duration::from_millis(50))
+                && is_near_to(candidate.end, label.end, Duration::from_millis(50))
+        };
+        let new_id = match hint {
+            Some(LabelHint::LabelNr(nr)) => nr,
+            Some(LabelHint::Track(track_hint)) => {
+                let track_nr = track_hint.get_label_track_nr(self).await?;
+                self.find_label_in_track(track_nr, predicate).await?
+            }
             None => {
-                let track_hint = match hint.as_ref().and_then(Hint::try_get_track) {
-                    Some(v) => v,
-                    None => self.get_focused_track().await?,
-                };
-                let labels = self.get_label_info().await?;
-
-                let new_labels = labels.get(&track_hint).unwrap();
-                let var_name = new_labels
-                    .iter()
-                    .enumerate()
-                    .find(|(_, candidate)| {
-                        candidate.name.is_none()
-                            && is_near_to(candidate.start, label.start, Duration::from_millis(50))
-                            && is_near_to(candidate.end, label.end, Duration::from_millis(50))
-                    })
-                    .unwrap_or_else(|| {
-                        panic!("not enought labels in track {track_hint}, can't find {label:?}")
-                    })
-                    .0;
-
-                let id_offset: usize = Self::get_label_offset(&labels, track_hint);
-                id_offset + var_name
+                let track_nr = self.get_focused_track().await?;
+                self.find_label_in_track(track_nr, predicate).await?
             }
         };
 
@@ -727,11 +739,26 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             label.name,
             None,
             None,
-            Some(false), // always drop seelected state
+            Some(false), // always drop selected state
         )
         .await?;
 
         Ok(new_id)
+    }
+    async fn find_label_in_track(
+        &mut self,
+        track_nr: usize,
+        predicate: impl (FnMut(&(usize, &TimeLabel)) -> bool) + Send,
+    ) -> Result<usize, Error> {
+        let labels = self.get_label_info().await?;
+        let new_labels = labels.get(&track_nr).unwrap();
+        let label_nr = new_labels
+            .iter()
+            .enumerate()
+            .find(predicate)
+            .unwrap_or_else(|| panic!("not enought labels in track {track_nr}, can't find label"))
+            .0;
+        Ok(Self::get_label_offset(&labels, track_nr) + label_nr)
     }
     fn get_label_offset(labels: &HashMap<usize, Vec<TimeLabel>>, track_hint: usize) -> usize {
         labels
