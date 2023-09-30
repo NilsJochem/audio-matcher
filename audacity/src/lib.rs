@@ -30,13 +30,14 @@ use log::{debug, error, trace, warn};
 use std::{
     collections::HashMap,
     fmt::Debug,
+    io::Error as IoError,
     marker::Send,
     path::{Path, PathBuf},
     time::Duration,
 };
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     time::{error::Elapsed, interval, timeout},
 };
 
@@ -67,7 +68,6 @@ pub enum RelativeTo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     All,
-    None,
     Stored,
     Part {
         start: Duration,
@@ -75,17 +75,17 @@ pub enum Selection {
         relative_to: RelativeTo,
     },
 }
-impl From<Selection> for command::NoOut<'_> {
-    fn from(value: Selection) -> Self {
+impl From<Option<Selection>> for command::NoOut<'_> {
+    fn from(value: Option<Selection>) -> Self {
         match value {
-            Selection::All => command::SelectAll,
-            Selection::None => command::SelectNone,
-            Selection::Stored => command::SelRestore,
-            Selection::Part {
+            None => command::SelectNone,
+            Some(Selection::All) => command::SelectAll,
+            Some(Selection::Stored) => command::SelRestore,
+            Some(Selection::Part {
                 start,
                 end,
                 relative_to,
-            } => command::SelectTime {
+            }) => command::SelectTime {
                 start: Some(start),
                 end: Some(end),
                 relative_to,
@@ -97,7 +97,6 @@ impl From<Selection> for command::NoOut<'_> {
 pub enum Save {
     Restore,
     Discard,
-    None,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelHint {
@@ -144,7 +143,7 @@ impl TrackHint {
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("{0}")]
-    PipeBroken(String, #[source] Option<tokio::io::Error>),
+    PipeBroken(String, #[source] Option<IoError>),
     #[error("Didn't finish with OK or Failed!, {0:?}")]
     MissingOK(String),
     #[error("Failed with {0:?}")]
@@ -152,7 +151,7 @@ pub enum Error {
     #[error("couldn't parse result {0:?} because {1}")]
     MalformedResult(String, #[source] MalformedCause),
     #[error("Unkown path {0:?}, {1}")]
-    PathErr(PathBuf, #[source] std::io::Error),
+    PathErr(PathBuf, #[source] IoError),
     #[error("timeout after {0:?}")]
     Timeout(Duration),
 }
@@ -172,7 +171,7 @@ pub enum MalformedCause {
 #[derive(Debug, Error)]
 pub enum LaunchError {
     #[error(transparent)]
-    IO(#[from] tokio::io::Error),
+    IO(#[from] IoError),
     #[error("failed with status code {0}")]
     Failed(i32),
     #[error("process was terminated")]
@@ -190,7 +189,7 @@ impl LaunchError {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Config {
+pub struct Config {
     launcher: String,
     audacity_app_name: String,
 }
@@ -220,7 +219,7 @@ pub type AudacityApi = AudacityApiGeneric<
 >;
 #[cfg(windows)]
 impl AudacityApi {
-    pub async fn launch_audacity() -> Result<(), LaunchError> {
+    pub async fn launch_audacity(config: impl Into<Option<Config>>) -> Result<(), LaunchError> {
         todo!("stub");
     }
     pub const fn new(timer: Option<Duration>) -> Self {
@@ -255,8 +254,8 @@ impl AudacityApi {
     /// - [`LaunchError::IO`] when executing the commant failed
     /// - [`LaunchError::Failed`] when the launcher exited with an statuscode != 0
     /// - [`LaunchError::Terminated`] when the launcher was terminated by a signal
-    pub async fn launch_audacity() -> Result<(), LaunchError> {
-        let config = confy::load::<Config>("audio-matcher", "audacity").unwrap();
+    pub async fn launch(config: impl Into<Option<Config>> + Send) -> Result<(), LaunchError> {
+        let config = config.into().unwrap_or_else(Self::load_config);
         LaunchError::from_status_code(
             tokio::process::Command::new(config.launcher)
                 .arg(config.audacity_app_name)
@@ -265,6 +264,9 @@ impl AudacityApi {
                 .status
                 .code(),
         )
+    }
+    fn load_config() -> Config {
+        confy::load::<Config>("audio-matcher", "audacity").unwrap()
     }
 
     /// creates a new Instance of `AudacityApi` for linux.
@@ -300,6 +302,7 @@ impl AudacityApi {
             .open_receiver(format!("{}.from.{uid}", Self::BASE_PATH))
             .map_err(|err| Error::PipeBroken("open reader".to_owned(), Some(err)))?;
         debug!("pipes found");
+        poll_rate.reset();
         Self::with_pipes(reader, writer, timer, poll_rate).await
     }
 }
@@ -317,7 +320,6 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             read_pipe: BufReader::new(reader),
             timer,
         };
-        poll_rate.reset();
         // waiting for audacity to be ready
         while !audacity_api.ping().await? {
             poll_rate.tick().await;
@@ -334,18 +336,12 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// # Panics
     /// when a non empty result is recieved
-    pub async fn write_assume_empty<'a>(
-        &mut self,
-        command: command::NoOut<'a>,
-    ) -> Result<(), Error> {
+    pub async fn write_assume_empty(&mut self, command: command::NoOut<'_>) -> Result<(), Error> {
         let result = self.write_any(command.clone(), false).await?;
         assert_eq!(result, "", "expecting empty result for {command:?}");
         Ok(())
     }
-    async fn write_assume_result<'a>(
-        &mut self,
-        command: command::Out<'a>,
-    ) -> Result<String, Error> {
+    async fn write_assume_result(&mut self, command: command::Out<'_>) -> Result<String, Error> {
         self.write_any(command, false).await
     }
     /// writes `command` to audacity and waits for a result.
@@ -356,7 +352,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// one should use `write_assume_empty` or `write_assume_result`
     /// this errors when either `self.write` or `self.read` errors, or the timeout occures
-    async fn write_any<'a>(
+    async fn write_any(
         &mut self,
         command: impl command::Command + Debug + Send + Sync,
         allow_no_ok: bool,
@@ -377,7 +373,6 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
 
         Self::maybe_timeout(timer, future).await?
     }
-
     /// Reads the next answer from audacity.
     /// When not `allow_no_ok` reads lines until {[`Self::ACK_START`]}+\["OK"|"Failed!"\]+"\n\n" is reached and returns everything before.
     /// Else will also accept just "\n".
@@ -389,83 +384,66 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// # Panics
     /// This can panic, when after {[`Self::ACK_START`]} somthing unexpected appears
-    async fn read(&mut self, allow_no_ok: bool) -> Result<String, Error> {
+    async fn read(&mut self, allow_empty: bool) -> Result<String, Error> {
         let mut result = Vec::new();
         loop {
-            let mut line = String::new();
-            if !allow_no_ok {
+            if !allow_empty {
                 trace!("reading next line from audacity");
             }
-            self.read_pipe.read_line(&mut line).await.map_err(|err| {
-                Error::PipeBroken(
-                    format!(
-                        "failed to read next line, current buffer: {:?}",
-                        result.join("\n")
-                    ),
-                    Some(err),
-                )
-            })?;
-            if !allow_no_ok {
+            let line = read_line(&mut self.read_pipe)
+                .await
+                .map_err(|err| {
+                    Error::PipeBroken(
+                        format!(
+                            "failed to read next line, current buffer: {:?}",
+                            result.join("\n")
+                        ),
+                        Some(err),
+                    )
+                })?
+                .ok_or_else(|| {
+                    error!("current result: {result:?}");
+                    Error::PipeBroken("empty reader".to_owned(), None)
+                })?;
+            if !allow_empty {
                 trace!("read line {line:?} from audacity");
             }
 
             if line.is_empty() {
-                error!("current result: {result:?}");
-                return Err(Error::PipeBroken("empty reader".to_owned(), None));
-            }
-
-            // remove line ending
-            let line = &line[..(line.len() - 1)];
-            let line = line.strip_suffix('\r').unwrap_or(line);
-
-            if line.is_empty() {
-                return if !result.is_empty() {
-                    Err(Error::MissingOK(result.join("\n")))
-                } else if allow_no_ok {
-                    Ok(String::new())
-                } else {
-                    trace!("skipping empty line");
-                    continue;
-                };
-            }
-            // let line = &line[..(line.len() - LINE_ENDING.len())];
-
-            if let Some(rest) = line.strip_prefix(Self::ACK_START) {
-                let mut tmp = String::new();
-                self.read_pipe.read_line(&mut tmp).await.map_err(|_err| {
-                    Error::PipeBroken(
-                        format!(
-                            "failed to read newline after ok. Current buffer: {:?}",
-                            result.join("\n")
-                        ),
-                        None,
-                    )
-                })?;
-                let result = result.join("\n");
-                if tmp != "\n" && tmp != "\r\n" {
-                    return Err(Error::MalformedResult(
-                        result,
-                        MalformedCause::MissingLineBreak,
-                    ));
+                if allow_empty || !result.is_empty() {
+                    break;
                 }
-                return match rest {
-                    "OK" => {
-                        debug!("read '{result}' from audacity");
-                        Ok(result)
-                    }
-                    "Failed!" => Err(Error::AudacityErr(result)),
-                    x => panic!("need error handling for {x}"),
-                };
+                // TODO Test if it happens
+                warn!("skipping empty leading line");
+            } else {
+                result.push(line);
             }
-            result.push(line.to_owned());
+        }
+        let Some(last) = result.pop() else { return Ok(String::new()) };
+        let result = result.join("\n");
+        match last.strip_prefix(Self::ACK_START) {
+            Some("OK") => {
+                debug!("read '{result}' from audacity");
+                Ok(result)
+            }
+            Some("Failed!") => Err(Error::AudacityErr(result)),
+            Some(x) => panic!("need error handling for {x}"),
+            None => {
+                let result = if result.is_empty() {
+                    last
+                } else {
+                    format!("{result}\n{last}")
+                };
+                Err(Error::MissingOK(result))
+            }
         }
     }
 
     /// formats the error of [`maybe_timeout`] to [`Error::Timeout`]
-    async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
+    async fn maybe_timeout<F: std::future::Future + Send>(
         timer: Option<Duration>,
         future: F,
-    ) -> Result<T, Error> {
+    ) -> Result<F::Output, Error> {
         maybe_timeout(timer, future)
             .await
             .map_err(|_err| Error::Timeout(timer.unwrap()))
@@ -480,15 +458,13 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             .write_any(command::Message { text: "ping" }, true)
             .await?;
 
-        if result.is_empty() {
-            Ok(false)
-        } else if result == "ping" {
-            Ok(true)
-        } else {
-            Err(Error::MalformedResult(
+        match result.as_str() {
+            "ping" => Ok(true),
+            "" => Ok(false),
+            _ => Err(Error::MalformedResult(
                 result.clone(),
                 MalformedCause::BadPingResult(result),
-            ))
+            )),
         }
     }
 
@@ -683,7 +659,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
         track_nr: usize,
         label: TimeLabel,
     ) -> Result<usize, Error> {
-        unimplemented!("fix select track");
+        todo!("fix select track");
         self.select_tracks(std::iter::once(track_nr)).await?;
         self.write_assume_empty(command::SetTrackStatus {
             name: None,
@@ -790,19 +766,20 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     pub async fn zoom_to(
         &mut self,
         selection: Selection,
-        restore_selection: Save,
+        restore_selection: impl Into<Option<Save>> + Send,
     ) -> Result<(), Error> {
+        let restore_selection = restore_selection.into();
         match restore_selection {
-            Save::Restore => self.write_assume_empty(command::SelSave).await?,
-            Save::Discard | Save::None => {}
+            Some(Save::Restore) => self.write_assume_empty(command::SelSave).await?,
+            Some(Save::Discard) | None => {}
         }
         self.select(selection).await?;
         self.write_assume_empty(command::ZoomSel).await?;
 
         match restore_selection {
-            Save::Restore => self.select(Selection::Stored).await?,
-            Save::Discard => self.select(Selection::None).await?,
-            Save::None => {}
+            Some(Save::Restore) => self.select(Selection::Stored).await?,
+            Some(Save::Discard) => self.select(None).await?,
+            None => {}
         };
         Ok(())
     }
@@ -811,8 +788,11 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     ///
     /// # Errors
     ///  - when write/send errors
-    pub async fn select(&mut self, selection: Selection) -> Result<(), Error> {
-        self.write_assume_empty(selection.into()).await
+    pub async fn select(
+        &mut self,
+        selection: impl Into<Option<Selection>> + Send,
+    ) -> Result<(), Error> {
+        self.write_assume_empty(selection.into().into()).await
     }
 }
 
@@ -821,10 +801,31 @@ fn is_near_to(a: Duration, b: Duration, delta: Duration) -> bool {
     (if a >= b { a - b } else { b - a }) < delta
 }
 
-async fn maybe_timeout<T, F: std::future::Future<Output = T> + Send>(
+/// reads the next line from `read_pipe` and removes "\r?\n" from the end
+/// returns `None`, when EOF was reached
+///
+/// # Errors
+/// relays Errors of `read_line`
+async fn read_line(
+    mut reader: impl AsyncBufRead + Unpin + Send,
+) -> Result<Option<String>, IoError> {
+    let mut buf = String::new();
+    Ok(if reader.read_line(&mut buf).await? == 0 {
+        None
+    } else {
+        // remove line ending
+        assert_eq!(Some('\n'), buf.pop(), "requires at least '\n' at the end");
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+        Some(buf)
+    })
+}
+
+async fn maybe_timeout<F: std::future::Future + Send>(
     timer: Option<Duration>,
     future: F,
-) -> Result<T, Elapsed> {
+) -> Result<F::Output, Elapsed> {
     match timer {
         Some(timer) => timeout(timer, future).await,
         None => Ok(future.await),

@@ -59,7 +59,7 @@ impl LazyApi {
         Ok(match option {
             Some(x) => x,
             None => option.insert({
-                audacity::AudacityApiGeneric::launch_audacity().await?;
+                audacity::AudacityApiGeneric::launch(None).await?;
                 audacity::AudacityApiGeneric::new(self.timeout).await?
             }),
         })
