@@ -1,3 +1,5 @@
+use itertools::Itertools;
+use regex::Regex;
 use serde::Deserialize;
 use std::{
     borrow::Cow,
@@ -22,8 +24,8 @@ pub enum Error {
     SeriesNotFound,
     #[error("couldn't an index file")]
     NoIndexFile,
-    #[error("only supporting .toml and .txt")]
-    NonSupportedFile,
+    #[error("only supporting .toml and .txt, but got {}", .0.as_deref().map(|it| format!(".{it}")).as_deref().unwrap_or("None"))]
+    NotSupportedFile(Option<String>),
 }
 impl Error {
     fn io_err(path: impl AsRef<Path>, err: &std::io::Error) -> Self {
@@ -182,50 +184,35 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
 
 impl<'a> Index<'a> {
     pub fn possible(path: impl AsRef<Path>) -> Vec<String> {
+        fn helper(
+            known: &mut HashSet<String>,
+            paths: Vec<Result<PathBuf, glob::GlobError>>,
+            mut get_name: impl FnMut(&Path) -> Option<&OsStr>,
+        ) -> Result<(), glob::GlobError> {
+            for path in paths {
+                let index = path?.with_extension("");
+                let name = get_name(index.as_path())
+                    .expect("need filename")
+                    .to_str()
+                    .expect("need valid utf-8");
+                known.insert(name.to_owned());
+            }
+            Ok(())
+        }
         let path = path.as_ref().to_str().expect("need valid utf-8");
         let mut known = HashSet::new();
 
-        let paths = glob::glob(&format!("{path}/*.toml"))
+        let paths = glob_expanded(format!("{path}/*.{{toml, txt}}"))
             .unwrap()
-            .chain(glob::glob(&format!("{path}/*.txt")).unwrap())
             .collect::<Vec<_>>();
-        for path in paths {
-            match path {
-                Ok(index) => {
-                    let index = index.with_extension("");
-                    let index = index
-                        .file_name()
-                        .expect("need filename")
-                        .to_str()
-                        .expect("need valid utf-8");
-                    known.insert(index.to_owned());
-                }
-                Err(err) => Err(err).unwrap(),
-            }
-        }
+        helper(&mut known, paths, Path::file_name).unwrap();
 
-        let paths = glob::glob(&format!("{path}/*/index.toml"))
+        let paths = glob_expanded(format!("{path}/*/index.{{toml, txt}}"))
             .unwrap()
-            .chain(glob::glob(&format!("{path}/*/index.txt")).unwrap())
             .collect::<Vec<_>>();
-        for path in paths {
-            match path {
-                Ok(index) => {
-                    let index = index
-                        .parent()
-                        .unwrap()
-                        .file_name()
-                        .expect("need filename")
-                        .to_str()
-                        .expect("need valid utf-8");
-                    known.insert(index.to_owned());
-                }
-                Err(err) => Err(err).unwrap(),
-            }
-        }
-        let mut known = known.into_iter().collect::<Vec<_>>();
-        known.sort();
-        known
+        helper(&mut known, paths, |it| it.parent().unwrap().file_name()).unwrap();
+
+        known.into_iter().sorted().collect::<Vec<_>>()
     }
     pub async fn try_read_from_path(
         path: impl AsRef<Path> + Send + Sync,
@@ -233,7 +220,8 @@ impl<'a> Index<'a> {
         match path.as_ref().extension().and_then(OsStr::to_str) {
             Some("toml") => Self::try_from_path(path, parser::Toml).await,
             Some("txt") => Self::try_from_path(path, parser::Txt::TryWithArtist).await,
-            Some(_) | None => Err(Error::NonSupportedFile),
+            Some(ext) => Err(Error::NotSupportedFile(Some(ext.to_owned()))),
+            None => Err(Error::NotSupportedFile(None)),
         }
         .and_then(|it| it.ok_or(Error::NoIndexFile))
     }
@@ -343,6 +331,14 @@ impl<'a> Index<'a> {
         it.fill(|| self.artist.reborrow(), || self.release)
     }
 }
+// doesn't work, because get returns a copy
+// impl<'a> std::ops::Index<ChapterNumber> for Index<'a> {
+//     type Output = ChapterEntry<'a>;
+
+//     fn index(&self, index: ChapterNumber) -> &Self::Output {
+//         self.get(index)
+//     }
+// }
 
 #[allow(clippy::module_name_repetitions)]
 pub struct MultiIndex<'a> {
@@ -367,14 +363,43 @@ impl<'a> MultiIndex<'a> {
     }
 }
 
-// doesn't work, because get returns a copy
-// impl<'a> std::ops::Index<ChapterNumber> for Index<'a> {
-//     type Output = ChapterEntry<'a>;
-
-//     fn index(&self, index: ChapterNumber) -> &Self::Output {
-//         self.get(index)
-//     }
-// }
+/// expands first "a{b1, b2, ...}c" into \["ab1c", "ab2c", ...\]
+fn split_pattern(pattern: &str) -> Vec<Cow<'_, str>> {
+    const REG_PRE: &str = "pre";
+    const REG_OPTIONS: &str = "opt";
+    const REG_POST: &str = "post";
+    lazy_static::lazy_static! {
+        static ref RE: Regex = Regex::new(&format!("^(?P<{REG_PRE}>.*?)(?:\\{{(?P<{REG_OPTIONS}>.+?)\\}}(?P<{REG_POST}>.*)$)?$")).unwrap();
+    }
+    let binding = RE.captures(pattern.as_ref()).unwrap();
+    let pre = binding
+        .name(REG_PRE)
+        .expect("expecting at least pre to match")
+        .as_str();
+    let options = binding.name(REG_OPTIONS).map(|options| {
+        (
+            options.as_str().split(", "),
+            binding.name(REG_POST).expect("need post match").as_str(),
+        )
+    });
+    if let Some((options, post)) = options {
+        options
+            .map(|option| Cow::Owned(format!("{pre}{option}{post}")))
+            .collect_vec()
+    } else {
+        vec![Cow::Borrowed(pre)]
+    }
+}
+fn glob_expanded(
+    pattern: impl AsRef<str>,
+) -> Result<impl Iterator<Item = Result<PathBuf, glob::GlobError>>, glob::PatternError> {
+    Ok(split_pattern(pattern.as_ref())
+        .into_iter()
+        .map(|it| glob::glob(it.as_ref()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten())
+}
 
 #[cfg(test)]
 mod tests {
@@ -382,6 +407,13 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn multipattern() {
+        assert_eq!(
+            vec!["path/*.toml", "path/*.txt"],
+            split_pattern("path/*.{toml, txt}")
+        );
+    }
     #[test]
     fn list_possibilitys() {
         assert_eq!(

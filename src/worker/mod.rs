@@ -396,7 +396,7 @@ pub async fn read_index_from_args(
                     todo!("couldn't find {series:?} in {folder:?} re-ask for series")
                 }
                 index::Error::NoIndexFile => todo!("ask for direct path"),
-                index::Error::NonSupportedFile => unreachable!(),
+                index::Error::NotSupportedFile(_) => unreachable!(),
                 index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
                     Err(err)
                 }
@@ -416,7 +416,7 @@ pub async fn read_index_from_args(
                     .map(Some)
                     .or_else(|err| match err {
                         index::Error::SeriesNotFound => unreachable!(),
-                        index::Error::NoIndexFile | index::Error::NonSupportedFile => {
+                        index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
                             todo!("re-ask for path")
                         }
                         index::Error::Parse(_, _)
