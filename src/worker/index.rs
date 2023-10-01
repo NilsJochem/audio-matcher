@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap, HashSet},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 use toml::value::Datetime;
@@ -183,31 +183,28 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
 }
 
 impl<'a> Index<'a> {
-    pub fn possible(path: impl AsRef<Path>) -> Vec<String> {
+    pub fn possible(path: impl AsRef<Path>) -> Vec<OsString> {
         fn helper(
-            known: &mut HashSet<String>,
+            known: &mut HashSet<OsString>,
             paths: Vec<Result<PathBuf, glob::GlobError>>,
             mut get_name: impl FnMut(&Path) -> Option<&OsStr>,
         ) -> Result<(), glob::GlobError> {
             for path in paths {
                 let index = path?.with_extension("");
-                let name = get_name(index.as_path())
-                    .expect("need filename")
-                    .to_str()
-                    .expect("need valid utf-8");
+                let name = get_name(index.as_path()).expect("need filename");
                 known.insert(name.to_owned());
             }
             Ok(())
         }
-        let path = path.as_ref().to_str().expect("need valid utf-8");
+        let path = path.as_ref();
         let mut known = HashSet::new();
 
-        let paths = glob_expanded(format!("{path}/*.{{toml, txt}}"))
+        let paths = glob_expanded(path.join("*.{toml, txt}"))
             .unwrap()
             .collect::<Vec<_>>();
         helper(&mut known, paths, Path::file_name).unwrap();
 
-        let paths = glob_expanded(format!("{path}/*/index.{{toml, txt}}"))
+        let paths = glob_expanded(path.join("*/index.{toml, txt}"))
             .unwrap()
             .collect::<Vec<_>>();
         helper(&mut known, paths, |it| it.parent().unwrap().file_name()).unwrap();
@@ -371,7 +368,7 @@ fn split_pattern(pattern: &str) -> Vec<Cow<'_, str>> {
     lazy_static::lazy_static! {
         static ref RE: Regex = Regex::new(&format!("^(?P<{REG_PRE}>.*?)(?:\\{{(?P<{REG_OPTIONS}>.+?)\\}}(?P<{REG_POST}>.*)$)?$")).unwrap();
     }
-    let binding = RE.captures(pattern.as_ref()).unwrap();
+    let binding = RE.captures(pattern).unwrap();
     let pre = binding
         .name(REG_PRE)
         .expect("expecting at least pre to match")
@@ -391,14 +388,19 @@ fn split_pattern(pattern: &str) -> Vec<Cow<'_, str>> {
     }
 }
 fn glob_expanded(
-    pattern: impl AsRef<str>,
+    pattern: impl AsRef<OsStr>,
 ) -> Result<impl Iterator<Item = Result<PathBuf, glob::GlobError>>, glob::PatternError> {
-    Ok(split_pattern(pattern.as_ref())
-        .into_iter()
-        .map(|it| glob::glob(it.as_ref()))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten())
+    Ok(split_pattern(
+        pattern
+            .as_ref()
+            .to_str()
+            .expect("currently only supporting UTF-8"),
+    )
+    .into_iter()
+    .map(|it| glob::glob(it.as_ref()))
+    .collect::<Result<Vec<_>, _>>()?
+    .into_iter()
+    .flatten())
 }
 
 #[cfg(test)]
@@ -426,7 +428,7 @@ mod tests {
                 "test"
             ]
             .into_iter()
-            .map(std::borrow::ToOwned::to_owned)
+            .map(OsString::from)
             .collect_vec(),
             Index::possible("res/local/Aufnahmen/current")
         );

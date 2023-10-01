@@ -669,11 +669,13 @@ mod tests {
 
     fn new_test_file(file: impl AsRef<Path>) -> common::io::TmpFile {
         let mut path = file.as_ref().to_path_buf();
-        path.set_file_name(format!(
-            "tmp_{}_{}",
-            FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed), // give each call a uniqe number to allow parallel tests
-            path.file_name().unwrap().to_str().unwrap()
+        let mut name = std::ffi::OsString::from(format!(
+            "tmp_{}_",
+            FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed) // give each call a uniqe number to allow parallel tests
         ));
+        name.push(path.file_name().expect("need file name"));
+
+        path.set_file_name(name);
         common::io::TmpFile::new_copy(path, file).unwrap()
     }
 

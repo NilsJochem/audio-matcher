@@ -373,7 +373,10 @@ pub async fn read_index_from_args(
     let series = args.index_folder().map_or_else(
         || args.always_answer().input(MSG, None),
         |path| {
-            let known = index::Index::possible(path);
+            let known = index::Index::possible(path)
+                .into_iter()
+                .map(|it| it.to_str().expect("only UTF-8").to_owned())
+                .collect_vec();
             Inputs::input_with_suggestion(
                 MSG,
                 None,

@@ -58,11 +58,11 @@ pub struct Archive {
 impl Archive {
     /// will only log warnings, when errors from parsing occure
     pub fn read<P: AsRef<Path>>(path: P) -> Self {
-        let path = path
-            .as_ref()
+        let path = path.as_ref().join("**/*.txt");
+        let pattern = path
             .to_str()
-            .expect("path contained non UTF-8 char");
-        let tmp = glob::glob(&format!("{path}/*.txt",))
+            .expect("currently only supporting UTF-8 filenames");
+        let tmp = glob::glob(pattern)
             .expect("glob pattern failed")
             .filter_map(|entry| {
                 let entry = entry.expect("couldn't read globbet file");
@@ -501,9 +501,9 @@ impl FromStr for Source {
     ///
     /// # Examples
     /// ```
-    /// use audio_matcher::archive::data::Source;
-    /// use audio_matcher::archive::data::SourceErrorKind;
-    ///
+    /// # use audio_matcher::archive::data::Source;
+    /// # use audio_matcher::archive::data::SourceErrorKind;
+    /// #
     /// assert_eq!("abc - 2023-07-13", "abc-2023_07_13".parse::<Source>().unwrap().to_string(), "parse and unparse display");
     /// assert_eq!("abc-2023_07_13", "abc-2023_07_13".parse::<Source>().unwrap().to_file_name(), "parse and unparse filename");
     /// assert_eq!(Err(SourceErrorKind::InvalidSeperator), "2023_07_13".parse::<Source>(), "fail without station adn seperator");
