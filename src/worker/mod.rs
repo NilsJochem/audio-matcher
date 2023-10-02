@@ -4,10 +4,11 @@ use common::extensions::{
     vec::PushReturn,
 };
 use futures::TryFutureExt;
-use itertools::Itertools;
+use itertools::{Itertools, Position};
 use log::trace;
 use std::{
     borrow::Cow,
+    collections::HashMap,
     fmt::Write,
     path::{Path, PathBuf},
     time::Duration,
@@ -21,7 +22,10 @@ use crate::{
     worker::tagger::{Album, Artist, Genre, TaggedFile, Title, TotalTracks, Track, Year},
 };
 
-use self::{args::Arguments, index::Index};
+use self::{
+    args::Arguments,
+    index::{Index, MultiIndex},
+};
 
 pub mod args;
 pub mod index;
@@ -37,8 +41,6 @@ pub enum Error {
     #[error("id3 Error {1} for {0:?}")]
     Tag(PathBuf, #[source] tagger::Error),
 }
-
-type Pattern = (String, ChapterNumber, String);
 
 struct LazyApi {
     timeout: Option<Duration>,
@@ -73,7 +75,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
     );
     let mut audacity_api = LazyApi::from_args(args);
 
-    for audio_path in args.audio_paths() {
+    for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let label_path = audio_path.with_extension("txt");
         let audacity_api = audacity_api.get_api_handle().await?;
 
@@ -83,68 +85,62 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         audacity_api
             .zoom_to(audacity::Selection::All, audacity::Save::Discard)
             .await?;
-        let _ = args
-            .always_answer()
-            .input("press enter when you are ready to start renaming", None);
 
-        let (patterns, mut tags, _) = rename_labels(args, audacity_api).await?;
-        adjust_labels(args, audacity_api).await?;
+        // start rename
+        if !args.skip_name() {
+            let _ = args
+                .always_answer()
+                .input("press enter when you are ready to start renaming", None);
+            rename_labels(args, audacity_api).await?;
+            adjust_labels(args, audacity_api).await?;
 
-        audacity_api
-            .export_all_labels_to(label_path, args.dry_run())
-            .await?;
-        let offsets = merge_parts(audacity_api, audacity::TrackHint::LabelTrackNr(0)).await?;
-        for (tag, offset) in tags.iter_mut().zip_eq(offsets) {
-            if offset.is_empty() {
-                continue; // don't add only label at 0
-            }
-            for (i, offset) in std::iter::once(Duration::ZERO)
-                .chain(offset.into_iter())
-                .enumerate()
-            {
-                tag.set_chapter(i, offset, Some(&format!("Part {}", i + 1)));
-            }
-        }
-        let was_exported = if args.dry_run() {
-            println!("asking to export audio and labels");
-            for tag in tags {
-                tag.drop_changes();
-            }
-            true
-        } else {
             audacity_api
-                .write_assume_empty(audacity::command::ExportMultiple)
+                .export_all_labels_to(label_path, args.dry_run())
                 .await?;
-            let all_exported = tags.iter().all(|tag| tag.path().exists());
-            if all_exported {
-                for mut tag in tags {
-                    tag.reload_empty()
-                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
-                    tag.save_changes(false)
-                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
-                }
-            } else {
-                for tag in tags {
-                    tag.drop_changes();
-                }
+        }
+
+        //start export
+        let tags = merge_parts(args, audacity_api, audacity::TrackHint::LabelTrackNr(0)).await?;
+        let _ = args.always_answer().input(
+            "remove all lables you don't want to remove and then press enter to start exporting",
+            None,
+        );
+        audacity_api
+            .write_assume_empty(audacity::command::ExportMultiple)
+            .await?;
+
+        let (mut tags, missing) = tags
+            .into_iter()
+            .partition::<Vec<_>, _>(|tag| tag.path().exists());
+
+        missing.into_iter().for_each(TaggedFile::drop_changes);
+
+        if tags.is_empty() {
+            log::warn!("no files exported, skipping move");
+        } else {
+            for tag in &mut tags {
+                tag.reload_empty()
+                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                tag.save_changes(false)
+                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
             }
-            all_exported
-        };
-        if was_exported {
             move_results(
-                patterns,
+                tags.iter(),
                 args.tmp_path(),
                 args.index_folder().unwrap_or_else(|| args.tmp_path()),
                 args,
             )
             .await?;
-        } else {
-            log::warn!("not all files exported, skipping move");
         }
+        drop(tags);
 
         if !args.skip_load() {
+            // clear audacity after each round, but exit in last round
             audacity_api
-                .write_assume_empty(audacity::command::Close)
+                .write_assume_empty(match pos {
+                    Position::First | Position::Middle => audacity::command::Close,
+                    Position::Last | Position::Only => audacity::command::Exit,
+                })
                 .await?;
         }
     }
@@ -251,10 +247,7 @@ impl<'a> inquire::Autocomplete for ChapterCompleter<'a> {
 
 ///expecting that number of parts divides the length of the input or default to 4
 const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
-async fn rename_labels(
-    args: &Arguments,
-    audacity: &mut AudacityApi,
-) -> Result<(Vec<Pattern>, Vec<TaggedFile>, Option<usize>), Error> {
+async fn rename_labels(args: &Arguments, audacity: &mut AudacityApi) -> Result<(), Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
@@ -265,12 +258,6 @@ async fn rename_labels(
         ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
     });
     let index = index_rc.as_ref().map(ChapterCompleter::index);
-
-    let index_len = index.map(index::Index::main_len);
-    let nr_pad = index_len.map(|it| (it as f32).log10().ceil() as usize);
-
-    let mut patterns = Vec::new();
-    let mut tags = Vec::new();
 
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
     let mut i = 0;
@@ -304,65 +291,37 @@ async fn rename_labels(
         .expect("gib was vern\u{fc}nftiges ein");
         expected_next_chapter_number = Some(chapter_number.next());
 
-        let (chapter_name, artist, release) =
-            if let Some(value) = index.as_ref().map(|it| it.get(chapter_number)) {
-                (value.title, value.artist, value.release)
-            } else {
-                (Cow::Owned(request_next_chapter_name(args)), None, None)
-            };
+        let chapter_name = index.map_or_else(
+            || Cow::Owned(request_next_chapter_name(args)),
+            |it| it.get(chapter_number).title,
+        );
 
-        let expected_number = Some(EXPECTED_PARTS.get(labels.len()).map_or(4, |i| *i));
+        let remaining = labels.len() - i;
+        let expected_number = EXPECTED_PARTS
+            .get(labels.len())
+            .map_or(4, |i| *i)
+            .min(remaining);
         let number = read_number(
             args.always_answer(),
-            &format!(
-                "Wie viele Teile hat die n\u{e4}chste Folge{}: ",
-                expected_number.map_or_else(String::new, |next| format!(", erwarte {next}"))
-            ),
-            expected_number,
+            &format!("Wie viele Teile hat die n\u{e4}chste Folge, erwarte {expected_number}: "),
+            Some(expected_number),
         )
-        .min(labels.len() - i);
+        .min(remaining);
         for j in 0..number {
-            let name = build_timelabel_name(&series, &chapter_number, j + 1, &chapter_name);
+            let name = build_timelabel_name(
+                series.as_str(),
+                &chapter_number,
+                j + 1,
+                chapter_name.as_ref(),
+            );
+            let name = name.to_str().expect("only utf-8 support");
             audacity
                 .set_label(i + j, Some(name), None, None, Some(false))
                 .await?;
         }
         i += number;
-
-        let mut path = args.tmp_path().to_path_buf();
-        path.push(format!(
-            "{}.{}",
-            build_timelabel_name(&series, &chapter_number, None, &chapter_name),
-            args.export_ext()
-        ));
-        let tag = tags.push_return(TaggedFile::new_empty(path).unwrap());
-
-        tag.set::<Title>(format!("{chapter_name}").as_ref());
-        tag.set::<Album>(series.as_ref());
-        tag.set::<Genre>(args.genre());
-        tag.set::<Track>(chapter_number.nr as u32);
-        if let Some(l) = index_len {
-            tag.set::<TotalTracks>(l as u32);
-        }
-        if let Some(artist) = artist.as_deref() {
-            tag.set::<Artist>(artist);
-        }
-        match release {
-            Some(
-                index::DateOrYear::Year(year)
-                | index::DateOrYear::Date(Datetime {
-                    date: Some(Date { year, .. }),
-                    ..
-                }),
-            ) => tag.set::<Year>(year as i32),
-            Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
-                log::warn!("release didn't have a date");
-            }
-            None => {}
-        }
-        patterns.push((series.clone(), chapter_number, chapter_name.into_owned()));
     }
-    Ok((patterns, tags, nr_pad))
+    Ok(())
 }
 
 pub async fn read_index_from_args(
@@ -474,21 +433,29 @@ pub struct MoveError {
     source: common::io::MoveError,
 }
 async fn move_results(
-    patterns: Vec<Pattern>,
+    patterns: impl Iterator<Item = &TaggedFile> + Send,
     from: impl AsRef<Path> + Send + Sync,
     to: impl AsRef<Path> + Send + Sync,
     args: &Arguments,
 ) -> Result<(), MoveError> {
     patterns
-        .into_iter()
-        .map(|(series, nr, chapter)| {
+        .map(|tag| {
             let mut dst = to.as_ref().to_path_buf();
-            dst.push(&series);
-
             let mut file = from.as_ref().to_path_buf();
-            file.push(format!("{series} {nr} {chapter}.{}", args.export_ext()));
-            common::io::move_file(file.clone(), dst.clone(), args.dry_run())
-                .map_err(move |source| MoveError { file, dst, source })
+            let name = build_timelabel_name::<&str, &str>(
+                tag.get::<Album>(),
+                &(tag.get::<Track>().unwrap() as usize).into(),
+                None,
+                tag.get::<Title>(),
+            );
+            if let Some(series) = tag.get::<Album>() {
+                dst.push(series);
+            }
+            file.push(name);
+            file.set_extension(tag.ext());
+
+            common::io::move_file(file, dst, args.dry_run())
+                .map_err(move |(source, file, dst)| MoveError { file, dst, source })
         })
         .join_all()
         .await
@@ -497,15 +464,16 @@ async fn move_results(
 }
 
 async fn merge_parts(
+    args: &Arguments,
     audacity: &mut audacity::AudacityApi,
     hint: audacity::TrackHint,
-) -> Result<Vec<Vec<Duration>>, audacity::Error> {
+) -> Result<Vec<TaggedFile>, audacity::Error> {
     let label_track_nr = hint.get_label_track_nr(audacity).await?;
     let labels = audacity
         .get_label_info()
         .await?
         .remove(&label_track_nr)
-        .unwrap();
+        .unwrap_or_else(|| panic!("couldn't get track with number {label_track_nr}"));
     audacity.select_tracks(std::iter::once(1)).await?;
     audacity
         .write_assume_empty(audacity::command::RemoveTracks)
@@ -554,29 +522,89 @@ async fn merge_parts(
                 .await?;
         }
     }
-    Ok(calc_merged_offsets(grouped_labels.values()))
+    let (keys, values) = grouped_labels.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+    let offsets = keys
+        .into_iter()
+        .zip(calc_merged_offsets(values))
+        .collect::<HashMap<_, _>>();
+    let mut m_index = MultiIndex::new(args.index_folder().unwrap().to_owned());
+    let mut tags = Vec::new();
+    for ((series, chapter_number, chapter_name), offsets) in offsets {
+        let chapter_name = chapter_name.unwrap();
+        let index = m_index.get_index(series.to_owned()).await.unwrap();
+        let entry = index.get(chapter_number);
+
+        let mut path = args.tmp_path().to_path_buf();
+        path.push(build_timelabel_name(
+            series,
+            &chapter_number,
+            None,
+            chapter_name,
+        ));
+        path.set_extension(args.export_ext());
+        let tag = tags.push_return(TaggedFile::new_empty(path).unwrap());
+
+        tag.set::<Title>(chapter_name);
+        tag.set::<Album>(series.as_ref());
+        tag.set::<Genre>(args.genre());
+        tag.set::<Track>(chapter_number.nr as u32);
+        tag.set::<TotalTracks>(index.main_len() as u32);
+        if let Some(artist) = entry.artist {
+            tag.set::<Artist>(artist.as_ref());
+        }
+        match entry.release {
+            Some(
+                index::DateOrYear::Year(year)
+                | index::DateOrYear::Date(Datetime {
+                    date: Some(Date { year, .. }),
+                    ..
+                }),
+            ) => tag.set::<Year>(year as i32),
+            Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
+                log::warn!("release didn't have a date");
+            }
+            None => {}
+        }
+        if !offsets.is_empty() {
+            // don't add only label at 0
+            for (i, offset) in std::iter::once(Duration::ZERO)
+                .chain(offsets.into_iter())
+                .enumerate()
+            {
+                tag.set_chapter(i, offset, Some(&format!("Part {}", i + 1)));
+            }
+        }
+    }
+
+    Ok(tags)
 }
 
-fn calc_merged_offsets<'a>(
-    grouped_labels: impl IntoIterator<Item = &'a Vec<&'a audacity::data::TimeLabel>>,
-) -> Vec<Vec<Duration>> {
+fn calc_merged_offsets<'a, Iter>(grouped_labels: Iter) -> Vec<Vec<Duration>>
+where
+    Iter: IntoIterator,
+    Iter::Item: IntoIterator<Item = &'a audacity::data::TimeLabel>,
+{
     let mut deleted = Duration::ZERO;
     grouped_labels
         .into_iter()
         .map(|labels| {
-            let point_zero = labels[0].start - deleted;
-            let mut last = labels[0].start;
-            labels
-                .iter()
-                .map(|label| {
-                    deleted += label.start - last;
-                    last = label.end;
-                    label.end - point_zero - deleted
-                })
-                .collect_vec()
-                .into_iter()
-                .dropping_back(1) // extra iter, so that last one will be calculated (to update deleted)
-                .collect_vec()
+            let mut iter = labels.into_iter().peekable();
+            let first = iter.peek().expect("need at least one element");
+            let point_zero = first.start - deleted;
+            let mut last = first.start;
+            let mut out = Vec::new();
+            for (pos, label) in iter.with_position() {
+                deleted += label.start - last;
+
+                match pos {
+                    Position::Last | Position::Only => {}
+                    Position::First | Position::Middle => {
+                        last = label.end;
+                        out.push(label.end - point_zero - deleted);
+                    }
+                }
+            }
+            out
         })
         .collect_vec()
 }
@@ -633,14 +661,16 @@ mod tests {
             vec![&labels[3], &labels[4]],
         ];
         assert_eq!(
-            vec![
+            [
                 vec![
                     Duration::from_h_m_s_m(0, 20, 50, 488),
                     Duration::from_h_m_s_m(0, 43, 4, 638)
                 ],
                 vec![Duration::from_h_m_s_m(0, 23, 46, 320)]
-            ],
-            calc_merged_offsets(data.iter())
+            ]
+            .into_iter()
+            .collect_vec(),
+            calc_merged_offsets(data.into_iter())
         );
     }
 }

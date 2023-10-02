@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::{
     collections::HashMap,
+    ffi::{OsStr, OsString},
     fmt::{Display, Write},
     num::ParseIntError,
     path::Path,
@@ -20,17 +21,26 @@ use crate::matcher::{mp3_reader::SampleType, start_as_duration};
 use common::extensions::vec::FindOrPush;
 
 #[must_use]
-pub fn build_timelabel_name(
-    series_name: &str,
+pub fn build_timelabel_name<S1: AsRef<OsStr>, S2: AsRef<OsStr>>(
+    series_name: impl Into<Option<S1>>,
     nr: &ChapterNumber,
     part: impl Into<Option<usize>>,
-    chapter_name: &str,
-) -> String {
-    let mut name = format!("{series_name} {nr}");
+    chapter_name: impl Into<Option<S2>>,
+) -> OsString {
+    let mut name = OsString::new();
+
+    if let Some(series_name) = series_name.into() {
+        name.push(series_name);
+        name.push(" ");
+    }
+    let _ = write!(name, "{nr}");
     if let Some(part) = part.into() {
         let _ = write!(name, ".{part}");
     }
-    let _ = write!(name, " {chapter_name}");
+    if let Some(chapter_name) = chapter_name.into() {
+        name.push(" ");
+        name.push(chapter_name);
+    }
     name
 }
 
@@ -106,14 +116,14 @@ impl Archive {
 
     fn from<InnerIter, Iter>(value: Iter) -> Self
     where
-        InnerIter: Iterator<Item = TimeLabel>,
         Iter: Iterator<Item = (Source, InnerIter)>,
+        InnerIter: Iterator<Item = TimeLabel>,
     {
         let mut archive = Self { data: Vec::new() };
         for (source, labels) in value {
             for label in labels {
                 let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", |it| it.as_str())) else {
-                    warn!("name of {label:?} couldn't be parsed to Series");
+                    warn!("name {:?} in {source} couldn't be parsed to Series", label.name);
                     continue;
                 };
 
@@ -407,6 +417,11 @@ impl ChapterNumber {
 impl Display for ChapterNumber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_display(None, false))
+    }
+}
+impl From<usize> for ChapterNumber {
+    fn from(value: usize) -> Self {
+        Self::new(value, false)
     }
 }
 pub struct ChapterNumberDisplay<'a> {

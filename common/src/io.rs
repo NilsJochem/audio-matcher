@@ -25,13 +25,16 @@ impl From<IoError> for MoveError {
     }
 }
 
-pub async fn move_file(
-    file: impl AsRef<Path> + Send + Sync,
-    dst: impl AsRef<Path> + Send + Sync,
+pub async fn move_file<P1: AsRef<Path> + Send + Sync, P2: AsRef<Path> + Send + Sync>(
+    file: P1,
+    dst: P2,
     dry_run: bool,
-) -> Result<(), MoveError> {
-    let dst = dst.as_ref();
-    let file = file.as_ref();
+) -> Result<(), (MoveError, P1, P2)> {
+    inner_move_file(file.as_ref(), dst.as_ref(), dry_run)
+        .await
+        .map_err(|err| (err, file, dst))
+}
+async fn inner_move_file(file: &Path, dst: &Path, dry_run: bool) -> Result<(), MoveError> {
     if !tokio::fs::try_exists(dst).await? && tokio::fs::metadata(dst).await?.is_dir() {
         return Err(MoveError::TargetNotFound);
     }

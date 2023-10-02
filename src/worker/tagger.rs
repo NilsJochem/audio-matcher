@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use std::ffi::OsStr;
 use thiserror::Error;
 
 mod field_kind {
@@ -136,9 +137,12 @@ pub trait Tag {
     fn new_empty() -> Self
     where
         Self: Sized;
+    fn ext(&self) -> &'static OsStr;
 }
 
 mod mp3 {
+    use std::ffi::OsStr;
+
     use super::{field_kind, Duration, Error, Path, Tag};
 
     impl Tag for id3::Tag {
@@ -219,6 +223,9 @@ mod mp3 {
         {
             Self::new()
         }
+        fn ext(&self) -> &'static OsStr {
+            OsStr::new("mp3")
+        }
     }
 
     fn map_err(err: id3::Error) -> Error {
@@ -230,6 +237,8 @@ mod mp3 {
 }
 
 mod opus {
+    use std::ffi::OsStr;
+
     use opus_tag::opus_tagger::{Comment, VorbisComment};
 
     use common::extensions::duration::split_duration;
@@ -432,6 +441,9 @@ mod opus {
         {
             Self::empty("Lavf60.3.100") // vendor should be read from the file
         }
+        fn ext(&self) -> &'static OsStr {
+            OsStr::new("opus")
+        }
     }
     fn map_err(err: opus_tag::error::Error) -> Error {
         Error::Other(Box::new(err))
@@ -469,13 +481,13 @@ impl TryFrom<&Path> for Supportet {
     }
 }
 impl Supportet {
-    fn new_empty(self) -> Box<dyn Tag + Send> {
+    fn new_empty(self) -> Box<DynTag> {
         match self {
             Self::Mp3 => Box::new(id3::Tag::new_empty()),
             Self::Opus => Box::new(opus_tag::opus_tagger::VorbisComment::new_empty()),
         }
     }
-    fn read_boxed(self, path: &Path) -> Result<Box<dyn Tag + Send>, Error> {
+    fn read_boxed(self, path: &Path) -> Result<Box<DynTag>, Error> {
         Ok(match self {
             Self::Mp3 => Box::new(<id3::Tag as Tag>::read_from_path(path)?),
             Self::Opus => Box::new(opus_tag::opus_tagger::VorbisComment::read_from_path(path)?),
@@ -483,17 +495,18 @@ impl Supportet {
     }
 }
 
+type DynTag = dyn Tag + Send + Sync;
 #[must_use]
 pub struct TaggedFile {
-    inner: Box<dyn Tag + Send>,
+    inner: Box<DynTag>,
     path: PathBuf,
     was_changed: bool,
 }
+
 impl TaggedFile {
-    fn inner_from_path(path: &Path, default_empty: bool) -> Result<Box<dyn Tag + Send>, Error> {
-        let format: Supportet = path.try_into()?;
-        let tag: Result<Box<dyn Tag + Send>, Error> = format.read_boxed(path);
-        match tag {
+    fn inner_from_path(path: &Path, default_empty: bool) -> Result<Box<DynTag>, Error> {
+        let format = Supportet::try_from(path)?;
+        match format.read_boxed(path) {
             Ok(tag) => Ok(tag),
             Err(Error::NoTag) if default_empty => {
                 log::debug!("file {path:?} didn't have Tags, using empty");
@@ -647,6 +660,10 @@ impl TaggedFile {
         self.fill_from::<TotalDisks>(other);
         self.fill_from::<Length>(other);
         //TODO chapters
+    }
+    #[must_use]
+    pub fn ext(&self) -> &'static OsStr {
+        self.inner.ext()
     }
 }
 

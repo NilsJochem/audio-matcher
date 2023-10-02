@@ -124,7 +124,7 @@ impl TrackHint {
         audacity: &mut AudacityApiGeneric<W, R>,
     ) -> Result<usize, Error> {
         Ok(match self {
-            Self::TrackNr(nr) => {
+            Self::LabelTrackNr(nr) => {
                 audacity
                     .get_track_info()
                     .await?
@@ -135,7 +135,7 @@ impl TrackHint {
                     .expect("no labeltrack")
                     .0
             }
-            Self::LabelTrackNr(nr) => nr,
+            Self::TrackNr(nr) => nr,
         })
     }
 }
@@ -390,21 +390,21 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             if !allow_empty {
                 trace!("reading next line from audacity");
             }
-            let line = read_line(&mut self.read_pipe)
-                .await
-                .map_err(|err| {
-                    Error::PipeBroken(
-                        format!(
-                            "failed to read next line, current buffer: {:?}",
-                            result.join("\n")
-                        ),
-                        Some(err),
-                    )
-                })?
-                .ok_or_else(|| {
-                    error!("current result: {result:?}");
-                    Error::PipeBroken("empty reader".to_owned(), None)
-                })?;
+            let line = match read_line(&mut self.read_pipe).await {
+                Ok(Some(line)) => Ok(line),
+                Ok(None) => Err(Error::PipeBroken(
+                    format!("empty reader, current buffer: {:?}", result.join("\n")),
+                    None,
+                )),
+                Err(err) => Err(Error::PipeBroken(
+                    format!(
+                        "failed to read next line, current buffer: {:?}",
+                        result.join("\n")
+                    ),
+                    Some(err),
+                )),
+            }?;
+
             if !allow_empty {
                 trace!("read line {line:?} from audacity");
             }
@@ -413,8 +413,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
                 if allow_empty || !result.is_empty() {
                     break;
                 }
-                // TODO Test if it happens
-                warn!("skipping empty leading line");
+                // skipping empty leading line
             } else {
                 result.push(line);
             }
