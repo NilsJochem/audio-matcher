@@ -6,6 +6,7 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use toml::value::Datetime;
 
@@ -105,9 +106,22 @@ pub struct Index<'a> {
     url: Option<Cow<'a, str>>,
     artist: Option<Cow<'a, str>>,
     release: Option<DateOrYear>,
-    chapters: Chapters<'a>,
+    #[serde(flatten)]
+    part: IndexPart<'a>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+enum IndexPart<'a> {
+    SubSeries { subseries: Vec<SubSeriesHolder<'a>> },
+    Direct { chapters: Chapters<'a> },
+}
+#[derive(Debug, Deserialize, Clone)]
+struct SubSeriesHolder<'a> {
+    #[allow(dead_code)]
+    name: Cow<'a, str>,
+    chapters: Vec<ChapterEntry<'a>>,
+}
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 struct Chapters<'a> {
@@ -182,38 +196,8 @@ impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
     }
 }
 
-impl<'a> Index<'a> {
-    pub fn possible(path: impl AsRef<Path>) -> Vec<OsString> {
-        fn helper(
-            known: &mut HashSet<OsString>,
-            paths: Vec<Result<PathBuf, glob::GlobError>>,
-            mut get_name: impl FnMut(&Path) -> Option<&OsStr>,
-        ) -> Result<(), glob::GlobError> {
-            for path in paths {
-                let index = path?.with_extension("");
-                let name = get_name(index.as_path()).expect("need filename");
-                known.insert(name.to_owned());
-            }
-            Ok(())
-        }
-        let path = path.as_ref();
-        let mut known = HashSet::new();
-
-        let paths = glob_expanded(path.join("*.{toml, txt}"))
-            .unwrap()
-            .collect::<Vec<_>>();
-        helper(&mut known, paths, Path::file_name).unwrap();
-
-        let paths = glob_expanded(path.join("*/index.{toml, txt}"))
-            .unwrap()
-            .collect::<Vec<_>>();
-        helper(&mut known, paths, |it| it.parent().unwrap().file_name()).unwrap();
-
-        known.into_iter().sorted().collect::<Vec<_>>()
-    }
-    pub async fn try_read_from_path(
-        path: impl AsRef<Path> + Send + Sync,
-    ) -> Result<Index<'a>, Error> {
+impl Index<'static> {
+    pub async fn try_read_from_path(path: impl AsRef<Path> + Send + Sync) -> Result<Self, Error> {
         match path.as_ref().extension().and_then(OsStr::to_str) {
             Some("toml") => Self::try_from_path(path, parser::Toml).await,
             Some("txt") => Self::try_from_path(path, parser::Txt::TryWithArtist).await,
@@ -226,7 +210,7 @@ impl<'a> Index<'a> {
     pub async fn try_read_index(
         mut folder: PathBuf,
         series: impl AsRef<str> + Send,
-    ) -> Result<Index<'a>, Error> {
+    ) -> Result<Self, Error> {
         folder.push(series.as_ref());
         Self::file_exists(&folder)
             .await
@@ -250,7 +234,7 @@ impl<'a> Index<'a> {
     async fn try_from_path(
         path: impl AsRef<Path> + Send + Sync,
         parser: impl Into<parser::Parser> + Send,
-    ) -> Result<Option<Index<'a>>, Error> {
+    ) -> Result<Option<Self>, Error> {
         if Self::file_exists(&path).await? {
             let content = tokio::fs::read_to_string(&path)
                 .await
@@ -280,11 +264,47 @@ impl<'a> Index<'a> {
                 artist: None,
                 release: None,
                 url: None,
-                chapters: Chapters {
-                    main: data,
-                    extra: Vec::new(),
+                part: IndexPart::Direct {
+                    chapters: Chapters {
+                        main: data,
+                        extra: Vec::new(),
+                    },
                 },
             })
+    }
+}
+
+impl<'a> Index<'a> {
+    fn possible(path: impl AsRef<Path>) -> Vec<OsString> {
+        fn helper(
+            known: &mut HashSet<OsString>,
+            paths: Vec<Result<PathBuf, glob::GlobError>>,
+            mut get_name: impl FnMut(&Path) -> Option<&OsStr>,
+        ) -> Result<(), glob::GlobError> {
+            for path in paths {
+                let index = path?.with_extension("");
+                let name = get_name(index.as_path()).expect("need filename");
+                known.insert(name.to_owned());
+            }
+            Ok(())
+        }
+        let path = path.as_ref();
+        let mut known = HashSet::new();
+
+        let paths = glob_expanded(path.join("**/*.{toml, txt}"))
+            .unwrap()
+            .collect::<Vec<_>>();
+        helper(&mut known, paths, |it| {
+            let name = it.file_name();
+            name.filter(|it| {
+                let it = it.to_string_lossy();
+                it != "index" && it != "index_full"
+            })
+            .or_else(|| it.parent().unwrap().file_name())
+        })
+        .unwrap();
+
+        known.into_iter().sorted().collect::<Vec<_>>()
     }
 
     async fn file_exists(base_folder: impl AsRef<Path> + Send + Sync) -> Result<bool, Error> {
@@ -299,29 +319,45 @@ impl<'a> Index<'a> {
 
     #[must_use]
     pub fn main_len(&self) -> usize {
-        self.chapters.main.len()
+        match &self.part {
+            IndexPart::Direct { chapters } => chapters.main.len(),
+            IndexPart::SubSeries { subseries } => {
+                subseries.iter().map(|it| it.chapters.len()).sum()
+            }
+        }
     }
-    pub fn chapter_iter(&self) -> impl Iterator<Item = &ChapterEntry> {
-        self.chapters.main.iter()
+    #[must_use]
+    pub fn chapter_iter(&'a self) -> Box<dyn Iterator<Item = &ChapterEntry> + 'a> {
+        match &self.part {
+            IndexPart::Direct { chapters } => Box::new(chapters.main.iter()),
+            IndexPart::SubSeries { subseries } => {
+                Box::new(subseries.iter().flat_map(|it| it.chapters.iter()))
+            }
+        }
     }
     #[allow(dead_code)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.chapters.main.is_empty() && self.chapters.extra.is_empty()
+        match &self.part {
+            IndexPart::Direct { chapters } => chapters.main.is_empty() && chapters.extra.is_empty(),
+            IndexPart::SubSeries { subseries } => subseries.iter().all(|it| it.chapters.is_empty()),
+        }
     }
 
     #[must_use]
     pub fn get(&self, chapter_number: ChapterNumber) -> ChapterEntry {
-        self.fill(&self.chapters.main[chapter_number.nr - 1])
+        self.try_get(chapter_number).expect("can't find chapter")
     }
 
-    #[allow(dead_code)]
     #[must_use]
     pub fn try_get(&self, chapter_number: ChapterNumber) -> Option<ChapterEntry> {
-        self.chapters
-            .main
-            .get(chapter_number.nr - 1)
-            .map(|it| self.fill(it))
+        match &self.part {
+            IndexPart::Direct { chapters } => chapters
+                .main
+                .get(chapter_number.nr - 1)
+                .map(|it| self.fill(it)),
+            IndexPart::SubSeries { subseries: _ } => todo!(),
+        }
     }
 
     fn fill(&'a self, it: &'a ChapterEntry<'a>) -> ChapterEntry<'a> {
@@ -340,23 +376,37 @@ impl<'a> Index<'a> {
 #[allow(clippy::module_name_repetitions)]
 pub struct MultiIndex<'a> {
     folder: PathBuf,
-    data: HashMap<String, Index<'a>>,
+    data: HashMap<String, Arc<Index<'a>>>,
+    possible: lazycell::LazyCell<Vec<OsString>>,
 }
 
-impl<'a> MultiIndex<'a> {
+impl MultiIndex<'static> {
     #[must_use]
     pub fn new(folder: PathBuf) -> Self {
         Self {
             folder,
             data: HashMap::new(),
+            possible: lazycell::LazyCell::new(),
         }
     }
+}
 
-    pub async fn get_index(&mut self, series: String) -> Result<&Index<'a>, Error> {
+impl<'a> MultiIndex<'a> {
+    pub fn get_possible(&self) -> &Vec<OsString> {
+        self.possible
+            .borrow_with(|| Index::possible(self.folder.clone()))
+    }
+    pub fn path(&self) -> &Path {
+        &self.folder
+    }
+
+    pub async fn get_index(&mut self, series: String) -> Result<Arc<Index<'a>>, Error> {
         if let Entry::Vacant(entry) = self.data.entry(series.clone()) {
-            entry.insert(Index::try_read_index(self.folder.clone(), series.clone()).await?);
+            entry.insert(Arc::new(
+                Index::try_read_index(self.folder.clone(), series.clone()).await?,
+            ));
         }
-        Ok(self.data.get(&series).unwrap())
+        Ok(self.data.get(&series).unwrap().clone())
     }
 }
 

@@ -11,6 +11,7 @@ use std::{
     collections::HashMap,
     fmt::Write,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -74,6 +75,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         "skipping only allowed with single audio"
     );
     let mut audacity_api = LazyApi::from_args(args);
+    let mut m_index = args.index_folder().map(|it| MultiIndex::new(it.to_owned()));
 
     for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let label_path = audio_path.with_extension("txt");
@@ -91,7 +93,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             let _ = args
                 .always_answer()
                 .input("press enter when you are ready to start renaming", None);
-            rename_labels(args, audacity_api).await?;
+            rename_labels(args, audacity_api, m_index.as_mut()).await?;
             adjust_labels(args, audacity_api).await?;
 
             audacity_api
@@ -100,7 +102,13 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         }
 
         //start export
-        let tags = merge_parts(args, audacity_api, audacity::TrackHint::LabelTrackNr(0)).await?;
+        let tags = merge_parts(
+            args,
+            audacity_api,
+            m_index.as_mut().expect("need index"),
+            audacity::TrackHint::LabelTrackNr(0),
+        )
+        .await?;
         let _ = args.always_answer().input(
             "remove all lables you don't want to remove and then press enter to start exporting",
             None,
@@ -170,35 +178,35 @@ async fn prepare_project(
 
 #[derive(Debug, Clone)]
 pub struct ChapterCompleter<'a> {
-    inner: std::sync::Arc<InnerCompleter<'a>>,
-}
-#[derive(Debug)]
-struct InnerCompleter<'a> {
-    index: Index<'a>,
-    filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+    index: Arc<Index<'a>>,
+    filter: Arc<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
 }
 impl<'a> ChapterCompleter<'a> {
     pub fn new(
         index: Index<'a>,
         filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
     ) -> Self {
-        Self::new_boxed(index, Box::new(filter))
+        Self::new_boxed(Arc::new(index), Arc::new(filter))
+    }
+    pub fn new_arced(
+        index: Arc<Index<'a>>,
+        filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
+    ) -> Self {
+        Self::new_boxed(index, Arc::new(filter))
     }
     #[must_use]
     pub fn new_boxed(
-        index: Index<'a>,
-        filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+        index: Arc<Index<'a>>,
+        filter: Arc<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
     ) -> Self {
-        Self {
-            inner: std::sync::Arc::new(InnerCompleter { index, filter }),
-        }
+        Self { index, filter }
     }
     #[must_use]
     pub fn index(&self) -> &Index<'a> {
-        &self.inner.index
+        &self.index
     }
     fn filter(&self) -> &dyn crate::args::autocompleter::StrFilter {
-        self.inner.filter.as_ref()
+        self.filter.as_ref()
     }
 }
 
@@ -247,15 +255,19 @@ impl<'a> inquire::Autocomplete for ChapterCompleter<'a> {
 
 ///expecting that number of parts divides the length of the input or default to 4
 const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
-async fn rename_labels(args: &Arguments, audacity: &mut AudacityApi) -> Result<(), Error> {
+async fn rename_labels(
+    args: &Arguments,
+    audacity: &mut AudacityApi,
+    m_index: Option<&mut MultiIndex<'static>>,
+) -> Result<(), Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
     let labels = labels.into_values().next().unwrap();
 
-    let (series, index) = read_index_from_args(args).await?;
+    let (series, index) = read_index_from_args(args, m_index).await?;
     let index_rc = index.map(|index| {
         // TODO better filter
-        ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
+        ChapterCompleter::new_arced(index, crate::args::autocompleter::StartsWithIgnoreCase {})
     });
     let index = index_rc.as_ref().map(ChapterCompleter::index);
 
@@ -324,16 +336,18 @@ async fn rename_labels(args: &Arguments, audacity: &mut AudacityApi) -> Result<(
     Ok(())
 }
 
-pub async fn read_index_from_args(
+pub async fn read_index_from_args<'a>(
     args: &Arguments,
-) -> Result<(String, Option<crate::worker::index::Index<'static>>), crate::worker::index::Error> {
+    m_index: Option<&mut MultiIndex<'a>>,
+) -> Result<(String, Option<Arc<Index<'a>>>), crate::worker::index::Error> {
     const MSG: &str = "Welche Serie ist heute dran: ";
 
-    let series = args.index_folder().map_or_else(
+    let series = m_index.as_ref().map_or_else(
         || args.always_answer().input(MSG, None),
-        |path| {
-            let known = index::Index::possible(path)
-                .into_iter()
+        |m_index| {
+            let known = m_index
+                .get_possible()
+                .iter()
                 .map(|it| it.to_str().expect("only UTF-8").to_owned())
                 .collect_vec();
             Inputs::input_with_suggestion(
@@ -349,46 +363,52 @@ pub async fn read_index_from_args(
     if let Some(series) = series.strip_prefix('#') {
         return Ok((series[1..].to_owned(), None));
     }
-    let index = match args.index_folder() {
-        Some(folder) => crate::worker::index::Index::try_read_index(folder.to_owned(), &series)
-            .await
-            .map(Some)
-            .or_else(|err| match err {
-                index::Error::SeriesNotFound => {
-                    todo!("couldn't find {series:?} in {folder:?} re-ask for series")
+    let index =
+        match m_index {
+            Some(m_index) => m_index
+                .get_index(series.clone())
+                .await
+                .map(Some)
+                .or_else(|err| match err {
+                    index::Error::SeriesNotFound => {
+                        todo!(
+                            "couldn't find {series:?} in {:?} re-ask for series",
+                            m_index.path()
+                        )
+                    }
+                    index::Error::NoIndexFile => todo!("ask for direct path"),
+                    index::Error::NotSupportedFile(_) => unreachable!(),
+                    index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
+                        Err(err)
+                    }
+                })?,
+            None => {
+                let path = args
+                    .always_answer()
+                    .try_input(
+                        "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                        Some(None),
+                        |it| Some(Some(PathBuf::from(it))),
+                    )
+                    .unwrap_or_else(|| unreachable!());
+                match path {
+                    Some(path) => crate::worker::index::Index::try_read_from_path(path)
+                        .await
+                        .map(Arc::new)
+                        .map(Some)
+                        .or_else(|err| match err {
+                            index::Error::SeriesNotFound => unreachable!(),
+                            index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
+                                todo!("re-ask for path")
+                            }
+                            index::Error::Parse(_, _)
+                            | index::Error::Serde(_)
+                            | index::Error::IO(_, _) => Err(err),
+                        })?,
+                    None => None,
                 }
-                index::Error::NoIndexFile => todo!("ask for direct path"),
-                index::Error::NotSupportedFile(_) => unreachable!(),
-                index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
-                    Err(err)
-                }
-            })?,
-        None => {
-            let path = args
-                .always_answer()
-                .try_input(
-                    "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                    Some(None),
-                    |it| Some(Some(PathBuf::from(it))),
-                )
-                .unwrap_or_else(|| unreachable!());
-            match path {
-                Some(path) => crate::worker::index::Index::try_read_from_path(path)
-                    .await
-                    .map(Some)
-                    .or_else(|err| match err {
-                        index::Error::SeriesNotFound => unreachable!(),
-                        index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
-                            todo!("re-ask for path")
-                        }
-                        index::Error::Parse(_, _)
-                        | index::Error::Serde(_)
-                        | index::Error::IO(_, _) => Err(err),
-                    })?,
-                None => None,
             }
-        }
-    };
+        };
     Ok((series, index))
 }
 
@@ -463,9 +483,10 @@ async fn move_results(
         .collect::<Result<(), _>>()
 }
 
-async fn merge_parts(
+async fn merge_parts<'a>(
     args: &Arguments,
     audacity: &mut audacity::AudacityApi,
+    m_index: &mut MultiIndex<'a>,
     hint: audacity::TrackHint,
 ) -> Result<Vec<TaggedFile>, audacity::Error> {
     let label_track_nr = hint.get_label_track_nr(audacity).await?;
@@ -527,7 +548,6 @@ async fn merge_parts(
         .into_iter()
         .zip(calc_merged_offsets(values))
         .collect::<HashMap<_, _>>();
-    let mut m_index = MultiIndex::new(args.index_folder().unwrap().to_owned());
     let mut tags = Vec::new();
     for ((series, chapter_number, chapter_name), offsets) in offsets {
         let chapter_name = chapter_name.unwrap();
