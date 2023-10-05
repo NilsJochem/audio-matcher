@@ -1,9 +1,10 @@
 use itertools::Itertools;
+use log::warn;
 use regex::Regex;
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     sync::Arc,
@@ -209,7 +210,7 @@ impl Index<'static> {
 
     pub async fn try_read_index(
         mut folder: PathBuf,
-        series: impl AsRef<str> + Send,
+        series: impl AsRef<OsStr> + Send,
     ) -> Result<Self, Error> {
         folder.push(series.as_ref());
         Self::file_exists(&folder)
@@ -275,38 +276,6 @@ impl Index<'static> {
 }
 
 impl<'a> Index<'a> {
-    fn possible(path: impl AsRef<Path>) -> Vec<OsString> {
-        fn helper(
-            known: &mut HashSet<OsString>,
-            paths: Vec<Result<PathBuf, glob::GlobError>>,
-            mut get_name: impl FnMut(&Path) -> Option<&OsStr>,
-        ) -> Result<(), glob::GlobError> {
-            for path in paths {
-                let index = path?.with_extension("");
-                let name = get_name(index.as_path()).expect("need filename");
-                known.insert(name.to_owned());
-            }
-            Ok(())
-        }
-        let path = path.as_ref();
-        let mut known = HashSet::new();
-
-        let paths = glob_expanded(path.join("**/*.{toml, txt}"))
-            .unwrap()
-            .collect::<Vec<_>>();
-        helper(&mut known, paths, |it| {
-            let name = it.file_name();
-            name.filter(|it| {
-                let it = it.to_string_lossy();
-                it != "index" && it != "index_full"
-            })
-            .or_else(|| it.parent().unwrap().file_name())
-        })
-        .unwrap();
-
-        known.into_iter().sorted().collect::<Vec<_>>()
-    }
-
     async fn file_exists(base_folder: impl AsRef<Path> + Send + Sync) -> Result<bool, Error> {
         let exists = tokio::fs::try_exists(&base_folder)
             .await
@@ -376,31 +345,86 @@ impl<'a> Index<'a> {
 #[allow(clippy::module_name_repetitions)]
 pub struct MultiIndex<'a> {
     folder: PathBuf,
-    data: HashMap<String, Arc<Index<'a>>>,
-    possible: lazycell::LazyCell<Vec<OsString>>,
+    data: HashMap<OsString, Arc<Index<'a>>>,
 }
 
 impl MultiIndex<'static> {
     #[must_use]
-    pub fn new(folder: PathBuf) -> Self {
-        Self {
-            folder,
-            data: HashMap::new(),
-            possible: lazycell::LazyCell::new(),
-        }
+    pub async fn new(folder: PathBuf) -> Self {
+        let data = Self::possible(&folder)
+            .await
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        Self { folder, data }
     }
 }
 
 impl<'a> MultiIndex<'a> {
-    pub fn get_possible(&self) -> &Vec<OsString> {
-        self.possible
-            .borrow_with(|| Index::possible(self.folder.clone()))
+    pub const SUBSERIES_DELIMENITER: &str = ": ";
+    async fn possible(path: impl AsRef<Path> + Send + Sync) -> HashMap<OsString, Index<'a>> {
+        let path = path.as_ref();
+        let mut known = HashMap::new();
+
+        let paths = glob_expanded(path.join("**/*.{toml, txt}"))
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        for path in paths {
+            let path = path.unwrap();
+            let with_extension = path.with_extension("");
+            let name = with_extension
+                .file_name()
+                .filter(|&it| {
+                    let it = it.to_string_lossy();
+                    it != "index" && it != "index_full"
+                })
+                .or_else(|| path.parent().unwrap().file_name())
+                .expect("need filename")
+                .to_owned();
+            match Index::try_read_from_path(&path).await {
+                Ok(index) => match index.part {
+                    IndexPart::SubSeries { subseries } => {
+                        for sub in subseries {
+                            let mut name = name.clone();
+                            name.push(Self::SUBSERIES_DELIMENITER);
+                            name.push(sub.name.as_ref());
+
+                            known.insert(
+                                name,
+                                Index {
+                                    url: index.url.clone(),
+                                    artist: index.artist.clone(),
+                                    release: index.release,
+                                    part: IndexPart::Direct {
+                                        chapters: Chapters {
+                                            main: sub.chapters,
+                                            extra: Vec::new(),
+                                        },
+                                    },
+                                },
+                            );
+                        }
+                    }
+                    IndexPart::Direct { chapters: _ } => {
+                        known.insert(name, index);
+                    }
+                },
+                Err(err) => warn!("failed to open index at {} because {err}", path.display()),
+            }
+        }
+
+        known
     }
+    pub fn get_possible(&self) -> impl IntoIterator<Item = &OsStr> {
+        self.data.keys().map(OsString::as_ref).sorted()
+    }
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.folder
     }
 
-    pub async fn get_index(&mut self, series: String) -> Result<Arc<Index<'a>>, Error> {
+    pub async fn get_index(&mut self, series: OsString) -> Result<Arc<Index<'a>>, Error> {
         if let Entry::Vacant(entry) = self.data.entry(series.clone()) {
             entry.insert(Arc::new(
                 Index::try_read_index(self.folder.clone(), series.clone()).await?,
@@ -466,21 +490,20 @@ mod tests {
             split_pattern("path/*.{toml, txt}")
         );
     }
-    #[test]
-    fn list_possibilitys() {
+    #[tokio::test]
+    async fn list_possibilitys() {
+        let m_index = MultiIndex::new("res/local/Aufnahmen/current".into()).await;
         assert_eq!(
             vec![
-                "Dalans Prophezeiung",
+                "Dalans Prophezeiung: Das Verm\u{e4}chtnis der Peldrin",
+                "Dalans Prophezeiung: I Ein dunkler Funke",
+                "Dalans Prophezeiung: II Ein schwarzes Feuer",
+                "Dalans Prophezeiung: III Eine wei\u{df}e Glut",
                 "Gruselkabinett",
-                "Rick Future",
-                "Schattensaiten",
                 "Sherlock Holmes",
                 "test"
-            ]
-            .into_iter()
-            .map(OsString::from)
-            .collect_vec(),
-            Index::possible("res/local/Aufnahmen/current")
+            ],
+            m_index.get_possible().into_iter().collect_vec()
         );
     }
 

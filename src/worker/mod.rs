@@ -9,6 +9,7 @@ use log::trace;
 use std::{
     borrow::Cow,
     collections::HashMap,
+    ffi::OsString,
     fmt::Write,
     path::{Path, PathBuf},
     sync::Arc,
@@ -75,7 +76,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         "skipping only allowed with single audio"
     );
     let mut audacity_api = LazyApi::from_args(args);
-    let mut m_index = args.index_folder().map(|it| MultiIndex::new(it.to_owned()));
+    let mut m_index = match args.index_folder() {
+        Some(path) => Some((MultiIndex::new(path.to_owned())).await),
+        None => None,
+    };
 
     for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let label_path = audio_path.with_extension("txt");
@@ -347,7 +351,7 @@ pub async fn read_index_from_args<'a>(
         |m_index| {
             let known = m_index
                 .get_possible()
-                .iter()
+                .into_iter()
                 .map(|it| it.to_str().expect("only UTF-8").to_owned())
                 .collect_vec();
             Inputs::input_with_suggestion(
@@ -363,52 +367,51 @@ pub async fn read_index_from_args<'a>(
     if let Some(series) = series.strip_prefix('#') {
         return Ok((series[1..].to_owned(), None));
     }
-    let index =
-        match m_index {
-            Some(m_index) => m_index
-                .get_index(series.clone())
-                .await
-                .map(Some)
-                .or_else(|err| match err {
-                    index::Error::SeriesNotFound => {
-                        todo!(
-                            "couldn't find {series:?} in {:?} re-ask for series",
-                            m_index.path()
-                        )
-                    }
-                    index::Error::NoIndexFile => todo!("ask for direct path"),
-                    index::Error::NotSupportedFile(_) => unreachable!(),
-                    index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
-                        Err(err)
-                    }
-                })?,
-            None => {
-                let path = args
-                    .always_answer()
-                    .try_input(
-                        "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                        Some(None),
-                        |it| Some(Some(PathBuf::from(it))),
+    let index = match m_index {
+        Some(m_index) => m_index
+            .get_index(OsString::from(series.as_str()))
+            .await
+            .map(Some)
+            .or_else(|err| match err {
+                index::Error::SeriesNotFound => {
+                    todo!(
+                        "couldn't find {series:?} in {:?} re-ask for series",
+                        m_index.path()
                     )
-                    .unwrap_or_else(|| unreachable!());
-                match path {
-                    Some(path) => crate::worker::index::Index::try_read_from_path(path)
-                        .await
-                        .map(Arc::new)
-                        .map(Some)
-                        .or_else(|err| match err {
-                            index::Error::SeriesNotFound => unreachable!(),
-                            index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
-                                todo!("re-ask for path")
-                            }
-                            index::Error::Parse(_, _)
-                            | index::Error::Serde(_)
-                            | index::Error::IO(_, _) => Err(err),
-                        })?,
-                    None => None,
                 }
+                index::Error::NoIndexFile => todo!("ask for direct path"),
+                index::Error::NotSupportedFile(_) => unreachable!(),
+                index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
+                    Err(err)
+                }
+            })?,
+        None => {
+            let path = args
+                .always_answer()
+                .try_input(
+                    "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                    Some(None),
+                    |it| Some(Some(PathBuf::from(it))),
+                )
+                .unwrap_or_else(|| unreachable!());
+            match path {
+                Some(path) => crate::worker::index::Index::try_read_from_path(path)
+                    .await
+                    .map(Arc::new)
+                    .map(Some)
+                    .or_else(|err| match err {
+                        index::Error::SeriesNotFound => unreachable!(),
+                        index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
+                            todo!("re-ask for path")
+                        }
+                        index::Error::Parse(_, _)
+                        | index::Error::Serde(_)
+                        | index::Error::IO(_, _) => Err(err),
+                    })?,
+                None => None,
             }
-        };
+        }
+    };
     Ok((series, index))
 }
 
@@ -469,7 +472,13 @@ async fn move_results(
                 tag.get::<Title>(),
             );
             if let Some(series) = tag.get::<Album>() {
-                dst.push(series);
+                let (main, sub) = series
+                    .split_once(MultiIndex::SUBSERIES_DELIMENITER)
+                    .map_or_else(|| (series, None), |(main, sub)| (main, Some(sub)));
+                dst.push(main);
+                if let Some(sub) = sub {
+                    dst.push(sub);
+                }
             }
             file.push(name);
             file.set_extension(tag.ext());
@@ -551,7 +560,7 @@ async fn merge_parts<'a>(
     let mut tags = Vec::new();
     for ((series, chapter_number, chapter_name), offsets) in offsets {
         let chapter_name = chapter_name.unwrap();
-        let index = m_index.get_index(series.to_owned()).await.unwrap();
+        let index = m_index.get_index(OsString::from(series)).await.unwrap();
         let entry = index.get(chapter_number);
 
         let mut path = args.tmp_path().to_path_buf();
