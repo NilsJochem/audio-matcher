@@ -148,6 +148,28 @@ pub struct ChapterEntry<'a> {
     pub release: Option<DateOrYear>,
 }
 impl<'a> ChapterEntry<'a> {
+    fn new(
+        title: Cow<'a, str>,
+        artist: impl Into<Option<Cow<'a, str>>>,
+        release: impl Into<Option<DateOrYear>>,
+    ) -> ChapterEntry<'a> {
+        Self {
+            title,
+            artist: artist.into(),
+            release: release.into(),
+        }
+    }
+
+    fn rename_empty_chapters(chapters: &mut [Self], series: impl AsRef<str>) {
+        chapters
+            .iter_mut()
+            .zip(1..)
+            .filter(|(chapter, _)| chapter.title == "")
+            .for_each(|(chapter, i)| {
+                chapter.title = Cow::Owned(format!("{} {i}", series.as_ref()));
+            });
+    }
+
     /// trys to fill None values
     fn fill(
         &'a self,
@@ -173,26 +195,12 @@ enum RawChapterEntry<'a> {
 impl<'a> From<RawChapterEntry<'a>> for ChapterEntry<'a> {
     fn from(value: RawChapterEntry<'a>) -> Self {
         match value {
-            RawChapterEntry::JustTitel(title) => Self {
-                title,
-                artist: None,
-                release: None,
-            },
-            RawChapterEntry::WithArtist((title, artist)) => Self {
-                title,
-                artist: Some(artist),
-                release: None,
-            },
-            RawChapterEntry::WithDate((title, date)) => Self {
-                title,
-                artist: None,
-                release: Some(date),
-            },
-            RawChapterEntry::WithDateAndArtist((title, artist, date)) => Self {
-                title,
-                artist: Some(artist),
-                release: Some(date),
-            },
+            RawChapterEntry::JustTitel(title) => Self::new(title, None, None),
+            RawChapterEntry::WithArtist((title, artist)) => Self::new(title, artist, None),
+            RawChapterEntry::WithDate((title, date)) => Self::new(title, None, date),
+            RawChapterEntry::WithDateAndArtist((title, artist, date)) => {
+                Self::new(title, artist, date)
+            }
         }
     }
 }
@@ -239,10 +247,12 @@ impl Index<'static> {
         if Self::file_exists(&path).await? {
             let content = tokio::fs::read_to_string(&path)
                 .await
-                .map_err(|err| Error::io_err(path, &err))?;
+                .map_err(|err| Error::io_err(&path, &err))?;
+            let name = path.as_ref().with_extension("");
+            let name = name.file_name().unwrap().to_string_lossy();
             match parser.into() {
-                parser::Parser::Toml => Self::from_toml_str(content),
-                parser::Parser::Txt(parser) => Self::from_slice_iter(content.lines(), parser),
+                parser::Parser::Toml => Self::from_toml_str(content, name),
+                parser::Parser::Txt(parser) => Self::from_slice_iter(content.lines(), name, parser),
             }
             .map(Some)
         } else {
@@ -250,10 +260,16 @@ impl Index<'static> {
         }
     }
 
-    pub fn from_toml_str(content: impl AsRef<str>) -> Result<Self, Error> {
-        Ok(toml::from_str(content.as_ref())?)
+    pub fn from_toml_str(content: impl AsRef<str>, name: impl AsRef<str>) -> Result<Self, Error> {
+        let mut index: Self = toml::from_str(content.as_ref())?;
+        index.rename_empty_chapters(name);
+        Ok(index)
     }
-    pub fn from_slice_iter<Iter>(iter: Iter, parser: parser::Txt) -> Result<Self, Error>
+    pub fn from_slice_iter<Iter>(
+        iter: Iter,
+        name: impl AsRef<str>,
+        parser: parser::Txt,
+    ) -> Result<Self, Error>
     where
         Iter: Iterator,
         Iter::Item: AsRef<str>,
@@ -261,21 +277,38 @@ impl Index<'static> {
         iter.filter(|line| !line.as_ref().trim_start().starts_with('#'))
             .map(|line| parser.parse_line_owned(line))
             .collect::<Result<_, Error>>()
-            .map(|data| Self {
-                artist: None,
-                release: None,
-                url: None,
-                part: IndexPart::Direct {
-                    chapters: Chapters {
-                        main: data,
-                        extra: Vec::new(),
+            .map(|data| {
+                let mut index = Self {
+                    artist: None,
+                    release: None,
+                    url: None,
+                    part: IndexPart::Direct {
+                        chapters: Chapters {
+                            main: data,
+                            extra: Vec::new(),
+                        },
                     },
-                },
+                };
+                index.rename_empty_chapters(name);
+                index
             })
     }
 }
 
 impl<'a> Index<'a> {
+    fn rename_empty_chapters(&mut self, name: impl AsRef<str>) {
+        match &mut self.part {
+            IndexPart::SubSeries { subseries } => {
+                for sub in subseries {
+                    ChapterEntry::rename_empty_chapters(&mut sub.chapters, &sub.name);
+                }
+            }
+            IndexPart::Direct { chapters } => {
+                ChapterEntry::rename_empty_chapters(&mut chapters.main, name);
+            }
+        };
+    }
+
     async fn file_exists(base_folder: impl AsRef<Path> + Send + Sync) -> Result<bool, Error> {
         let exists = tokio::fs::try_exists(&base_folder)
             .await
@@ -515,7 +548,9 @@ mod tests {
             "# some comment",
             "third element",
         ];
-        let index = Index::from_slice_iter(data.into_iter(), parser::Txt::WithoutArtist).unwrap();
+        let index =
+            Index::from_slice_iter(data.into_iter(), "not used", parser::Txt::WithoutArtist)
+                .unwrap();
         assert_eq!(
             index.get(ChapterNumber::new(1, false)),
             ChapterEntry {
@@ -541,6 +576,17 @@ mod tests {
             }
         );
         assert_eq!(index.try_get(ChapterNumber::new(4, false)), None);
+    }
+    #[test]
+    fn rename_empty() {
+        let data = ["", "first element", "", "# some comment", ""];
+        let index =
+            Index::from_slice_iter(data.into_iter(), "series", parser::Txt::WithoutArtist).unwrap();
+        assert_eq!("series 1", index.get(ChapterNumber::from(1)).title);
+        assert_eq!(data[1], index.get(ChapterNumber::from(2)).title);
+        assert_eq!("series 3", index.get(ChapterNumber::from(3)).title);
+        assert_eq!("series 4", index.get(ChapterNumber::from(4)).title);
+        assert_eq!(None, index.try_get(ChapterNumber::from(5)));
     }
 
     #[test]
@@ -576,6 +622,7 @@ mod tests {
                 }
                 s
             }),
+            "not used",
             parser::Txt::WithArtist,
         )
         .unwrap();
@@ -594,7 +641,8 @@ mod tests {
         ];
         assert_eq!(
             Error::Parse(data[1].to_owned(), parser::Txt::WithArtist),
-            Index::from_slice_iter(data.into_iter(), parser::Txt::WithArtist).unwrap_err()
+            Index::from_slice_iter(data.into_iter(), "not used", parser::Txt::WithArtist)
+                .unwrap_err()
         );
     }
     #[test]
@@ -609,7 +657,7 @@ mod tests {
         ];
         assert_eq!(
             2,
-            Index::from_slice_iter(data.into_iter(), parser::Txt::TryWithArtist)
+            Index::from_slice_iter(data.into_iter(), "not used", parser::Txt::TryWithArtist)
                 .unwrap()
                 .main_len()
         );
@@ -624,6 +672,7 @@ mod tests {
                 "chapter 1", "chapter 2", ["chapter 3", "other artist"]
             ]
         "#,
+            "not used",
         )
         .unwrap();
         assert_eq!(
@@ -666,6 +715,7 @@ mod tests {
                 ["chapter 4", "other artist", 2003-03-03]
             ]
             "#,
+            "not used",
         )
         .unwrap();
         assert_eq!(
