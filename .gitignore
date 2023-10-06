@@ -3,9 +3,5 @@
 Cargo.lock
 */Cargo.lock
 
-.vscode/*
-res/local/*
-perf.data
-perf.data.old
 
 src/bin/test.rs
