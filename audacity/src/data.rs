@@ -62,9 +62,9 @@ impl TimeLabel {
     pub fn write<P, Iter>(lables: Iter, path: P, dry_run: bool) -> Result<(), std::io::Error>
     where
         P: AsRef<Path>,
-        Iter: Iterator<Item = Self>,
+        Iter: IntoIterator<Item = Self>,
     {
-        let out = lables.map(|it| it.to_string()).join("\n");
+        let out = lables.into_iter().map(|it| it.to_string()).join("\n");
 
         if dry_run {
             println!(

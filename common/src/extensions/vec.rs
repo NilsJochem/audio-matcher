@@ -60,7 +60,7 @@ mod tests {
     fn find_or_push_non_exiting() {
         let mut data = vec![1, 2, 4];
 
-        let element = data.find_or_push(0, |it| *it == 3);
+        let element = data.find_or_push(0, |&it| it == 3);
         assert_eq!(0, *element, "get correct");
         *element = 8;
         assert!(data.iter().eq(&[1, 2, 4, 8]), "first element got changed");

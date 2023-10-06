@@ -122,7 +122,7 @@ impl Archive {
         let mut archive = Self { data: Vec::new() };
         for (source, labels) in value {
             for label in labels {
-                let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", |it| it.as_str())) else {
+                let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", String::as_str)) else {
                     warn!("name {:?} in {source} couldn't be parsed to Series", label.name);
                     continue;
                 };

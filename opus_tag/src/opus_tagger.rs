@@ -196,11 +196,10 @@ impl VorbisComment {
             .filter(move |it| it.key.eq_ignore_ascii_case(key.as_ref()))
     }
     pub fn remove_first(&mut self, key: impl AsRef<str>) -> Option<Comment> {
-        let element = self
-            .comments
-            .iter()
-            .enumerate()
-            .find_map(|it| (it.1.key.eq_ignore_ascii_case(key.as_ref())).then_some(it.0));
+        let element =
+            self.comments.iter().enumerate().find_map(|(i, comment)| {
+                (comment.key.eq_ignore_ascii_case(key.as_ref())).then_some(i)
+            });
         element.map(|i| self.comments.remove(i))
     }
     pub fn remove_all(&mut self, key: impl AsRef<str>) {

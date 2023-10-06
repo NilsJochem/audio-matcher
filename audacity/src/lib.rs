@@ -480,7 +480,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
             })
             .await?;
         serde_json::from_str::<Vec<result::TrackInfo>>(&json)
-            .map_err(|e| Error::MalformedResult(json.clone(), e.into()))
+            .map_err(|e| Error::MalformedResult(json, e.into()))
     }
     /// Selects the tracks with position `tracks`.
     ///
@@ -540,9 +540,9 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
                 format: command::OutputFormat::Json,
             })
             .await?;
-        serde_json::from_str(&json)
+        serde_json::from_str::<'_, Vec<(usize, Vec<RawTimeLabel>)>>(&json)
             .map_err(|e| Error::MalformedResult(json, e.into()))
-            .map(|list: Vec<(usize, Vec<RawTimeLabel>)>| {
+            .map(|list| {
                 list.into_iter()
                     .map(|(nr, labels)| (nr, labels.into_iter().map_into().collect_vec()))
                     .collect()
@@ -738,7 +738,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     fn get_label_offset(labels: &HashMap<usize, Vec<TimeLabel>>, track_hint: usize) -> usize {
         labels
             .iter()
-            .filter(|(t_nr, _)| t_nr < &&track_hint)
+            .filter(|(&t_nr, _)| t_nr < track_hint)
             .map(|(_, l)| l.len())
             .sum()
     }

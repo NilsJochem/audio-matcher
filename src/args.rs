@@ -18,7 +18,7 @@ impl Inputs {
     pub fn new(bools: impl Into<Option<bool>>, trys: impl Into<Option<u8>>) -> Self {
         let bools: Option<_> = bools.into();
         Self {
-            yes: bools.is_some_and(|it| it),
+            yes: bools.is_some(),
             no: bools.is_some_and(|it| !it),
             trys: trys.into().unwrap_or(3),
         }
