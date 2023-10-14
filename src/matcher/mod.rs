@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::archive::data::timelabel_from_peaks;
 use audacity::data::TimeLabel;
-use common::extensions::iter::IteratorExt;
+use common::extensions::{duration::Ext, iter::IteratorExt};
 use errors::CliError;
 use log::{debug, info, log, trace};
 
@@ -110,14 +110,13 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
         info!("no offsets found");
     }
     for (i, peak) in peaks.iter().enumerate() {
-        let (hours, minutes, seconds) =
-            common::extensions::duration::split_duration(&start_as_duration(peak, sr));
+        let duration = start_as_duration(peak, sr);
         info!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
             i + 1,
-            hours,
-            minutes,
-            seconds,
+            duration.hours(),
+            duration.minutes(),
+            duration.seconds(),
             &peak.prominence.unwrap()
         );
     }

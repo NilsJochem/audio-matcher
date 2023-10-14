@@ -241,7 +241,7 @@ mod opus {
 
     use opus_tag::opus_tagger::{Comment, VorbisComment};
 
-    use common::extensions::duration::split_duration;
+    use common::extensions::duration::Ext;
 
     use super::{field_kind, Duration, Error, Path, Tag};
 
@@ -414,10 +414,15 @@ mod opus {
             }
         }
         fn set_chapter(&mut self, index: usize, time: Duration, name: Option<&str>) {
-            let (h, m, s) = split_duration(&time);
             self.add_comment((
                 format!("CHAPTER{index:0>3}"),
-                format!("{h:0>2}:{m:0>2}:{s:0>2}.{:0>3}", time.subsec_millis()),
+                format!(
+                    "{:0>2}:{:0>2}:{:0>2}.{:0>3}",
+                    time.hours(),
+                    time.minutes(),
+                    time.seconds(),
+                    time.subsec_millis()
+                ),
             ));
             if let Some(name) = name {
                 self.add_comment((format!("CHAPTER{index:0>3}NAME"), name));

@@ -24,12 +24,3 @@ impl Ext for Duration {
         self.as_secs() % 60
     }
 }
-
-#[inline]
-#[must_use]
-pub const fn split_duration(duration: &Duration) -> (u64, u64, u64) {
-    let seconds = duration.as_secs() % 60;
-    let minutes = (duration.as_secs() / 60) % 60;
-    let hours = duration.as_secs() / 3600;
-    (hours, minutes, seconds)
-}
