@@ -71,11 +71,15 @@ impl Inputs {
     pub fn input_with_suggestion(
         msg: impl AsRef<str>,
         initial: Option<&str>,
-        suggestor: impl inquire::Autocomplete + 'static,
+        mut suggestor: impl autocompleter::MyAutocomplete,
     ) -> String {
         let mut text = inquire::Text::new(msg.as_ref());
         text.initial_value = initial;
-        text.with_autocomplete(suggestor).prompt().unwrap()
+        // SAFTY: the reference to suggestor must be kept alive until sc is dropped. black-box should do this.
+        let ac = unsafe { autocompleter::BorrowCompleter::new(&mut suggestor) };
+        let res = text.with_autocomplete(ac).prompt().unwrap();
+        std::hint::black_box(suggestor);
+        res
     }
 }
 
@@ -85,20 +89,83 @@ pub mod autocompleter {
     use inquire::{autocompletion::Replacement, Autocomplete, CustomUserError};
     use itertools::Itertools;
 
-    #[derive(Debug, Clone)]
+    pub trait MyAutocomplete: Debug {
+        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError>;
+        fn get_completion(
+            &mut self,
+            input: &str,
+            highlighted_suggestion: Option<String>,
+        ) -> Result<Replacement, CustomUserError>;
+    }
+    impl<AC: MyAutocomplete> MyAutocomplete for &mut AC {
+        #[inline]
+        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+            (**self).get_suggestions(input)
+        }
+
+        #[inline]
+        fn get_completion(
+            &mut self,
+            input: &str,
+            highlighted_suggestion: Option<String>,
+        ) -> Result<Replacement, CustomUserError> {
+            (**self).get_completion(input, highlighted_suggestion)
+        }
+    }
+    #[derive(Debug)]
+    pub(super) struct BorrowCompleter {
+        inner: &'static mut dyn MyAutocomplete,
+    }
+    impl BorrowCompleter {
+        pub(super) unsafe fn new<'a>(other: &'a mut dyn MyAutocomplete) -> Self {
+            // SAFTY: transmute to upgrade lifetime to static, so one can uphold Autocompletes Clone + 'static needs
+            Self {
+                inner: unsafe {
+                    std::mem::transmute::<&'a mut dyn MyAutocomplete, &'static mut dyn MyAutocomplete>(
+                        other,
+                    )
+                },
+            }
+        }
+    }
+    // fake being clone, it's (probably) only needed, when the holding inquire::Text ist cloned
+    impl Clone for BorrowCompleter {
+        fn clone(&self) -> Self {
+            panic!("cloned Autocompleter {self:?}");
+            // Self { inner: self.inner }
+        }
+    }
+    impl Autocomplete for BorrowCompleter {
+        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+            self.inner.get_suggestions(input)
+        }
+
+        fn get_completion(
+            &mut self,
+            input: &str,
+            highlighted_suggestion: Option<String>,
+        ) -> Result<Replacement, CustomUserError> {
+            self.inner.get_completion(input, highlighted_suggestion)
+        }
+    }
+
+    #[derive(Debug)]
     pub struct VecCompleter {
         data: Vec<String>,
-        filter: std::rc::Rc<dyn StrFilter>,
+        filter: Box<dyn StrFilter>,
     }
     impl VecCompleter {
         #[must_use]
-        pub fn new(data: Vec<String>, filter: std::rc::Rc<dyn StrFilter>) -> Self {
-            Self { data, filter }
+        pub fn new(data: Vec<String>, filter: impl StrFilter + 'static) -> Self {
+            Self {
+                data,
+                filter: Box::new(filter),
+            }
         }
         #[allow(clippy::should_implement_trait)] // will prob change signature
         pub fn from_iter<S: ToString, T: IntoIterator<Item = S>>(
             iter: T,
-            filter: std::rc::Rc<dyn StrFilter>,
+            filter: impl StrFilter + 'static,
         ) -> Self {
             Self::new(
                 iter.into_iter().map(|it| it.to_string()).collect_vec(),
@@ -106,7 +173,7 @@ pub mod autocompleter {
             )
         }
     }
-    impl Autocomplete for VecCompleter {
+    impl MyAutocomplete for VecCompleter {
         fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
             Ok(self
                 .data

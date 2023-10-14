@@ -12,7 +12,6 @@ use std::{
     ffi::OsString,
     fmt::Write,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -180,41 +179,36 @@ async fn prepare_project(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ChapterCompleter<'a> {
-    index: Arc<Index<'a>>,
-    filter: Arc<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+    index: &'a Index<'a>,
+    filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
 }
 impl<'a> ChapterCompleter<'a> {
     pub fn new(
-        index: Index<'a>,
+        index: &'a Index<'a>,
         filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
     ) -> Self {
-        Self::new_boxed(Arc::new(index), Arc::new(filter))
+        Self::new_boxed(index, Box::new(filter))
     }
-    pub fn new_arced(
-        index: Arc<Index<'a>>,
-        filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
-    ) -> Self {
-        Self::new_boxed(index, Arc::new(filter))
-    }
+
     #[must_use]
     pub fn new_boxed(
-        index: Arc<Index<'a>>,
-        filter: Arc<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+        index: &'a Index<'a>,
+        filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
     ) -> Self {
         Self { index, filter }
     }
     #[must_use]
-    pub fn index(&self) -> &Index<'a> {
-        &self.index
+    pub const fn index(&self) -> &Index<'a> {
+        self.index
     }
     fn filter(&self) -> &dyn crate::args::autocompleter::StrFilter {
         self.filter.as_ref()
     }
 }
 
-impl<'a> inquire::Autocomplete for ChapterCompleter<'a> {
+impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
         Ok(match input.parse::<ChapterNumber>() {
             Ok(number) => {
@@ -266,27 +260,27 @@ async fn rename_labels(
 ) -> Result<(), Error> {
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
-    let labels = labels.into_values().next().unwrap();
 
     let (series, index) = read_index_from_args(args, m_index).await?;
-    let index_rc = index.map(|index| {
+    let index = index.as_deref();
+    let mut ac = index.as_ref().map(|index| {
         // TODO better filter
-        ChapterCompleter::new_arced(index, crate::args::autocompleter::StartsWithIgnoreCase {})
+        ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
     });
-    let index = index_rc.as_ref().map(ChapterCompleter::index);
 
+    let labels = labels.into_values().next().unwrap();
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
     let mut i = 0;
     while i < labels.len() {
         const MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
-        let chapter_number = match index_rc.as_ref() {
+        let chapter_number = match ac.as_mut() {
             Some(index) => {
                 let input = Inputs::input_with_suggestion(
                     format!("{MSG}: "),
                     expected_next_chapter_number
                         .map(|it| it.to_string())
                         .as_deref(),
-                    index.clone(),
+                    index,
                 );
                 input
                     .split_once(' ')
@@ -340,10 +334,10 @@ async fn rename_labels(
     Ok(())
 }
 
-pub async fn read_index_from_args<'a>(
+pub async fn read_index_from_args<'a, 'b>(
     args: &Arguments,
-    m_index: Option<&mut MultiIndex<'a>>,
-) -> Result<(String, Option<Arc<Index<'a>>>), crate::worker::index::Error> {
+    m_index: Option<&'b mut MultiIndex<'a>>,
+) -> Result<(String, Option<common::boo::Boo<'b, Index<'a>>>), crate::worker::index::Error> {
     const MSG: &str = "Welche Serie ist heute dran: ";
 
     let series = m_index.as_ref().map_or_else(
@@ -359,7 +353,7 @@ pub async fn read_index_from_args<'a>(
                 None,
                 crate::args::autocompleter::VecCompleter::new(
                     known,
-                    std::rc::Rc::new(crate::args::autocompleter::StartsWithIgnoreCase {}),
+                    crate::args::autocompleter::StartsWithIgnoreCase {},
                 ),
             )
         },
@@ -368,23 +362,26 @@ pub async fn read_index_from_args<'a>(
         return Ok((series[1..].to_owned(), None));
     }
     let index = match m_index {
-        Some(m_index) => m_index
-            .get_index(OsString::from(series.as_str()))
-            .await
-            .map(Some)
-            .or_else(|err| match err {
-                index::Error::SeriesNotFound => {
-                    todo!(
-                        "couldn't find {series:?} in {:?} re-ask for series",
-                        m_index.path()
-                    )
+        Some(m_index) => {
+            // SAFTY: path points to the path of m_index.
+            // This is needed, because the mutable borrow of get_index makes it impossible to get a reference to Path, even if they will not interact.
+            let path = unsafe { std::ptr::NonNull::from(m_index.path()).as_ref() };
+            let map = m_index.get_index(OsString::from(series.as_str())).await;
+            match map {
+                Ok(x) => Some(common::boo::Boo::Borrowed(x)),
+                Err(index::Error::SeriesNotFound) => {
+                    todo!("couldn't find {series:?} in {:?} re-ask for series", path)
                 }
-                index::Error::NoIndexFile => todo!("ask for direct path"),
-                index::Error::NotSupportedFile(_) => unreachable!(),
-                index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _) => {
-                    Err(err)
+                Err(index::Error::NoIndexFile) => todo!("ask for direct path"),
+                Err(index::Error::NotSupportedFile(_)) => unreachable!(),
+                Err(
+                    index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _),
+                ) => {
+                    // SAFTY: we are in an error path of map, so map is always an error
+                    return Err(unsafe { map.unwrap_err_unchecked() });
                 }
-            })?,
+            }
+        }
         None => {
             let path = args
                 .always_answer()
@@ -397,7 +394,7 @@ pub async fn read_index_from_args<'a>(
             match path {
                 Some(path) => crate::worker::index::Index::try_read_from_path(path)
                     .await
-                    .map(Arc::new)
+                    .map(common::boo::Boo::Owned)
                     .map(Some)
                     .or_else(|err| match err {
                         index::Error::SeriesNotFound => unreachable!(),

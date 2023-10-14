@@ -7,7 +7,6 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 use toml::value::Datetime;
 
@@ -378,17 +377,13 @@ impl<'a> Index<'a> {
 #[allow(clippy::module_name_repetitions)]
 pub struct MultiIndex<'a> {
     folder: PathBuf,
-    data: HashMap<OsString, Arc<Index<'a>>>,
+    data: HashMap<OsString, Index<'a>>,
 }
 
 impl MultiIndex<'static> {
     #[must_use]
     pub async fn new(folder: PathBuf) -> Self {
-        let data = Self::possible(&folder)
-            .await
-            .into_iter()
-            .map(|(k, v)| (k, Arc::new(v)))
-            .collect();
+        let data = Self::possible(&folder).await;
         Self { folder, data }
     }
 }
@@ -457,13 +452,11 @@ impl<'a> MultiIndex<'a> {
         &self.folder
     }
 
-    pub async fn get_index(&mut self, series: OsString) -> Result<Arc<Index<'a>>, Error> {
+    pub async fn get_index(&mut self, series: OsString) -> Result<&Index<'a>, Error> {
         if let Entry::Vacant(entry) = self.data.entry(series.clone()) {
-            entry.insert(Arc::new(
-                Index::try_read_index(self.folder.clone(), series.clone()).await?,
-            ));
+            entry.insert(Index::try_read_index(self.folder.clone(), series.clone()).await?);
         }
-        Ok(self.data.get(&series).unwrap().clone())
+        Ok(self.data.get(&series).unwrap())
     }
 }
 
@@ -525,7 +518,8 @@ mod tests {
     }
     #[tokio::test]
     async fn list_possibilitys() {
-        let m_index = MultiIndex::new("res/local/Aufnahmen/current".into()).await;
+        let m_index =
+            MultiIndex::new("/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current".into()).await;
         assert_eq!(
             vec![
                 "Dalans Prophezeiung: Das Verm\u{e4}chtnis der Peldrin",
