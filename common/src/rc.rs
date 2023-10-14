@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use std::{borrow::Borrow, ops::Deref, rc::Rc, sync::Arc};
 
 pub trait Generic<T: ?Sized>: Clone + Deref + Borrow<T> + AsRef<T> + Unpin {

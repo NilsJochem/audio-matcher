@@ -1,37 +1,33 @@
-pub trait PushReturn {
-    type Type;
-    fn push_return(&mut self, t: Self::Type) -> &mut Self::Type;
+/// extentions to push an Element and returning an reference
+pub trait PushReturn<Type> {
+    /// pushes `t` and returns a reference to it
+    fn push_return(&mut self, t: Type) -> &mut Type;
 }
-impl<T> PushReturn for Vec<T> {
-    type Type = T;
-    fn push_return(&mut self, t: Self::Type) -> &mut Self::Type {
+impl<T> PushReturn<T> for Vec<T> {
+    fn push_return(&mut self, t: T) -> &mut T {
         self.push(t);
         self.last_mut().unwrap()
     }
 }
-
-pub trait FindOrPush {
-    type Type;
-    fn find_or_push(
-        &mut self,
-        default: Self::Type,
-        predicate: impl FnMut(&Self::Type) -> bool,
-    ) -> &mut Self::Type {
+/// extentions to push an Element when a condition is met
+pub trait FindOrPush<Type> {
+    /// tries to find a element matching `predicate` or pushing `default`
+    fn find_or_push(&mut self, default: Type, predicate: impl FnMut(&Type) -> bool) -> &mut Type {
         self.find_or_push_else(|| default, predicate)
     }
+    /// tries to find a element matching `predicate` or pushing the result of `default`
     fn find_or_push_else(
         &mut self,
-        default: impl FnOnce() -> Self::Type,
-        predicate: impl FnMut(&Self::Type) -> bool,
-    ) -> &mut Self::Type;
+        default: impl FnOnce() -> Type,
+        predicate: impl FnMut(&Type) -> bool,
+    ) -> &mut Type;
 }
-impl<T> FindOrPush for Vec<T> {
-    type Type = T;
+impl<T> FindOrPush<T> for Vec<T> {
     fn find_or_push_else(
         &mut self,
-        default: impl FnOnce() -> Self::Type,
-        mut predicate: impl FnMut(&Self::Type) -> bool,
-    ) -> &mut Self::Type {
+        default: impl FnOnce() -> T,
+        mut predicate: impl FnMut(&T) -> bool,
+    ) -> &mut T {
         let index = self
             .iter_mut()
             .position(|t| predicate(t))

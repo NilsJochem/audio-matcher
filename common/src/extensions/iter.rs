@@ -1,4 +1,6 @@
+/// extentions for all Iterators
 pub trait IteratorExt: Iterator + Sized {
+    /// creates an [`ExactSizeIterator`] from `self` with `size`
     fn with_size(self, size: usize) -> ExactSizeWrapper<Self>;
 }
 impl<Iter: Iterator> IteratorExt for Iter {
@@ -6,10 +8,12 @@ impl<Iter: Iterator> IteratorExt for Iter {
         ExactSizeWrapper::new(self, size)
     }
 }
+/// extentions for all Iterators over [futures](core::future::Future)
 pub trait FutIterExt: IntoIterator + Sized
 where
     Self::Item: core::future::Future,
 {
+    /// joins all futures in `self`
     fn join_all(self) -> futures::future::JoinAll<<Self as IntoIterator>::Item>;
 }
 impl<Iter: IntoIterator + Sized> FutIterExt for Iter
@@ -21,11 +25,16 @@ where
     }
 }
 
+/// extentions for all Iterators over clonable Elements
+
 pub trait CloneIteratorExt: Iterator + Sized {
+    /// cuts up the iterator in chunks of size `window_size`. The next Chunk starts `hop_lenght` after the last one started
     fn chunked(self, window_size: usize, hop_length: usize) -> ChunkedIterator<Self>;
+    /// filters elements with respect to thier neighbors
     fn filter_surrounding<F>(self, predicate: F) -> SurroundingFilterIterator<Self, F>
     where
         F: FnMut(&Option<Self::Item>, &Self::Item, &Option<Self::Item>) -> bool;
+    /// iterates over all pairs of Elements, with special cases for first and last
     fn open_border_pairs(self) -> OpenBorderWindowIterator<Self>;
 }
 impl<Iter> CloneIteratorExt for Iter
@@ -46,7 +55,7 @@ where
         OpenBorderWindowIterator::new(self)
     }
 }
-
+#[allow(missing_docs)]
 pub struct ChunkedIterator<Iter: Iterator> {
     iter: Iter,
     window_size: usize,
@@ -100,6 +109,7 @@ where
     }
 }
 
+#[allow(missing_docs)]
 pub struct SurroundingFilterIterator<
     Iter: Iterator,
     F: FnMut(&Option<Iter::Item>, &Iter::Item, &Option<Iter::Item>) -> bool,
@@ -146,6 +156,7 @@ where
     }
 }
 
+#[allow(missing_docs)]
 pub struct ExactSizeWrapper<Iter: Iterator> {
     iter: Iter,
     i: usize,
@@ -171,10 +182,14 @@ impl<Iter: Iterator> ExactSizeIterator for ExactSizeWrapper<Iter> {
     }
 }
 
+/// represents a Pair of items, or the border elements
 #[derive(Debug, PartialEq, Eq)]
 pub enum State<T> {
+    /// the first element
     Start(T),
+    /// a Pair of elements
     Middle(T, T),
+    /// the last element
     End(T),
 }
 impl<T> State<T> {
@@ -188,6 +203,7 @@ impl<T> State<T> {
         }
     }
 }
+#[allow(missing_docs)]
 pub struct OpenBorderWindowIterator<Iter: Iterator> {
     iter: Iter,
     next: Option<Iter::Item>,

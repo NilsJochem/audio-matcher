@@ -12,7 +12,8 @@
     clippy::semicolon_inside_block,
     clippy::separated_literal_suffix,
     clippy::str_to_string,
-    clippy::string_to_string
+    clippy::string_to_string,
+    missing_docs
 )]
 #![allow(
     clippy::cast_possible_truncation,
@@ -24,8 +25,21 @@
     clippy::missing_errors_doc,
     clippy::missing_panics_doc
 )]
+//! some common functionalitys
 
 pub mod boo;
-pub mod extensions;
+/// a collection for extionsion functions
+pub mod extensions {
+    ///extention functions for [`std::borrow::Cow`]
+    pub mod cow;
+    ///extention functions for [`std::time::Duration`]
+    pub mod duration;
+    /// extention function for Iterators
+    pub mod iter;
+    ///extention functions for [`Option`]
+    pub mod option;
+    ///extention functions for [`Vec`]
+    pub mod vec;
+}
 pub mod io;
 pub mod rc;

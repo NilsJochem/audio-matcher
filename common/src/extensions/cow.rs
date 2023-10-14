@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+/// extention function for [Cow]
 pub trait Ext<'a> {
     /// returns a borrowed of the given Cow type
     fn reborrow(&'a self) -> Self;

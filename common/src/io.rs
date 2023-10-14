@@ -1,3 +1,4 @@
+//! A module for io related Utilitys
 use log::{debug, trace};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -5,13 +6,17 @@ use thiserror::Error;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 
+/// An Error that can happen, when moving a File
 #[derive(Debug, Error)]
 pub enum MoveError {
+    /// The file to move was not found
     #[error("file not found")]
     FileNotFound,
+    /// The target to move the file to was not found
     #[error("target folder not found")]
     TargetNotFound,
     #[error(transparent)]
+    /// Any other error
     OtherIO(IoError),
 }
 impl From<IoError> for MoveError {
@@ -25,6 +30,14 @@ impl From<IoError> for MoveError {
     }
 }
 
+/// moves `file` to `dst`
+/// trys to rename the file, but copys an deletes old, when on differend devices
+/// `dry_run` simulates the move and prints a message
+///
+/// # Errors
+/// - [`MoveError::FileNotFound`] when `file` doesn't exist
+/// - [`MoveError::TargetNotFound`] when `dst` doesn't exist
+/// - [`MoveError::OtherIO`] will relay any other error
 pub async fn move_file<P1: AsRef<Path> + Send + Sync, P2: AsRef<Path> + Send + Sync>(
     file: P1,
     dst: P2,
@@ -51,7 +64,7 @@ async fn inner_move_file(file: &Path, dst: &Path, dry_run: bool) -> Result<(), M
     trace!("moving {file:?} to {dst:?}");
     match tokio::fs::rename(&file, &dst).await {
         Ok(()) => Ok(()),
-        Err(_err) /*if err.kind() == IoErrorKind::CrossesDevices is unstable*/ => {
+        Err(_err) /* TODO if err.kind() == IoErrorKind::CrossesDevices is unstable*/ => {
             debug!("couldn't just rename file, try to copy and remove old");
             tokio::fs::copy(&file, &dst).await?;
             tokio::fs::remove_file(&file).await?;
@@ -73,6 +86,10 @@ impl TmpFile {
             is_removed: false,
         }
     }
+    /// copys the file at `orig` to `path` and return a [`TmpFile`] pointed to `path`
+    ///
+    /// # Errors
+    /// will relay any error from [coping the file](std::fs::copy)
     pub fn new_copy(path: PathBuf, orig: impl AsRef<Path>) -> Result<Self, IoError> {
         match std::fs::metadata(&path) {
             Ok(_) => Err(IoError::new(
@@ -85,6 +102,12 @@ impl TmpFile {
         std::fs::copy(orig, &path)?;
         Ok(Self::new(path))
     }
+
+    /// creates a new file at `path` and returns a [`TmpFile`] pointed to `path`
+    ///
+    /// # Errors
+    /// - [`IoError`] with kind [`ErrorKind::AlreadyExists`] when there is a file at `path`
+    /// - will relay any error from [creating the file](std::fs::File::create)
     pub fn new_empty(path: PathBuf) -> Result<Self, IoError> {
         match std::fs::metadata(&path) {
             Ok(_) => Err(IoError::new(
@@ -97,13 +120,14 @@ impl TmpFile {
         let _ = std::fs::File::create(&path)?;
         Ok(Self::new(path))
     }
-    pub fn remove(&mut self) -> Result<(), IoError> {
+    fn remove(&mut self) -> Result<(), IoError> {
         if !self.is_removed {
             std::fs::remove_file(&self.path)?;
             self.was_removed();
         }
         Ok(())
     }
+    /// mark this file as already removed
     pub fn was_removed(&mut self) {
         self.is_removed = true;
     }

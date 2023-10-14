@@ -1,9 +1,14 @@
 use std::time::Duration;
 
+/// extention function for [Duration]
 pub trait Ext {
+    /// builds a [Duration] from the given data
     fn from_h_m_s_m(hours: u64, minutes: u64, seconds: u64, millis: u32) -> Duration;
+    /// returns the hours represented by this `self`
     fn hours(&self) -> u64;
+    /// returns the minuets represented by this `self`
     fn minutes(&self) -> u64;
+    /// returns the seconds represented by this `self`
     fn seconds(&self) -> u64;
 }
 

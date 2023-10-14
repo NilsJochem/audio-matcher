@@ -1,12 +1,16 @@
 use std::future::Future;
 
+/// extentions for Options<Future<_>>
 #[async_trait::async_trait]
 pub trait FutureExt {
+    /// The type of value produced on completion.
     type Type;
+    /// returns the hold value or computes `f` and inserts it
     async fn get_or_try_insert_future<F: Future<Output = Option<Self::Type>> + Send>(
         &mut self,
         f: F,
     ) -> Option<&mut Self::Type>;
+    #[allow(missing_docs)]
     async fn get_or_insert_future<F: Future<Output = Self::Type> + Send>(
         &mut self,
         f: F,
@@ -15,9 +19,11 @@ pub trait FutureExt {
             .await
             .unwrap()
     }
+    #[allow(missing_docs)]
     async fn insert_future_if_none<F: Future<Output = Self::Type> + Send>(&mut self, f: F) {
         let _ = self.get_or_insert_future(f).await;
     }
+    #[allow(missing_docs)]
     async fn try_inser_futuret_if_none<F: Future<Output = Option<Self::Type>> + Send>(
         &mut self,
         f: F,
