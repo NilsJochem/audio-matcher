@@ -1,6 +1,6 @@
 use darling::{FromField, FromVariant};
-use proc_macro::{self, TokenStream};
-use quote::{quote, TokenStreamExt};
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
 #[derive(FromVariant)]
@@ -15,11 +15,11 @@ struct FOpts {
     name: Option<String>,
     display_with: Option<syn::Expr>,
     defaults: Option<syn::Expr>,
-    defaults_lit: Option<syn::Lit>,
+    defaults_str: Option<syn::Lit>,
 }
 
 #[proc_macro_derive(Command, attributes(command))]
-pub fn derive(input: TokenStream) -> TokenStream {
+pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let DeriveInput {
         ident,
         generics,
@@ -29,10 +29,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let match_variants = match data {
         syn::Data::Enum(data) => {
-            let mut tokens = quote!();
-            for variant in &data.variants {
-                tokens.append_all(match_enum_variant(variant));
-            }
+            let tokens: TokenStream2 = data.variants.iter().map(match_enum_variant).collect();
             quote! {
                 match self {
                     #tokens
@@ -40,7 +37,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
         syn::Data::Struct(_) | syn::Data::Union(_) => {
-            unimplemented!("currently only support for Enums")
+            unimplemented!("currently only supporting Enums")
         }
     };
 
@@ -54,7 +51,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn match_enum_variant(variant: &syn::Variant) -> proc_macro2::TokenStream {
+fn match_enum_variant(variant: &syn::Variant) -> TokenStream2 {
     let name = VOpts::from_variant(variant).expect("wrong Options").name;
     let variant_name = format!("{}:", name.unwrap_or_else(|| variant.ident.to_string()));
     let variant_ident = &variant.ident;
@@ -67,10 +64,7 @@ fn match_enum_variant(variant: &syn::Variant) -> proc_macro2::TokenStream {
     if fields.is_empty() {
         quote!(#variant_ident => #variant_name.to_owned(),)
     } else {
-        let mut push_fields = quote!();
-        for field in &variant.fields {
-            push_fields.append_all(match_field(field))
-        }
+        let push_fields: TokenStream2 = variant.fields.iter().map(match_field).collect();
         quote! {
             #variant_ident{#(#fields),*} => {
                 let mut s = #variant_name.to_owned();
@@ -81,7 +75,7 @@ fn match_enum_variant(variant: &syn::Variant) -> proc_macro2::TokenStream {
     }
 }
 
-fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
+fn match_field(field: &syn::Field) -> TokenStream2 {
     let opts = FOpts::from_field(field).expect("wrong Options");
     let ident = field.ident.as_ref().expect("no Tuple structs");
     let name = opts.name.unwrap_or_else(|| format_name(ident.to_string()));
@@ -89,22 +83,20 @@ fn match_field(field: &syn::Field) -> proc_macro2::TokenStream {
     let ident_map = opts.display_with.map_or(quote!(#ident), |map| quote!(#map));
     let push = quote!(push(&mut s, #name, #ident_map););
 
-    let default = match (opts.defaults, opts.defaults_lit) {
+    let default = match (opts.defaults, opts.defaults_str) {
         (None, None) => None,
-        (Some(expr), None) => Some(quote!(&#expr)),
+        (Some(expr), None) => Some(quote!(#expr)),
         (None, Some(lit)) => Some(quote!(#lit)),
         (Some(_), Some(_)) => panic!("only one default allowed"),
     };
 
-    match (extract_type_from_option(&field.ty), default) {
+    match (default, extract_type_from_option(&field.ty)) {
         (None, None) => push,
-        (Some(_), None) => quote!(if let Some(#ident) = #ident { #push }),
-        (Some(_), Some(default)) => {
-            quote!(if let Some(#ident) = #ident.filter(|it| it != &#default) { #push })
-        }
-        (None, Some(default)) => {
-            quote!(if let Some(#ident) = Some(#ident).filter(|it| it != &#default)  { #push })
-        }
+        (None, Some(_)) => quote!(if let Some(#ident) = #ident { #push }),
+        (Some(default), None) => quote!(if #ident != &#default { #push }),
+        (Some(default), Some(_)) => quote! {
+            if let Some(#ident) = #ident.filter(|it| it != &#default) { #push }
+        },
     }
 }
 

@@ -6,7 +6,8 @@ pub use Out::*;
 pub trait Command {
     fn to_string(&self) -> String;
 }
-fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: &(impl ToString + ?Sized)) {
+#[allow(clippy::needless_pass_by_value)]
+fn push(s: &mut impl std::fmt::Write, cmd: impl AsRef<str>, value: impl ToString) {
     let value = value.to_string();
     let cmd = cmd.as_ref();
     if value.contains(' ') {
@@ -23,19 +24,20 @@ pub enum Out<'a> {
     Message { text: &'a str },
     /// Gets information in a list in one of three formats.
     GetInfo {
-        #[command(name = "Type", defaults = "InfoType::Commands")]
+        #[command(name = "Type", defaults = InfoType::Commands)]
         type_info: InfoType,
-        #[command(defaults = "OutputFormat::Json")]
+        #[command(defaults = OutputFormat::Json)]
         format: OutputFormat,
     },
     /// This is an extract from GetInfo Commands, with just one command.
     Help {
-        #[command(defaults_lit = "Help")]
+        #[command(defaults_str = "Help")]
         command: Option<&'a str>,
-        #[command(defaults = "OutputFormat::Json")]
+        #[command(defaults = OutputFormat::Json)]
         format: OutputFormat,
     },
 }
+
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, command_derive::Command)]
 pub enum NoOut<'a> {
@@ -60,9 +62,9 @@ pub enum NoOut<'a> {
     SelAllTracks,
     /// Modifies the temporal selection. Start and End are time. FromEnd allows selection from the end, which is handy to fade in and fade out a track.
     SelectTime {
-        #[command(display_with = "&start.as_secs_f64()")]
+        #[command(display_with = "start.as_secs_f64()")]
         start: Option<Duration>,
-        #[command(display_with = "&end.as_secs_f64()")]
+        #[command(display_with = "end.as_secs_f64()")]
         end: Option<Duration>,
         relative_to: crate::RelativeTo,
     },
@@ -83,9 +85,9 @@ pub enum NoOut<'a> {
     SetLabel {
         label: usize,
         text: Option<&'a str>,
-        #[command(display_with = "&start.as_secs_f64()")]
+        #[command(display_with = "start.as_secs_f64()")]
         start: Option<Duration>,
-        #[command(display_with = "&end.as_secs_f64()")]
+        #[command(display_with = "end.as_secs_f64()")]
         end: Option<Duration>,
         selected: Option<bool>,
     },
@@ -108,7 +110,7 @@ pub enum NoOut<'a> {
     SetPreference {
         name: &'a str,
         value: &'a str,
-        #[command(defaults = "false")]
+        #[command(defaults = false)]
         reload: bool,
     },
 
@@ -120,6 +122,15 @@ pub enum NoOut<'a> {
     Close,
     /// Various ways to save a project.
     SaveProject,
+    /// Saves a project
+    SaveProject2 {
+        #[command(defaults_str = "name.aup3")]
+        filename: &'a str,
+        #[command(defaults = false)]
+        add_to_history: bool,
+        #[command(defaults = false)]
+        compress: bool,
+    },
     /// Compact your project to save disk space.
     CompactProject,
     /// Opens the standard Page Setup dialog box prior to printing
@@ -164,13 +175,13 @@ pub enum NoOut<'a> {
     ToggleAlt,
 
     Screenshot {
-        #[command(display_with = "&path.display()")]
+        #[command(display_with = "path.display()")]
         path: &'a Path,
-        #[command(defaults = "CaptureWhat::Window")]
+        #[command(defaults = CaptureWhat::Window)]
         capture_what: CaptureWhat,
-        #[command(defaults = "Background::None")]
+        #[command(defaults = Background::None)]
         background: Background,
-        #[command(defaults = "true")]
+        #[command(defaults = true)]
         to_top: bool,
     },
 
@@ -186,16 +197,16 @@ pub enum NoOut<'a> {
     ExportLabels,
     ExportMultiple,
     Import2 {
-        #[command(display_with = "&filename.display()")]
+        #[command(display_with = "filename.display()")]
         filename: &'a Path,
     },
     Export2 {
         #[command(
-            display_with = "&filename.display()",
-            defaults = "std::path::PathBuf::from(\"exported.wav\").as_path()"
+            display_with = "filename.display()",
+            defaults = std::path::PathBuf::from("exported.wav").as_path()
         )]
         filename: &'a Path,
-        #[command(defaults = "Channels::Mono")]
+        #[command(defaults = Channels::Mono)]
         num_channels: Channels,
     },
 
