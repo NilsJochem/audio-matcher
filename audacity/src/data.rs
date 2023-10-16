@@ -83,7 +83,7 @@ impl TimeLabel {
     ///
     /// # Errors
     /// forwards the [`std::io::Error`] of reading `path`
-    pub fn read<P: AsRef<Path>>(path: P) -> Result<Vec<Self>, std::io::Error> {
+    pub fn read(path: impl AsRef<Path>) -> Result<Vec<Self>, std::io::Error> {
         Ok(std::fs::read_to_string(&path)?
             .lines()
             .filter(|it| !it.trim_start().starts_with('#'))

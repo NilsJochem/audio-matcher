@@ -236,9 +236,9 @@ impl VorbisComment {
         std::io::copy(&mut from, &mut to)?;
         Ok(())
     }
+    #[momo::momo]
     pub fn write_opus_file(&self, path: impl AsRef<Path>) -> Result<(), Error> {
-        let file = std::fs::File::open(&path).expect("file not found");
-        let path = path.as_ref();
+        let file = std::fs::File::open(path).expect("file not found");
         let tmp_name = path.file_name().unwrap().to_string_lossy();
         let mut tmp_name =
             common::io::TmpFile::new_empty(path.with_file_name(format!(".{tmp_name}"))).unwrap();

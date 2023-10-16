@@ -689,8 +689,9 @@ mod tests {
     use super::*;
     static FILE_NR: AtomicUsize = AtomicUsize::new(0);
 
+    #[momo::momo]
     fn new_test_file(file: impl AsRef<Path>) -> common::io::TmpFile {
-        let mut path = file.as_ref().to_path_buf();
+        let mut path = file.to_path_buf();
         let mut name = std::ffi::OsString::from(format!(
             "tmp_{}_",
             FILE_NR.fetch_add(1, std::sync::atomic::Ordering::Relaxed) // give each call a uniqe number to allow parallel tests

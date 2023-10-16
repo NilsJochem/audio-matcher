@@ -67,7 +67,7 @@ pub struct Archive {
 }
 impl Archive {
     /// will only log warnings, when errors from parsing occure
-    pub fn read<P: AsRef<Path>>(path: P) -> Self {
+    pub fn read(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().join("**/*.txt");
         let pattern = path
             .to_str()

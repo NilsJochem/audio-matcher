@@ -24,11 +24,12 @@ impl Inputs {
         }
     }
     #[must_use]
-    pub fn ask_consent(&self, msg: impl AsRef<str>) -> bool {
+    #[momo::momo]
+    pub fn ask_consent(self, msg: impl AsRef<str>) -> bool {
         if self.yes || self.no {
             return self.yes;
         }
-        self.try_input(format!("{} [y/n]: ", msg.as_ref()), None, |rin| {
+        self.try_input(format!("{msg} [y/n]: "), None, |rin| {
             if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
                 return Some(true);
             } else if ["n", "no", "nein"].contains(&rin.as_str()) {

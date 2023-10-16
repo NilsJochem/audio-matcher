@@ -100,9 +100,9 @@ fn match_field(field: &syn::Field) -> TokenStream2 {
     }
 }
 
+#[momo::momo]
 fn format_name(name_full: impl AsRef<str>) -> String {
     name_full
-        .as_ref()
         .split('_')
         .filter(|it| !it.is_empty())
         .map(|name_trunc| {
