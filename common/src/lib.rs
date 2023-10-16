@@ -72,7 +72,8 @@ pub mod str_convert {
                 Self::Lower => data.chars().all(char::is_lowercase),
                 Self::Upper => data.chars().all(char::is_uppercase),
                 Self::Capitalized => {
-                    Self::Upper.is_case(&data[..1]) && Self::Lower.is_case(&data[1..])
+                    data.is_empty()
+                        || Self::Upper.is_case(&data[..1]) && Self::Lower.is_case(&data[1..])
                 }
             }
         }
@@ -96,6 +97,9 @@ pub mod str_convert {
                     }
                 },
                 Self::Capitalized => {
+                    if data.is_empty() {
+                        return data;
+                    }
                     let mut data = data.into_owned();
                     data[..1].make_ascii_uppercase();
                     data[1..].make_ascii_lowercase();
@@ -247,6 +251,11 @@ pub mod str_convert {
                 case,
             }
         }
+        pub fn convert(data: &'a str, into_case: Case) -> Result<Self, ParseError> {
+            let mut tmp = Self::try_from(data)?;
+            tmp.change_case(into_case);
+            Ok(tmp)
+        }
         pub fn from_words<Iter>(data: Iter, case: Case) -> Self
         where
             Iter: IntoIterator,
@@ -338,6 +347,7 @@ pub mod str_convert {
 
         #[test]
         fn new_splits_correct() {
+            __test_from_str(vec![""], Case::Lower);
             __test_from_str(vec!["test", "with", "spaces"], Case::Lower);
             __test_from_str(vec!["test", "with", "underscores"], Case::Lower);
             __test_from_str(
@@ -349,6 +359,20 @@ pub mod str_convert {
             );
             __test_from_str(vec!["Test", "Without", "Delimitor"], Case::Pascal);
             __test_from_str(vec!["test", "Without", "Delimitor"], Case::Camel);
+        }
+
+        #[test]
+        fn some_extra() {
+            fn format(s: &str) -> String {
+                CapitalizedString::convert(s, Case::Pascal)
+                    .unwrap()
+                    .to_string()
+            }
+            assert_eq!("Abc", format("abc"));
+            assert_eq!("Abc", format("Abc"));
+            assert_eq!("Abc", format("ABC"));
+            assert_eq!("Abc", format("_aBc"));
+            assert_eq!("AbCd", format("aB_CD"));
         }
 
         #[test]

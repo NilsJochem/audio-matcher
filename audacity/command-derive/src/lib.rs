@@ -3,6 +3,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
+use common::str_convert::{CapitalizedString, Case};
+
 #[derive(FromVariant)]
 #[darling(attributes(command))]
 struct VOpts {
@@ -78,7 +80,11 @@ fn match_enum_variant(variant: &syn::Variant) -> TokenStream2 {
 fn match_field(field: &syn::Field) -> TokenStream2 {
     let opts = FOpts::from_field(field).expect("wrong Options");
     let ident = field.ident.as_ref().expect("no Tuple structs");
-    let name = opts.name.unwrap_or_else(|| format_name(ident.to_string()));
+    let name = opts.name.unwrap_or_else(|| {
+        CapitalizedString::convert(ident.to_string().as_ref(), Case::Pascal)
+            .unwrap()
+            .to_string()
+    });
 
     let ident_map = opts.display_with.map_or(quote!(#ident), |map| quote!(#map));
     let push = quote!(push(&mut s, #name, #ident_map););
@@ -98,20 +104,6 @@ fn match_field(field: &syn::Field) -> TokenStream2 {
             if let Some(#ident) = #ident.filter(|it| it != &#default) { #push }
         },
     }
-}
-
-#[momo::momo]
-fn format_name(name_full: impl AsRef<str>) -> String {
-    name_full
-        .split('_')
-        .filter(|it| !it.is_empty())
-        .map(|name_trunc| {
-            let mut name = name_trunc[..1].to_ascii_uppercase();
-            name.push_str(&name_trunc[1..].to_ascii_lowercase());
-            name
-        })
-        .collect::<Box<[_]>>()
-        .join("")
 }
 
 fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
@@ -154,18 +146,4 @@ fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
         return inner_type;
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn format_name() {
-        assert_eq!("Abc", super::format_name("abc"));
-        assert_eq!("Abc", super::format_name("Abc"));
-        assert_eq!("Abc", super::format_name("ABC"));
-        assert_eq!("Abc", super::format_name("aBC"));
-        assert_eq!("Abc", super::format_name("_aBc"));
-        assert_eq!("AbCd", super::format_name("aB_CD"));
-    }
 }
