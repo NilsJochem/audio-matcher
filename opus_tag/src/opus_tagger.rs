@@ -365,13 +365,21 @@ mod tests {
                 tags: VorbisComment::new(
                     "Lavf60.3.100",
                     vec![
-                        ("TITLE", "Das Amulett der Mumie 1"),
-                        ("ARTIST", "Bram Stoker"),
+                        ("TITLE", "Das Amulett der Mumie"),
                         ("ALBUM", "Gruselkabinett"),
-                        ("DISCNUMBER", "2"),
-                        ("DATE", "2004"),
-                        ("TRACKNUMBER", "01"),
                         ("GENRE", "Hörbuch"),
+                        ("TRACKNUMBER", "2"),
+                        ("TOTALTRACKS", "182"),
+                        ("ARTIST", "Bram Stoker "),
+                        ("YEAR", "2004"),
+                        ("CHAPTER000", "00:00:00.000"),
+                        ("CHAPTER000NAME", "Part 1"),
+                        ("CHAPTER001", "00:22:37.040"),
+                        ("CHAPTER001NAME", "Part 2"),
+                        ("CHAPTER002", "00:41:08.440"),
+                        ("CHAPTER002NAME", "Part 3"),
+                        ("CHAPTER003", "01:00:15.640"),
+                        ("CHAPTER003NAME", "Part 4")
                     ],
                 )
             },

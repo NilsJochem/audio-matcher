@@ -289,34 +289,42 @@ fn read_exact(read: &mut impl Read, mut buf: &mut [u8]) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    const TEST_FILE: &str = "../res/local/tag_test_small.opus";
+    const END_PACKET_1: usize = 0x2F;
+    const END_PACKET_2: usize = 0x1C9;
+    const END_PACKET_3: usize = 0x9A3;
+
+    const NUMBER_OGG_PACKETS: usize = 4660;
+
     #[test]
     fn read_write_equals() {
-        let mut data_src = std::fs::File::open("../res/local/tag_test_small.opus").unwrap();
-        let mut buf = vec![0; 0x1150];
+        let mut data_src = std::fs::File::open(TEST_FILE).unwrap();
+        let mut buf = vec![0; END_PACKET_3];
         data_src.read_exact(&mut buf).unwrap();
 
         // there is a valid Ogg Packet at the start of the file with length 0x2F
-        let header_data = &buf[0..0x2F];
-        // there is a valid Ogg Packet between 0x2F and 0xF8
-        let tags_data = &buf[0x2F..0xF8];
-        // there is a valid Ogg Packet between 0xF8 and 0x1150
-        let first_audio = &buf[0xF8..0x1150];
+        let header_data = &buf[..END_PACKET_1];
+        // there is a valid Ogg Packet between 0x2F and 0x1C9
+        let tags_data = &buf[END_PACKET_1..END_PACKET_2];
+        // there is a valid Ogg Packet between 0x1C9 and the end of read bytes
+        let first_audio = &buf[END_PACKET_2..];
 
         for data in [header_data, tags_data, first_audio] {
             let mut read_data = data;
             let head = OggPage::read_next_from(&mut read_data).unwrap();
             let mut out_data = Vec::new();
             head.write_to(&mut out_data).unwrap();
+            assert_eq!(data.len(), out_data.len());
             assert_eq!(data, out_data);
         }
     }
 
     #[test]
     fn read_iter() {
-        let data_src = std::fs::File::open("../res/local/tag_test_small.opus").unwrap();
+        let data_src = std::fs::File::open(TEST_FILE).unwrap();
 
         // take only 0x1150, which is the size of the first 3 valid packets
-        let oggs = OggPage::iterate_read(data_src.take(0x1150))
+        let oggs = OggPage::iterate_read(data_src.take(END_PACKET_3 as u64))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(3, oggs.len(), "failed to read all 3 packets in data");
@@ -324,11 +332,15 @@ mod tests {
 
     #[test]
     fn read_full_file() {
-        let data_src = std::fs::File::open("../res/local/tag_test_small.opus").unwrap();
+        let data_src = std::fs::File::open(TEST_FILE).unwrap();
 
         let oggs = OggPage::iterate_read(data_src)
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(1987, oggs.len(), "failed to read all 1987 packets in data");
+        assert_eq!(
+            NUMBER_OGG_PACKETS,
+            oggs.len(),
+            "failed to read all 1987 packets in data"
+        );
     }
 }

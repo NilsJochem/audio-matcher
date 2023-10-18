@@ -1,29 +1,33 @@
-#![allow(missing_docs)]
+//! A module for converting the case of strings
 use itertools::Itertools;
 use std::{borrow::Cow, collections::HashSet};
 use thiserror::Error;
 
 use crate::extensions::iter::CloneIteratorExt;
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ParseError {
-    #[error("mixed delimiter, found, {0:?}")]
-    MixedDelimiter(HashSet<char>),
-}
+/// Different Cases a Word can be in
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WordCase {
+    /// All characters are lowercase, or don't have a case.
+    /// Lower case is definded by [`char::is_lowercase`]
     Lower,
+    /// All characters are uppercase, or don't have a case.
+    /// Upper case is definded by [`char::is_uppercase`]
     Upper,
+    /// The first character is uppercase or doesn't have a case, the rest are lowercase or don't have a case.
+    /// Lower/Upper case is defined by [`WordCase::Lower`] / [`WordCase::Upper`]
     Capitalized,
 }
 impl WordCase {
-    fn word_in_case(self, word: &str) -> bool {
+    #[inline]
+    fn word_not_in_case(self, word: &str) -> bool {
         match self {
-            Self::Lower => word.chars().all(char::is_lowercase),
-            Self::Upper => word.chars().all(char::is_uppercase),
+            Self::Lower => word.chars().any(char::is_uppercase),
+            Self::Upper => word.chars().any(char::is_lowercase),
             Self::Capitalized => {
-                word.is_empty()
-                    || Self::Upper.word_in_case(&word[..1]) && Self::Lower.word_in_case(&word[1..])
+                !word.is_empty()
+                    && (Self::Upper.word_not_in_case(&word[..1])
+                        || Self::Lower.word_not_in_case(&word[1..]))
             }
         }
     }
@@ -50,7 +54,7 @@ impl WordCase {
         has_changed: &mut bool,
     ) -> Cow<'a, str> {
         match case {
-            Some(case) if !case.word_in_case(&word) => {
+            Some(case) if case.word_not_in_case(&word) => {
                 *has_changed = true;
                 case.convert(word)
             }
@@ -58,77 +62,76 @@ impl WordCase {
         }
     }
 }
+
+/// Different Cases a sequence of words can be in
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Case {
+    /// The fist word is Lowercase and the rest are Capitalized. There is no seperator.
     Camel,
+    /// Each Word is in `case` and seperated by `delimitor` if it is Some.
     Other {
+        /// The [`WordCase`] for each word. May be None to indicate mixed case
         case: Option<WordCase>,
-        delimiter: Option<char>,
+        /// The word seperator if existing
+        seperator: Option<char>,
     },
 }
 impl Case {
+    /// All Words are capitalized with no seperator
     #[allow(non_upper_case_globals)]
     pub const Pascal: Self = Self::Other {
         case: Some(WordCase::Capitalized),
-        delimiter: None,
+        seperator: None,
     };
+    /// All Words are lowercase and seperatet by '_'
     #[allow(non_upper_case_globals)]
     pub const Snake: Self = Self::Other {
         case: Some(WordCase::Lower),
-        delimiter: Some('_'),
+        seperator: Some('_'),
     };
+    /// All Words are uppercase and seperatet by '_'
     #[allow(non_upper_case_globals)]
     pub const ScreamingSnake: Self = Self::Other {
         case: Some(WordCase::Upper),
-        delimiter: Some('_'),
+        seperator: Some('_'),
     };
+    /// All Words are lower case and seperatet by '-'
     #[allow(non_upper_case_globals)]
     pub const Kebab: Self = Self::Other {
         case: Some(WordCase::Lower),
-        delimiter: Some('-'),
+        seperator: Some('-'),
     };
+    /// All Words are lower case and seperatet by ' '
     #[allow(non_upper_case_globals)]
     pub const Upper: Self = Self::Other {
         case: Some(WordCase::Upper),
-        delimiter: Some(' '),
+        seperator: Some(' '),
     };
+    /// All Words are lower case and seperatet by ' '
     #[allow(non_upper_case_globals)]
     pub const Lower: Self = Self::Other {
         case: Some(WordCase::Lower),
-        delimiter: Some(' '),
+        seperator: Some(' '),
     };
 
+    /// creates a new [`WordCase`].
+    /// creation with [`WordCase::case`] = `None` is not intendet
     #[inline]
-    pub fn new(case: WordCase, delimiter: impl Into<Option<char>>) -> Self {
+    pub fn new(case: WordCase, seperator: impl Into<Option<char>>) -> Self {
         Self::Other {
             case: Some(case),
-            delimiter: delimiter.into(),
+            seperator: seperator.into(),
         }
     }
 
-    unsafe fn split(self, data: &str) -> Vec<Cow<'_, str>> {
-        #[allow(clippy::match_same_arms)]
-        match self {
-            Self::Camel => Self::split_capitalized(data),
-            Self::Other {
-                case: _,
-                delimiter: Some(delimiter),
-            } => Self::split_delimiter(data, delimiter),
-            Self::Other {
-                case: Some(WordCase::Capitalized),
-                delimiter: None,
-            } => Self::split_capitalized(data),
-            Self::Other {
-                case: Some(WordCase::Lower | WordCase::Upper) | None,
-                delimiter: None,
-            } => Self::no_split(data),
-        }
+    fn split(seperator: impl Into<Option<char>>, data: &str) -> Vec<Cow<'_, str>> {
+        seperator.into().map_or_else(
+            || Self::split_capitalized(data),
+            |seperator| Self::split_seperator(data, seperator),
+        )
     }
-    fn no_split(data: &str) -> Vec<Cow<'_, str>> {
-        vec![Cow::Borrowed(data)]
-    }
-    fn split_delimiter(data: &str, delimiter: char) -> Vec<Cow<'_, str>> {
-        data.split(delimiter).map(Cow::Borrowed).collect_vec()
+    fn split_seperator(data: &str, seperator: char) -> Vec<Cow<'_, str>> {
+        data.split(seperator).map(Cow::Borrowed).collect_vec()
     }
     fn split_capitalized(data: &str) -> Vec<Cow<'_, str>> {
         data.match_indices(char::is_uppercase)
@@ -171,14 +174,16 @@ impl Case {
             }
         }
     }
-    const fn delimiter(self) -> Option<char> {
+    const fn seperator(self) -> Option<char> {
         match self {
             Self::Camel => None,
-            Self::Other { delimiter, .. } => delimiter,
+            Self::Other { seperator, .. } => seperator,
         }
     }
 }
 
+/// A String representation to easily change the case
+/// holds a reference to the original data so that no new string needs to be created, when nothing changed
 #[derive(Debug, Clone)]
 pub struct CapitalizedString<'a> {
     original_data: Option<&'a str>,
@@ -187,26 +192,26 @@ pub struct CapitalizedString<'a> {
 }
 
 impl<'a> CapitalizedString<'a> {
-    pub fn new(data: &'a str, delimiter: impl Into<Option<char>>) -> Self {
-        let case = match delimiter.into() {
-            Some(delimiter) => Case::Other {
+    /// splits `data` at `seperator` if `Some` or at capitalized letters if `None`
+    pub fn new(data: &'a str, seperator: impl Into<Option<char>>) -> Self {
+        let case = match seperator.into() {
+            Some(seperator) => Case::Other {
                 case: None,
-                delimiter: Some(delimiter),
+                seperator: Some(seperator),
             },
             None if data.is_empty() => Case::Lower,
             None => {
                 let mut contains_lower = false;
                 let mut contains_upper = false;
+
                 let first = data.chars().next().unwrap();
-                let is_first_lower = if first.is_lowercase() {
-                    contains_lower = true;
-                    Some(true)
-                } else if first.is_uppercase() {
+                let is_first_upper = first.is_uppercase();
+                if is_first_upper {
                     contains_upper = true;
-                    Some(false)
-                } else {
-                    None
+                } else if first.is_lowercase() {
+                    contains_lower = true;
                 };
+
                 for char in data.chars() {
                     contains_lower |= char.is_lowercase();
                     contains_upper |= char.is_uppercase();
@@ -214,34 +219,33 @@ impl<'a> CapitalizedString<'a> {
                         break; // nothing more can be gained by checking the rest
                     }
                 }
-                match (is_first_lower, contains_lower, contains_upper) {
+                match (is_first_upper, contains_lower, contains_upper) {
                     (_, false | true, false) => Case::Lower,
                     (_, false, true) => Case::Upper,
-                    (Some(false), true, true) => Case::Pascal,
-                    (Some(true) | None, true, true) => Case::Camel,
+                    (true, true, true) => Case::Pascal,
+                    (false, true, true) => Case::Camel,
                 }
             }
         };
-        let split = unsafe { case.split(data) };
-        unsafe { Self::from_words_unchecked(data, split, case) }
+        let split = Case::split(case.seperator(), data);
+        Self::from_words_unchecked(data, split, case)
     }
-    pub fn from_words<Iter>(words: Iter, delimiter: impl Into<Option<char>>) -> Self
+    /// Creates a new `CapitaliedString` from `words` and `seperator`
+    pub fn from_words<Iter>(words: Iter, seperator: impl Into<Option<char>>) -> Self
     where
         Iter: IntoIterator,
         Iter::Item: Into<Cow<'a, str>>,
     {
-        unsafe {
-            Self::from_words_unchecked(
-                None,
-                words,
-                Case::Other {
-                    case: None,
-                    delimiter: delimiter.into(),
-                },
-            )
-        }
+        Self::from_words_unchecked(
+            None,
+            words,
+            Case::Other {
+                case: None,
+                seperator: seperator.into(),
+            },
+        )
     }
-    unsafe fn from_words_unchecked<Iter>(
+    fn from_words_unchecked<Iter>(
         original_data: impl Into<Option<&'a str>>,
         words: Iter,
         case: Case,
@@ -250,41 +254,62 @@ impl<'a> CapitalizedString<'a> {
         Iter: IntoIterator,
         Iter::Item: Into<Cow<'a, str>>,
     {
-        let words = words.into_iter().map(Iter::Item::into).collect_vec();
         Self {
             original_data: original_data.into(),
-            words,
+            words: words.into_iter().map(Iter::Item::into).collect_vec(),
             case,
         }
     }
 
-    pub fn convert(data: &'a str, into_case: Case) -> Result<Self, ParseError> {
+    /// Parses `data` and changes its case to `into_case`
+    ///
+    /// # Errors
+    /// relays [`MixedSeperators`] from [`Self::Try_from::<&str>`]
+    #[inline]
+    pub fn new_into(data: &'a str, into_case: Case) -> Result<Self, MixedSeperators> {
         Self::try_from(data).map(|it| it.into_case(into_case))
     }
+    /// A chainable variant of [`CapatizedString::change_case`]
+    #[inline]
     pub fn into_case(mut self, case: Case) -> Self {
         self.change_case(case);
         self
     }
+    /// Changes the case of `self` to `case`
+    /// keeps old references if nothing needs to be changed
     pub fn change_case(&mut self, case: Case) {
         if self.case == case {
             return;
         }
         let data = std::mem::take(&mut self.words);
         let (changed, data) = case.convert(data);
-        if changed || (self.words.len() > 1 && self.case.delimiter() != case.delimiter()) {
+        if changed || (self.words.len() > 1 && self.case.seperator() != case.seperator()) {
             // remove if some data was changed, or a deliminator would change (there are at least two words and a differend deliminator)
             self.original_data = None;
         }
         self.words = data;
         self.case = case;
     }
+
+    /// Copys all borrowed data to become an owned type
+    /// sadly can't be expressed by [`alloc::borrow::ToOwned`]
+    pub fn into_owned(self) -> CapitalizedString<'static> {
+        CapitalizedString::from_words_unchecked(
+            None,
+            self.words
+                .into_iter()
+                .map(|it| Cow::Owned(it.into_owned()))
+                .collect_vec(),
+            self.case,
+        )
+    }
 }
 impl<'a> From<&CapitalizedString<'a>> for Cow<'a, str> {
     fn from(value: &CapitalizedString<'a>) -> Self {
         value.original_data.map_or_else(
             || {
-                let delimiter = value.case.delimiter().map(String::from);
-                let sep = delimiter.as_deref().unwrap_or("");
+                let seperator = value.case.seperator().map(String::from);
+                let sep = seperator.as_deref().unwrap_or("");
                 Cow::Owned(value.words.iter().join(sep))
             },
             Cow::Borrowed,
@@ -296,8 +321,13 @@ impl<'a> ToString for CapitalizedString<'a> {
         Cow::from(self).into_owned()
     }
 }
+
+/// an error denoting that different Seperators where found. Expected delemiters are ' ', '-' and '_'
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("mixed seperator, found, {0:?}")]
+pub struct MixedSeperators(HashSet<char>);
 impl<'a> TryFrom<&'a str> for CapitalizedString<'a> {
-    type Error = ParseError;
+    type Error = MixedSeperators;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         const DELIMITERS: [char; 3] = [' ', '-', '_'];
@@ -305,12 +335,12 @@ impl<'a> TryFrom<&'a str> for CapitalizedString<'a> {
             .chars()
             .filter(|char| DELIMITERS.contains(char))
             .collect::<HashSet<_>>();
-        let delimiter = match candidates.len() {
+        let seperator = match candidates.len() {
             0 => None,
-            1 => Some(candidates.into_iter().exactly_one().unwrap()),
-            _ => return Err(ParseError::MixedDelimiter(candidates)),
+            1 => Some(candidates.into_iter().next().unwrap()),
+            _ => return Err(MixedSeperators(candidates)),
         };
-        Ok(CapitalizedString::new(value, delimiter))
+        Ok(CapitalizedString::new(value, seperator))
     }
 }
 
@@ -321,7 +351,7 @@ mod tests {
     #[test]
     fn format_correctly() {
         fn __test_to_string(data: &str, words: Vec<&str>, case: Case) {
-            let mut s = CapitalizedString::new(data, case.delimiter());
+            let mut s = CapitalizedString::new(data, case.seperator());
             assert_eq!(words, s.words, "failed to seperate words with {case:?}");
             s.change_case(case);
             assert!(
@@ -335,7 +365,7 @@ mod tests {
             );
             assert_eq!(
                 data,
-                CapitalizedString::from_words(words, case.delimiter()).to_string(),
+                CapitalizedString::from_words(words, case.seperator()).to_string(),
                 "failed to join words with {case:?}"
             );
         }
@@ -352,34 +382,32 @@ mod tests {
             Case::Snake,
         );
         __test_to_string(
-            "testwithoutdelimiter",
-            vec!["testwithoutdelimiter"],
+            "testwithoutseperator",
+            vec!["testwithoutseperator"],
             Case::new(WordCase::Lower, None),
         );
         __test_to_string(
-            "TestWithoutDelimiter",
-            vec!["Test", "Without", "Delimiter"],
+            "TestWithoutSeperator",
+            vec!["Test", "Without", "Seperator"],
             Case::Pascal,
         );
         __test_to_string(
-            "testWithoutDelimiter",
-            vec!["test", "Without", "Delimiter"],
+            "testWithoutSeperator",
+            vec!["test", "Without", "Seperator"],
             Case::Camel,
         );
     }
 
     #[test]
     fn some_extra() {
-        fn format(s: &str) -> String {
-            CapitalizedString::convert(s, Case::Pascal)
-                .unwrap()
-                .to_string()
+        fn format(s: &str, case: Case) -> String {
+            CapitalizedString::new_into(s, case).unwrap().to_string()
         }
-        assert_eq!("Abc", format("abc"));
-        assert_eq!("Abc", format("Abc"));
-        assert_eq!("Abc", format("ABC"));
-        assert_eq!("Abc", format("_aBc"));
-        assert_eq!("AbCd", format("aB_CD"));
+        assert_eq!("Abc", format("abc", Case::Pascal));
+        assert_eq!("Abc", format("Abc", Case::Pascal));
+        assert_eq!("Abc", format("ABC", Case::Pascal));
+        assert_eq!("Abc", format("_aBc", Case::Pascal));
+        assert_eq!("AbCd", format("aB_CD", Case::Pascal));
     }
 
     #[test]
@@ -416,7 +444,7 @@ mod tests {
 
     #[test]
     fn convert_no_extra_allocation() {
-        let orig = "datawithoutdelimiter";
+        let orig = "datawithoutseperator!";
         let mut data = CapitalizedString::new(orig, ' ');
         data.change_case(Case::Kebab);
         assert_eq!(Some(orig), data.original_data);

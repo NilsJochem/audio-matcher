@@ -81,7 +81,7 @@ fn match_field(field: &syn::Field) -> TokenStream2 {
     let opts = FOpts::from_field(field).expect("wrong Options");
     let ident = field.ident.as_ref().expect("no Tuple structs");
     let name = opts.name.unwrap_or_else(|| {
-        CapitalizedString::convert(ident.to_string().as_ref(), Case::Pascal)
+        CapitalizedString::new_into(ident.to_string().as_ref(), Case::Pascal)
             .unwrap()
             .to_string()
     });

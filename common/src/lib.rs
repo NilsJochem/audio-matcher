@@ -13,7 +13,8 @@
     clippy::separated_literal_suffix,
     clippy::str_to_string,
     clippy::string_to_string,
-    missing_docs
+    missing_docs,
+    unsafe_op_in_unsafe_fn
 )]
 #![allow(
     clippy::cast_possible_truncation,
