@@ -649,7 +649,7 @@ fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> u
 #[cfg(test)]
 mod tests {
     use audacity::data::TimeLabel;
-    use common::extensions::duration::Ext;
+    use common::extensions::duration::duration_from_h_m_s_m;
 
     use super::*;
 
@@ -657,28 +657,28 @@ mod tests {
     fn calc_offsets() {
         let labels = [
             TimeLabel::new(
-                Duration::from_h_m_s_m(0, 3, 25, 372),
-                Duration::from_h_m_s_m(0, 24, 15, 860),
+                duration_from_h_m_s_m(0, 3, 25, 372),
+                duration_from_h_m_s_m(0, 24, 15, 860),
                 None,
             ),
             TimeLabel::new(
-                Duration::from_h_m_s_m(0, 24, 23, 90),
-                Duration::from_h_m_s_m(0, 46, 37, 240),
+                duration_from_h_m_s_m(0, 24, 23, 90),
+                duration_from_h_m_s_m(0, 46, 37, 240),
                 None,
             ),
             TimeLabel::new(
-                Duration::from_h_m_s_m(0, 46, 43, 970),
-                Duration::from_h_m_s_m(1, 6, 24, 170),
+                duration_from_h_m_s_m(0, 46, 43, 970),
+                duration_from_h_m_s_m(1, 6, 24, 170),
                 None,
             ),
             TimeLabel::new(
-                Duration::from_h_m_s_m(1, 6, 46, 170),
-                Duration::from_h_m_s_m(1, 30, 32, 490),
+                duration_from_h_m_s_m(1, 6, 46, 170),
+                duration_from_h_m_s_m(1, 30, 32, 490),
                 None,
             ),
             TimeLabel::new(
-                Duration::from_h_m_s_m(1, 30, 39, 830),
-                Duration::from_h_m_s_m(1, 55, 4, 930),
+                duration_from_h_m_s_m(1, 30, 39, 830),
+                duration_from_h_m_s_m(1, 55, 4, 930),
                 None,
             ),
         ];
@@ -689,10 +689,10 @@ mod tests {
         assert_eq!(
             [
                 vec![
-                    Duration::from_h_m_s_m(0, 20, 50, 488),
-                    Duration::from_h_m_s_m(0, 43, 4, 638)
+                    duration_from_h_m_s_m(0, 20, 50, 488),
+                    duration_from_h_m_s_m(0, 43, 4, 638)
                 ],
-                vec![Duration::from_h_m_s_m(0, 23, 46, 320)]
+                vec![duration_from_h_m_s_m(0, 23, 46, 320)]
             ]
             .into_iter()
             .collect_vec(),
