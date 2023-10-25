@@ -1,4 +1,4 @@
-use super::*;
+use super::{stdout, Debug, Itertools, ProgressBarHolder, Write};
 
 pub trait Bound: Sized + Debug {
     fn display<const N: usize>(&self, progress: &ProgressBarHolder<N, Self>, post_msg: &str);
@@ -27,14 +27,13 @@ pub struct Bounded {
     pub(super) max_len: Option<usize>,
 }
 impl Bounded {
-    pub(super) fn new(size: usize, post_msg_len: usize, max_len: Option<usize>) -> Self {
+    pub(super) const fn new(size: usize, post_msg_len: usize, max_len: Option<usize>) -> Self {
         Self {
             size,
             post_msg_len,
             max_len,
         }
     }
-
 }
 
 impl Bound for Bounded {
@@ -57,14 +56,14 @@ impl Bound for Bounded {
             .map(|f| format!("{f:0size_width$}"))
             .join("+");
 
-        let bar_len =
-            self.max_len
-                .map_or(self.size + progress.bar.arrow.padding_needed(), |max| {
-                    max - (progress.bar.pre_msg.len()
-                        + current_fmt.len()
-                        + size_width * 2
-                        + self.post_msg_len)
-                });
+        let bar_len = self
+            .max_len
+            .map_or(self.size + progress.bar.arrow.padding_needed(), |max| {
+                max - (progress.bar.pre_msg.len()
+                    + current_fmt.len()
+                    + size_width * 2
+                    + self.post_msg_len)
+            });
 
         print!(
             "\r{}{} {current_fmt}/{}{}",
@@ -76,6 +75,6 @@ impl Bound for Bounded {
         stdout().flush().unwrap();
     }
     fn cleanup() {
-        println!("");
+        println!();
     }
 }

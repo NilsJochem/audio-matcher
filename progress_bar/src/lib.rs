@@ -21,7 +21,7 @@
     clippy::cast_sign_loss,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::must_use_candidate
+    clippy::single_match_else
 )]
 
 use std::time::Duration;
@@ -30,12 +30,12 @@ mod bar;
 
 pub use bar::{Bar, Progress};
 pub mod arrow {
-    pub use crate::bar::arrow::{Arrow, FancyArrow, SimpleArrow, UnicodeBar};
+    pub use crate::bar::arrow::{Arrow, Fancy, Simple, UnicodeBar};
 }
 pub mod callback {
-    pub use crate::bar::{Callback, MutCallback, OnceCallback};
+    pub use crate::bar::{Callback, Mut, Once};
 }
-
+#[must_use]
 pub fn terminal_width() -> Option<usize> {
     term_size::dimensions().map(|(w, _)| w)
 }

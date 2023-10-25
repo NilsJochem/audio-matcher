@@ -1,10 +1,10 @@
 use itertools::Itertools;
+use log::trace;
 use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
 use std::{fs::File, time::Duration};
 
-use crate::errors::CliError::{self, NoFile, NoMp3};
-use crate::leveled_output::verbose;
+use crate::matcher::errors::CliError::{self, NoFile, NoMp3};
 
 pub type SampleType = f32;
 
@@ -20,7 +20,8 @@ where
     let iter = iter.flat_map(move |frame| {
         assert!(
             frame.sample_rate as u16 == sample_rate,
-            "sample rate changed from {sample_rate} to {}", frame.sample_rate
+            "sample rate changed from {sample_rate} to {}",
+            frame.sample_rate
         );
         assert!(frame.channels == 2, "can only handle stereo");
 
@@ -68,16 +69,24 @@ pub fn mp3_duration<P>(path: &P, use_parallel: bool) -> Result<Duration, CliErro
 where
     P: AsRef<std::path::Path>,
 {
-    // first try external bibliothek
-    if let Ok(duration) = mp3_duration::from_path(path) {
+    use crate::worker::tagger;
+    let tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), false).ok();
+    // first try reading from tags or with external bibliothek
+    if let Some(duration) = tag
+        .as_ref()
+        .and_then(tagger::TaggedFile::get::<tagger::Length>)
+        .or_else(|| mp3_duration::from_path(path).ok())
+    {
         return Ok(duration);
     }
-    verbose(&"fallback to own implementation for mp3_duration");
+    drop(tag);
+    trace!("fallback to own implementation for mp3_duration");
+
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
 
     let decoder = Decoder::new(file);
     let (_, frames) = frame_iterator(decoder).map_err(|_| NoMp3(path.into()))?;
-    let seconds: f64 = if use_parallel {
+    let duration = Duration::from_secs_f64(if use_parallel {
         frames
             .par_bridge() // parrallel, but seems half as fast
             .map(|frame| {
@@ -90,8 +99,14 @@ where
                 frame.data.len() as f64 / (frame.channels as f64 * frame.sample_rate as f64)
             })
             .sum()
-    };
-    Ok(Duration::from_secs_f64(seconds))
+    });
+    // save duration in tags, read new, in case somthing changed
+    let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), true)
+        .map_err(|err| CliError::ID3(path.into(), err))?;
+    tag.set::<tagger::Length>(duration);
+    tag.save_changes(false)
+        .map_err(|err| CliError::ID3(path.into(), err))?;
+    Ok(duration)
 }
 
 #[cfg(test)]
@@ -101,7 +116,9 @@ mod tests {
     #[test]
     fn short_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/Interlude.mp3", false).unwrap().as_secs(),
+            mp3_duration(&"res/local/Interlude.mp3", false)
+                .unwrap()
+                .as_secs(),
             7
         );
     }
@@ -109,19 +126,27 @@ mod tests {
     #[ignore = "slow"]
     fn long_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/big_test.mp3", false).unwrap().as_secs(),
+            mp3_duration(&"res/local/big_test.mp3", false)
+                .unwrap()
+                .as_secs(),
             (3 * 60 + 20) * 60 + 55
         );
     }
 
     #[test]
     fn short_mp3_samples() {
-        assert_eq!(read_mp3(&"res/Interlude.mp3").unwrap().1.count(), 323_712)
+        assert_eq!(
+            read_mp3(&"res/local/Interlude.mp3").unwrap().1.count(),
+            323_712
+        );
     }
 
     #[test]
     #[ignore = "slow"]
     fn long_mp3_samples() {
-        assert_eq!(read_mp3(&"res/big_test.mp3").unwrap().1.count(), 531_668_736)
+        assert_eq!(
+            read_mp3(&"res/local/big_test.mp3").unwrap().1.count(),
+            531_668_736
+        );
     }
 }

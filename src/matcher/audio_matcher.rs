@@ -1,10 +1,11 @@
-use crate::args::Arguments;
-use crate::iter::IteratorExt;
-use crate::mp3_reader::SampleType;
-use crate::{offset_range, start_as_duration};
+use crate::{
+    matcher::{args::Arguments, mp3_reader::SampleType, start_as_duration},
+    offset_range,
+};
+use common::extensions::iter::CloneIteratorExt;
 
-use progress_bar::arrow::{Arrow, FancyArrow, SimpleArrow};
-use progress_bar::callback::OnceCallback;
+use progress_bar::arrow::{Arrow, Fancy, Simple};
+use progress_bar::callback::Once;
 use progress_bar::{Bar, Progress};
 
 use itertools::Itertools;
@@ -33,18 +34,19 @@ struct PeakConfig {
     prominence: SampleType,
 }
 impl Config {
+    #[must_use]
     pub fn from_args(args: &Arguments, s_duration: Duration) -> Self {
         Self {
-            chunk_size: Duration::from_secs(args.chunk_size as u64),
+            chunk_size: args.chunk_size(),
             overlap_length: s_duration,
             peak_config: PeakConfig {
-                distance: Duration::from_secs(args.distance as u64),
+                distance: args.distance(),
                 prominence: args.prominence / 100.0,
             },
             arrow: if args.fancy_bar {
-                Box::<FancyArrow>::default()
+                Box::<Fancy>::default()
             } else {
-                Box::<SimpleArrow<2>>::default()
+                Box::<Simple<2>>::default()
             },
         }
     }
@@ -85,27 +87,24 @@ impl From<Mode> for fftconvolve::Mode {
 
 pub fn calc_chunks<
     C: CorrelateAlgo<SampleType> + Sync + Send + 'static,
-    Iter: Iterator<Item = SampleType> + Send + Sync + 'static,
+    Iter: ExactSizeIterator<Item = SampleType> + Send + Sync + 'static,
 >(
     sr: u16,
     m_samples: Iter,
-    algo_with_sample: C,
-    m_duration: Duration,
+    algo_with_sample: &C,
     scale: bool,
     config: Config,
 ) -> Vec<find_peaks::Peak<SampleType>> {
     // normalize inputs
-    let chunks = (m_duration.as_secs_f64() / config.chunk_size.as_secs_f64()).ceil() as usize;
     let overlap_length = (config.overlap_length.as_secs_f64() * sr as f64).round() as usize;
     let chunk_size = (config.chunk_size.as_secs_f64() * sr as f64).round() as usize;
 
-    let mut progress = Progress::new_external_bound(
+    let mut progress = Progress::new_bound(
         m_samples
             .chunked(chunk_size + overlap_length, chunk_size)
             .enumerate(),
         Bar::new("Progress: ".to_owned(), true, config.arrow), // TODO maybe move Bar to config
         0,
-        chunks,
     );
     if let Some(width) = progress_bar::terminal_width() {
         progress.set_max_len(width);
@@ -114,7 +113,7 @@ pub fn calc_chunks<
 
     iter.par_bridge()
         .map(move |(i, chunk)| {
-            let [f1, f2] = OnceCallback::new(&holder);
+            let [f1, f2] = Once::new(&holder);
             f1.call();
 
             let offset = chunk_size * i;
@@ -166,7 +165,7 @@ mod overshadow_tests {
     use find_peaks::Peak;
 
     fn test_data() -> (Peak<f32>, Peak<f32>, Peak<f32>) {
-        let mut peaks = find_peaks::PeakFinder::new(&[0_f32, 0.7, 0.5, 1.0, 0.5, 0.8, 0.0])
+        let mut peaks = find_peaks::PeakFinder::new(&[0f32, 0.7, 0.5, 1.0, 0.5, 0.8, 0.0])
             .with_min_prominence(0.0)
             .find_peaks();
         // println!("{peaks:?}");
@@ -188,7 +187,7 @@ mod overshadow_tests {
     #[test]
     fn distance_dropoff() {
         let (p1, p2, p3) = test_data();
-        let sp1 = Some(p1.clone());
+        let sp1 = Some(p1);
 
         //overshadowning only at correct distance
         assert!(is_overshadowed(&p3, &sp1, 1, Duration::from_secs(3)));
@@ -210,8 +209,8 @@ mod overshadow_tests {
     #[test]
     fn true_peak_not_overshadowed() {
         let (p1, p2, p3) = test_data();
-        let sp2 = Some(p2.clone());
-        let sp3 = Some(p3.clone());
+        let sp2 = Some(p2);
+        let sp3 = Some(p3);
 
         //nothing overshadows p1
         assert!(!is_overshadowed(&p1, &sp2, 1, Duration::from_secs(6)));
@@ -286,6 +285,7 @@ pub struct LibConvolve {
     sample_array: lazy_init::Lazy<Array1<SampleType>>,
 }
 impl LibConvolve {
+    #[must_use]
     pub fn new(sample_data: Box<[SampleType]>) -> Self {
         Self {
             sample_data,
@@ -343,8 +343,8 @@ impl CorrelateAlgo<SampleType> for LibConvolve {
     }
 }
 
-struct MyR2C2C<R: FftNum>(Arc<dyn RealToComplex<R>>, Arc<dyn ComplexToReal<R>>);
-impl<R: FftNum> MyR2C2C<R> {
+struct MyR2C2R<Real>(Arc<dyn RealToComplex<Real>>, Arc<dyn ComplexToReal<Real>>);
+impl<R: FftNum> MyR2C2R<R> {
     fn new(planner: &mut RealFftPlanner<R>, len: usize) -> Self {
         Self(
             Arc::clone(&planner.plan_fft_forward(len)),
@@ -383,6 +383,7 @@ pub struct MyConvolve<R: FftNum> {
     pub use_conjugation: bool,
 }
 impl<R: FftNum + From<f32>> MyConvolve<R> {
+    #[must_use]
     pub fn new_with_planner(planner: RealFftPlanner<R>, sample_data: Box<[R]>) -> Self {
         Self {
             planner: std::sync::Mutex::new(planner),
@@ -391,6 +392,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
             use_conjugation: true,
         }
     }
+    #[must_use]
     pub fn new(sample_data: Box<[R]>) -> Self {
         Self {
             planner: std::sync::Mutex::new(RealFftPlanner::<R>::new()),
@@ -422,7 +424,7 @@ impl<R: FftNum + From<f32>> MyConvolve<R> {
         if !self.use_conjugation {
             sample_and_zeros.reverse();
         }
-        let r2c2r = MyR2C2C::new(&mut self.planner.lock().unwrap(), pad_len);
+        let r2c2r = MyR2C2R::new(&mut self.planner.lock().unwrap(), pad_len);
 
         let mut fft_a = r2c2r.fft(&mut within_and_zeros)?;
         let fft_b = r2c2r.fft(&mut sample_and_zeros)?;
@@ -517,6 +519,8 @@ mod correlate_tests {
 
 #[cfg(test)]
 mod tests {
+    use common::extensions::iter::IteratorExt;
+
     use super::*;
     use itertools::Itertools;
     use std::path::PathBuf;
@@ -534,10 +538,10 @@ mod tests {
         {
             let (s_sr, m_sr);
             (s_sr, s_samples) =
-                crate::mp3_reader::read_mp3(&snippet_path).expect("invalid snippet mp3");
+                crate::matcher::mp3_reader::read_mp3(&snippet_path).expect("invalid snippet mp3");
 
             (m_sr, m_samples) =
-                crate::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
+                crate::matcher::mp3_reader::read_mp3(&snippet_path).expect("invalid main data mp3");
 
             assert!(s_sr == m_sr, "sample rate dosn't match");
             sr = s_sr;
@@ -545,25 +549,24 @@ mod tests {
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
-        let n = crate::mp3_reader::mp3_duration(&main_path, false)
+        let n = crate::matcher::mp3_reader::mp3_duration(&main_path, false)
             .expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(
             sr,
-            m_samples,
-            algo,
-            n,
+            m_samples.with_size((n.as_secs_f64() * sr as f64) as usize),
+            &algo,
             false,
             Config {
                 chunk_size: Duration::from_secs(60),
-                overlap_length: crate::mp3_reader::mp3_duration(&snippet_path, false)
+                overlap_length: crate::matcher::mp3_reader::mp3_duration(&snippet_path, false)
                     .expect("couln't refind snippet data file")
                     / 2,
                 peak_config: PeakConfig {
                     distance: Duration::from_secs(8 * 60),
                     prominence: 15. as SampleType,
                 },
-                arrow: Box::<SimpleArrow<2>>::default(),
+                arrow: Box::<Simple<2>>::default(),
             },
         );
         assert!(peaks

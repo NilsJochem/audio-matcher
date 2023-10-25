@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use audio_matcher::{args::Arguments, audio_matcher::CorrelateAlgo};
+use ::audio_matcher::matcher::{
+    args::Arguments,
+    audio_matcher::{self, CorrelateAlgo, Mode},
+    mp3_reader,
+};
 use clap::Parser;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
@@ -23,12 +27,12 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 // }
 
 fn correlate_vs_bib(c: &mut Criterion) {
-    let mode = audio_matcher::audio_matcher::Mode::Valid;
-    let data1: Vec<f32> = audio_matcher::audio_matcher::test_data(100..150);
-    let data2: Vec<f32> = audio_matcher::audio_matcher::test_data(-2000..2000);
+    let mode = Mode::Valid;
+    let data1: Vec<f32> = audio_matcher::test_data(100..150);
+    let data2: Vec<f32> = audio_matcher::test_data(-2000..2000);
 
-    let my_algo = audio_matcher::audio_matcher::MyConvolve::new(data1.clone().into());
-    let lib_algo = audio_matcher::audio_matcher::LibConvolve::new(data1.into());
+    let my_algo = audio_matcher::MyConvolve::new(data1.clone().into());
+    let lib_algo = audio_matcher::LibConvolve::new(data1.into());
 
     let mut group = c.benchmark_group("correlate_vs_bib");
     group.bench_function("correlate my func", |b| {
@@ -49,10 +53,10 @@ fn correlate_vs_bib(c: &mut Criterion) {
 }
 
 fn correlate_vs_conj(c: &mut Criterion) {
-    let mode = audio_matcher::audio_matcher::Mode::Valid;
-    let data1: Vec<f32> = audio_matcher::audio_matcher::test_data(100..150);
-    let data2: Vec<f32> = audio_matcher::audio_matcher::test_data(-2000..2000);
-    let mut my_algo = audio_matcher::audio_matcher::MyConvolve::new(data1.into());
+    let mode = Mode::Valid;
+    let data1: Vec<f32> = audio_matcher::test_data(100..150);
+    let data2: Vec<f32> = audio_matcher::test_data(-2000..2000);
+    let mut my_algo = audio_matcher::MyConvolve::new(data1.into());
 
     let mut group = c.benchmark_group("correlate_vs_conj");
 
@@ -78,22 +82,25 @@ fn full_match_duration_vs(c: &mut Criterion) {
     let mut group = c.benchmark_group("compare_chunk_sizes");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(60));
-    let input = Arguments::parse_from([
+    let args = [
         "",
         "res/local/small_test.mp3",
         "--snippet",
         "res/local/Interlude.mp3",
         "--no-out",
         "--dry-run",
+        "--silent",
         "-n",
-    ]);
+    ];
     for distance in [8, 20, 60, 120] {
-        let mut input = input.clone();
-        input.distance = distance;
+        let input = Arguments::parse_from(
+            args.into_iter()
+                .chain(["--distance", &distance.to_string()]),
+        );
         group.bench_with_input(
             BenchmarkId::new("peaks in small_test", distance),
             &input,
-            |b, args| b.iter(|| audio_matcher::run(black_box(args.clone()))),
+            |b, args| b.iter(|| ::audio_matcher::matcher::run(black_box(args))),
         );
     }
 
@@ -109,12 +116,13 @@ fn mp3_duration_vs_parallel(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("get_mp3_duration", parallel),
             &parallel,
-            |b, args| b.iter(|| audio_matcher::mp3_reader::mp3_duration(black_box(&input), black_box(*args)).unwrap()),
+            |b, args| {
+                b.iter(|| mp3_reader::mp3_duration(black_box(&input), black_box(*args)).unwrap())
+            },
         );
     }
 
     group.finish();
-
 }
 
 fn read_mp3(c: &mut Criterion) {
@@ -122,13 +130,16 @@ fn read_mp3(c: &mut Criterion) {
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(240));
     let input = "res/local/small_test.mp3";
-    group.bench_function(
-        "read_mp3",
-        |b| b.iter(|| audio_matcher::mp3_reader::read_mp3(black_box(&input)).unwrap().1.collect::<Vec<_>>()),
-    );
+    group.bench_function("read_mp3", |b| {
+        b.iter(|| {
+            mp3_reader::read_mp3(black_box(&input))
+                .unwrap()
+                .1
+                .collect::<Vec<_>>()
+        })
+    });
 
     group.finish();
-
 }
 
 criterion_group!(
