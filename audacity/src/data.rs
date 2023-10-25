@@ -59,9 +59,12 @@ impl TimeLabel {
     ///
     /// # Errors
     /// forwards the [`std::io::Error`] of writing `path`
-    pub fn write<P, Iter>(lables: Iter, path: P, dry_run: bool) -> Result<(), std::io::Error>
+    pub fn write<Iter>(
+        lables: Iter,
+        path: impl AsRef<Path>,
+        dry_run: bool,
+    ) -> Result<(), std::io::Error>
     where
-        P: AsRef<Path>,
         Iter: IntoIterator<Item = Self>,
     {
         let out = lables.into_iter().map(|it| it.to_string()).join("\n");

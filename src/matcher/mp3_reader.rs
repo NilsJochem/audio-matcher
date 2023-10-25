@@ -2,7 +2,7 @@ use itertools::Itertools;
 use log::trace;
 use minimp3::{Decoder, Frame};
 use rayon::prelude::*;
-use std::{fs::File, time::Duration};
+use std::{fs::File, path::Path, time::Duration};
 
 use crate::matcher::errors::CliError::{self, NoFile, NoMp3};
 
@@ -10,10 +10,10 @@ pub type SampleType = f32;
 
 // because all samples are 16 bit usage of a single factor is adequat
 const PCM_FACTOR: SampleType = 1.0 / ((1 << 16) - 1) as SampleType;
-pub fn read_mp3<P>(path: &P) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), CliError>
-where
-    P: AsRef<std::path::Path>,
-{
+pub fn read_mp3(
+    path: impl AsRef<Path>,
+) -> Result<(u16, impl Iterator<Item = SampleType> + 'static), CliError> {
+    let path = path.as_ref();
     let file = File::open(path).map_err(|_| NoFile(path.into()))?;
     let (sample_rate, iter) = frame_iterator(Decoder::new(file)).map_err(|_| NoMp3(path.into()))?;
 
@@ -65,12 +65,10 @@ fn frame_iterator(
     ))
 }
 
-pub fn mp3_duration<P>(path: &P, use_parallel: bool) -> Result<Duration, CliError>
-where
-    P: AsRef<std::path::Path>,
-{
+pub fn mp3_duration(path: impl AsRef<Path>, use_parallel: bool) -> Result<Duration, CliError> {
     use crate::worker::tagger;
-    let tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), false).ok();
+    let path = path.as_ref();
+    let tag = tagger::TaggedFile::from_path(path.to_path_buf(), false).ok();
     // first try reading from tags or with external bibliothek
     if let Some(duration) = tag
         .as_ref()
@@ -101,7 +99,7 @@ where
             .sum()
     });
     // save duration in tags, read new, in case somthing changed
-    let mut tag = tagger::TaggedFile::from_path(path.as_ref().to_path_buf(), true)
+    let mut tag = tagger::TaggedFile::from_path(path.to_path_buf(), true)
         .map_err(|err| CliError::ID3(path.into(), err))?;
     tag.set::<tagger::Length>(duration);
     tag.save_changes(false)
@@ -116,7 +114,7 @@ mod tests {
     #[test]
     fn short_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/local/Interlude.mp3", false)
+            mp3_duration("res/local/Interlude.mp3", false)
                 .unwrap()
                 .as_secs(),
             7
@@ -126,7 +124,7 @@ mod tests {
     #[ignore = "slow"]
     fn long_mp3_duration() {
         assert_eq!(
-            mp3_duration(&"res/local/big_test.mp3", false)
+            mp3_duration("res/local/big_test.mp3", false)
                 .unwrap()
                 .as_secs(),
             (3 * 60 + 20) * 60 + 55
@@ -136,7 +134,7 @@ mod tests {
     #[test]
     fn short_mp3_samples() {
         assert_eq!(
-            read_mp3(&"res/local/Interlude.mp3").unwrap().1.count(),
+            read_mp3("res/local/Interlude.mp3").unwrap().1.count(),
             323_712
         );
     }
@@ -145,7 +143,7 @@ mod tests {
     #[ignore = "slow"]
     fn long_mp3_samples() {
         assert_eq!(
-            read_mp3(&"res/local/big_test.mp3").unwrap().1.count(),
+            read_mp3("res/local/big_test.mp3").unwrap().1.count(),
             531_668_736
         );
     }

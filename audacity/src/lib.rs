@@ -517,7 +517,7 @@ impl<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin> AudacityApiGener
     /// # Errors
     ///  - when write/send errors
     ///  - [`Error::AudacityErr`] when path is not a valid audio file (probably)
-    pub async fn import_audio<P: AsRef<Path> + Send>(&mut self, path: P) -> Result<(), Error> {
+    pub async fn import_audio(&mut self, path: impl AsRef<Path> + Send) -> Result<(), Error> {
         let path = path
             .as_ref()
             .canonicalize()

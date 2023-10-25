@@ -76,16 +76,14 @@ impl Archive {
             .expect("glob pattern failed")
             .filter_map(|entry| {
                 let entry = entry.expect("couldn't read globbet file");
-                let source = match Source::from_path(&entry) {
-                    Ok(s) => s,
+                match Source::from_path(&entry) {
+                    Ok(source) => Some((source, TimeLabel::read(&entry).ok()?.into_iter())),
                     Err(kind) => {
                         warn!("failed to parse source {entry:?} from filename because {kind:?}");
-                        return None;
+                        None
                     }
-                };
-                Some((source, TimeLabel::read(&entry).ok()?.into_iter()))
+                }
             });
-
         Self::from(tmp)
     }
 
@@ -492,7 +490,7 @@ pub enum SourceErrorKind {
 impl Source {
     const FILE_DATE_FMT: &str = "%Y_%m_%d";
     const DISPLAY_DATE_FMT: &str = "%Y-%m-%d";
-    pub fn from_path<P: AsRef<Path>>(value: &P) -> Result<Self, SourceErrorKind> {
+    pub fn from_path(value: impl AsRef<Path>) -> Result<Self, SourceErrorKind> {
         let path = value.as_ref().with_extension("");
         let file_name = path.file_name().ok_or(SourceErrorKind::NotAFile)?;
         file_name
@@ -637,7 +635,7 @@ mod test {
                     station: "89.0rtl".to_owned(),
                     date: NaiveDate::from_ymd_opt(2023, 6, 17).unwrap()
                 }),
-                Source::from_path(&"/89.0rtl-2023_06_17.mp3")
+                Source::from_path("/89.0rtl-2023_06_17.mp3")
             );
             assert_eq!(
                 Ok(Source {

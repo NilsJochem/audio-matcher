@@ -549,7 +549,7 @@ mod tests {
         let algo = LibConvolve::new(s_samples.collect::<Box<[_]>>());
         println!("prepared data");
 
-        let n = crate::matcher::mp3_reader::mp3_duration(&main_path, false)
+        let n = crate::matcher::mp3_reader::mp3_duration(main_path, false)
             .expect("couln't refind main data file");
         println!("got duration");
         let peaks = calc_chunks(

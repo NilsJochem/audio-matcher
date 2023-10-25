@@ -32,8 +32,8 @@ pub enum CliError {
 // a wrapper for paths, that has display
 pub struct PathWrap(Box<dyn AsRef<std::path::Path>>);
 
-impl<A: AsRef<Path>> From<A> for PathWrap {
-    fn from(value: A) -> Self {
+impl<P: AsRef<Path>> From<P> for PathWrap {
+    fn from(value: P) -> Self {
         Self(Box::new(value.as_ref().to_path_buf()))
     }
 }

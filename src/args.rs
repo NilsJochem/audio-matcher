@@ -164,10 +164,11 @@ pub mod autocompleter {
             }
         }
         #[allow(clippy::should_implement_trait)] // will prob change signature
-        pub fn from_iter<S: ToString, T: IntoIterator<Item = S>>(
-            iter: T,
-            filter: impl StrFilter + 'static,
-        ) -> Self {
+        pub fn from_iter<Iter>(iter: Iter, filter: impl StrFilter + 'static) -> Self
+        where
+            Iter: IntoIterator,
+            Iter::Item: ToString,
+        {
             Self::new(
                 iter.into_iter().map(|it| it.to_string()).collect_vec(),
                 filter,
