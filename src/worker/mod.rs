@@ -10,7 +10,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     ffi::OsString,
-    fmt::Write,
+    fmt::{Debug, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -93,11 +93,9 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
 
         // start rename
         if !args.skip_name() {
-            let _ = args
-                .always_answer()
-                .input("press enter when you are ready to start renaming", None);
+            let _ = Inputs::input("press enter when you are ready to start renaming", None);
             rename_labels(args, audacity_api, m_index.as_mut()).await?;
-            adjust_labels(args, audacity_api).await?;
+            adjust_labels(audacity_api).await?;
 
             audacity_api
                 .export_all_labels_to(label_path, args.dry_run())
@@ -112,7 +110,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             audacity::TrackHint::LabelTrackNr(0),
         )
         .await?;
-        let _ = args.always_answer().input(
+        let _ = Inputs::input(
             "remove all lables you don't want to remove and then press enter to start exporting",
             None,
         );
@@ -181,30 +179,57 @@ async fn prepare_project(
 
 #[derive(Debug)]
 pub struct ChapterCompleter<'a> {
-    index: &'a Index<'a>,
+    index: Box<dyn ChapterList + 'a + Send + Sync>,
     filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
 }
 impl<'a> ChapterCompleter<'a> {
     pub fn new(
-        index: &'a Index<'a>,
+        index: impl ChapterList + 'a + Send + Sync,
         filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
     ) -> Self {
-        Self::new_boxed(index, Box::new(filter))
+        Self::new_boxed(Box::new(index), Box::new(filter))
     }
 
     #[must_use]
     pub fn new_boxed(
-        index: &'a Index<'a>,
+        index: Box<dyn ChapterList + 'a + Send + Sync>,
         filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
     ) -> Self {
         Self { index, filter }
     }
     #[must_use]
-    pub const fn index(&self) -> &Index<'a> {
-        self.index
+    pub fn index(&self) -> &dyn ChapterList {
+        self.index.as_ref()
     }
     fn filter(&self) -> &dyn crate::args::autocompleter::StrFilter {
         self.filter.as_ref()
+    }
+}
+
+pub trait ChapterList: Debug {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn get(&self, nr: ChapterNumber) -> Option<Cow<'_, str>>;
+    fn chapter_iter(&self) -> Box<(dyn Iterator<Item = (ChapterNumber, Cow<'_, str>)> + '_)>;
+}
+
+impl<'a> ChapterList for &'a Index<'a> {
+    fn len(&self) -> usize {
+        Index::main_len(self)
+    }
+
+    fn get(&self, nr: ChapterNumber) -> Option<Cow<'_, str>> {
+        Index::try_get(self, nr).map(|it| it.title)
+    }
+
+    fn chapter_iter(&self) -> Box<(dyn Iterator<Item = (ChapterNumber, Cow<'_, str>)> + '_)> {
+        Box::new(
+            Index::chapter_iter(self)
+                .enumerate()
+                .map(|(i, entry)| (ChapterNumber::from(i), entry.title)),
+        )
     }
 }
 
@@ -215,15 +240,15 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
                 if number.is_maybe {
                     // number ends  with '?', so nothing more will come
                     self.index()
-                        .try_get(number)
+                        .get(number)
                         .map_or_else(Vec::new, |it| vec![(number, it)])
                 } else {
                     // find all possible numbers starting with current input
-                    (0..self.index().main_len())
+                    (0..self.index().len())
                         .filter_map(|i| {
                             i.to_string().starts_with(&number.nr.to_string()).then(|| {
                                 let number = ChapterNumber::new(i, false);
-                                (number, self.index().get(number))
+                                (number, self.index().get(number).unwrap())
                             })
                         })
                         .collect_vec()
@@ -232,13 +257,11 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
             Err(_) => self
                 .index()
                 .chapter_iter()
-                .enumerate()
-                .filter(|(_, option)| self.filter().filter(&option.title, input))
-                .map(|(i, chapter)| (ChapterNumber::new(i + 1, false), chapter.clone()))
+                .filter(|(_, option)| self.filter().filter(option, input))
                 .collect_vec(),
         }
         .into_iter()
-        .map(|(i, chapter)| format!("{i} {}", chapter.title))
+        .map(|(i, chapter)| format!("{i} {chapter}"))
         .collect_vec())
     }
 
@@ -263,7 +286,7 @@ async fn rename_labels(
 
     let (series, index) = read_index_from_args(args, m_index).await?;
     let index = index.as_deref();
-    let mut ac = index.as_ref().map(|index| {
+    let mut ac = index.as_ref().map(|&index| {
         // TODO better filter
         ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
     });
@@ -302,7 +325,7 @@ async fn rename_labels(
         expected_next_chapter_number = Some(chapter_number.next());
 
         let chapter_name = index.map_or_else(
-            || Cow::Owned(request_next_chapter_name(args)),
+            || Cow::Owned(request_next_chapter_name()),
             |it| it.get(chapter_number).title,
         );
 
@@ -341,7 +364,7 @@ pub async fn read_index_from_args<'a, 'b>(
     const MSG: &str = "Welche Serie ist heute dran: ";
 
     let series = m_index.as_ref().map_or_else(
-        || args.always_answer().input(MSG, None),
+        || Inputs::input(MSG, None),
         |m_index| {
             let known = m_index
                 .get_possible()
@@ -412,10 +435,7 @@ pub async fn read_index_from_args<'a, 'b>(
     Ok((series, index))
 }
 
-pub async fn adjust_labels(
-    args: &Arguments,
-    audacity: &mut AudacityApi,
-) -> Result<(), audacity::Error> {
+pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
     let labels = audacity.get_label_info().await?; // get new labels
 
     for element in labels.values().flatten().open_border_pairs() {
@@ -435,7 +455,7 @@ pub async fn adjust_labels(
             )
             .await?;
 
-        let _ = args.always_answer().input(
+        let _ = Inputs::input(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
             None,
         );
@@ -635,9 +655,8 @@ where
         .collect_vec()
 }
 
-fn request_next_chapter_name(args: &Arguments) -> String {
-    args.always_answer()
-        .input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
+fn request_next_chapter_name() -> String {
+    Inputs::input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
 }
 
 fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> usize {

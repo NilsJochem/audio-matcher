@@ -23,6 +23,7 @@
     clippy::missing_panics_doc,
     clippy::single_match_else,
     clippy::option_if_let_else,
+    clippy::must_use_candidate,
     clippy::too_many_lines
 )]
 

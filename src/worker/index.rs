@@ -328,13 +328,14 @@ impl<'a> Index<'a> {
         }
     }
     #[must_use]
-    pub fn chapter_iter(&'a self) -> Box<dyn Iterator<Item = &ChapterEntry> + 'a> {
-        match &self.part {
+    pub fn chapter_iter(&'a self) -> Box<dyn Iterator<Item = ChapterEntry> + 'a> {
+        let iter: Box<dyn Iterator<Item = _>> = match &self.part {
             IndexPart::Direct { chapters } => Box::new(chapters.main.iter()),
             IndexPart::SubSeries { subseries } => {
                 Box::new(subseries.iter().flat_map(|it| it.chapters.iter()))
             }
-        }
+        };
+        Box::new(iter.map(|entry| self.fill(entry)))
     }
     #[allow(dead_code)]
     #[must_use]

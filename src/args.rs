@@ -47,24 +47,63 @@ impl Inputs {
         &self,
         msg: impl AsRef<str>,
         default: Option<T>,
-        mut map: impl FnMut(String) -> Option<T>,
+        map: impl FnMut(String) -> Option<T>,
     ) -> Option<T> {
-        print!("{}", msg.as_ref());
-        for _ in 0..self.trys {
+        Self::inner_read(
+            msg,
+            default,
+            Some("couldn't parse that, please try again: "),
+            map,
+            0..self.trys,
+        )
+    }
+    pub fn map_input<T>(
+        msg: impl AsRef<str>,
+        default: impl Into<Option<T>>,
+        retry_msg: Option<impl AsRef<str>>,
+        map: impl FnMut(String) -> Option<T>,
+    ) -> T {
+        Self::inner_read(msg, default, retry_msg, map, 1..).unwrap_or_else(|| unreachable!())
+    }
+
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)]
+    fn inner_read<T>(
+        msg: impl AsRef<str>,
+        default: impl Into<Option<T>>,
+        retry_msg: Option<impl AsRef<str>>,
+        mut map: impl FnMut(String) -> Option<T>,
+        trys: impl IntoIterator<Item = u8>,
+    ) -> Option<T> {
+        let default = default.into();
+        let retry_msg = retry_msg.as_ref().map(std::convert::AsRef::as_ref);
+
+        let msg = msg.as_ref();
+        print!("{msg}");
+        for _ in trys {
             let rin: String = text_io::read!("{}\n");
             if default.is_some() && rin.is_empty() {
                 return default;
             }
-            match map(rin) {
-                Some(t) => return Some(t),
-                None => print!("couldn't parse that, please try again: "),
+            match (map(rin), retry_msg) {
+                (Some(t), _) => return Some(t),
+                (None, Some(retry_msg)) => println!("{retry_msg}"),
+                (None, None) => print!("{msg}"),
             }
         }
         None
     }
+
+    // TODO remove trys from Self
+    const A: Self = Self {
+        yes: false,
+        no: false,
+        trys: 1,
+    };
     #[must_use]
-    pub fn input(&self, msg: impl AsRef<str>, default: Option<String>) -> String {
-        self.try_input(msg, default, Some)
+    pub fn input(msg: impl AsRef<str>, default: Option<String>) -> String {
+        Self::A
+            .try_input(msg, default, Some)
             .unwrap_or_else(|| unreachable!())
     }
 

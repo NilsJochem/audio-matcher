@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::{OsStr, OsString},
     fmt::{Display, Write},
@@ -17,7 +18,10 @@ use log::{debug, warn};
 use regex::Regex;
 use thiserror::Error;
 
-use crate::matcher::{mp3_reader::SampleType, start_as_duration};
+use crate::{
+    matcher::{mp3_reader::SampleType, start_as_duration},
+    worker::ChapterList,
+};
 use common::extensions::vec::FindOrPush;
 
 #[must_use]
@@ -125,19 +129,15 @@ impl Archive {
                     continue;
                 };
 
-                let series = {
-                    archive.data.find_or_push_else(
-                        || Series::new(series_name.to_owned()),
-                        |it| it.name == series_name,
-                    )
-                };
+                let series = archive.data.find_or_push_else(
+                    || Series::new(series_name.to_owned()),
+                    |it| it.name == series_name,
+                );
 
-                let chapter = {
-                    series.chapters.find_or_push_else(
-                        || Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned)),
-                        |it| it.nr == ch_nr,
-                    )
-                };
+                let chapter = series.chapters.find_or_push_else(
+                    || Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned)),
+                    |it| it.nr == ch_nr,
+                );
 
                 chapter
                     .parts
@@ -165,6 +165,7 @@ impl Archive {
             print_all,
         }
     }
+
     #[must_use]
     pub fn get_element(&self, identifier: &str, just_series: bool) -> Option<ArchiveSearchResult> {
         lazy_static! {
@@ -184,8 +185,8 @@ impl Archive {
                     .map(|s| s.as_str().parse::<usize>().unwrap());
 
                 let found_s = &self.data[series_nr - 1];
-                if !just_series {
-                    if let Some(chapter_nr) = chapter_nr {
+                match chapter_nr {
+                    Some(chapter_nr) if !just_series => {
                         let res = found_s
                             .chapters
                             .iter()
@@ -197,10 +198,10 @@ impl Archive {
                                 found_s.name
                             );
                         }
-                        return res;
+                        res
                     }
+                    _ => Some(ArchiveSearchResult::Series(found_s)),
                 }
-                Some(ArchiveSearchResult::Series(found_s))
             }
             None => self
                 .get_series_by_name(identifier)
@@ -213,6 +214,24 @@ impl Archive {
         self.data.iter().find(|x| x.name == identifier)
     }
 }
+
+impl ChapterList for Series {
+    fn len(&self) -> usize {
+        self.chapters.len()
+    }
+
+    fn get(&self, nr: ChapterNumber) -> Option<Cow<'_, str>> {
+        self.chapters.iter().find(|c| c.nr == nr).map(get_name_cow)
+    }
+
+    fn chapter_iter(&self) -> Box<(dyn Iterator<Item = (ChapterNumber, Cow<'_, str>)> + '_)> {
+        Box::new(self.chapters.iter().map(|c| (c.nr, get_name_cow(c))))
+    }
+}
+fn get_name_cow(c: &Chapter) -> Cow<'_, str> {
+    Cow::Borrowed(c.name.as_deref().unwrap_or("<unnamed>"))
+}
+
 pub struct ArchiveDisplay<'a> {
     archive: &'a Archive,
     indent: &'a str,
@@ -221,6 +240,7 @@ pub struct ArchiveDisplay<'a> {
 }
 impl<'a> Display for ArchiveDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use itertools::Position as Pos;
         let pad_len = self
             .print_index
             .then(|| (self.archive.data.len() as f64).log10().ceil() as usize);
@@ -235,15 +255,13 @@ impl<'a> Display for ArchiveDisplay<'a> {
                 "{}",
                 series.as_display(&format!("{pad}{}", self.indent), self.print_all)
             )?;
-            match pos {
-                itertools::Position::First | itertools::Position::Middle => f.write_char('\n')?,
-                _ => {}
+            if let Pos::First | Pos::Middle = pos {
+                f.write_char('\n')?;
             }
         }
         Ok(())
     }
 }
-
 pub enum ArchiveSearchResult<'a> {
     Series(&'a Series),
     Chapter(&'a Chapter),
@@ -351,16 +369,13 @@ impl<'a> Display for ChapterDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}",
+            "{} - ",
             self.chapter.nr.as_display(self.r_just, self.l_just)
         )?;
-        f.write_str(" - ")?;
         if let Some(name) = &self.chapter.name {
             write!(f, "{name} ")?;
         }
-        f.write_char('[')?;
-        f.write_str(&self.chapter.parts.keys().sorted().join(", "))?;
-        f.write_char(']')?;
+        write!(f, "[{}]", &self.chapter.parts.keys().sorted().join(", "))?;
         Ok(())
     }
 }
