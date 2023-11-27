@@ -523,10 +523,8 @@ mod tests {
             MultiIndex::new("/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current".into()).await;
         assert_eq!(
             vec![
-                "Dalans Prophezeiung: Das Verm\u{e4}chtnis der Peldrin",
-                "Dalans Prophezeiung: I Ein dunkler Funke",
-                "Dalans Prophezeiung: II Ein schwarzes Feuer",
-                "Dalans Prophezeiung: III Eine wei\u{df}e Glut",
+                "Die Letzte Fahrt der Nautilus",
+                "Goldagengarden",
                 "Gruselkabinett",
                 "Sherlock Holmes",
                 "test"
