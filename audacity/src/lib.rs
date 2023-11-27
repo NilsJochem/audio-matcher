@@ -190,15 +190,29 @@ impl LaunchError {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Config {
-    program: String,
-    arg: Option<String>,
+    pub program: String,
+    // TODO maybe change to list of args
+    pub arg: Option<String>,
+    /// the length of time until the process is assumed to not be a launcher. The Programm will no longer wait for an exit code.
+    #[serde(default = "Config::default_timeout")]
+    #[serde(skip_serializing_if = "Config::is_default_timeout")]
+    pub timeout: Duration,
 }
-
+impl Config {
+    const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
+    const fn default_timeout() -> Duration {
+        Self::DEFAULT_TIMEOUT
+    }
+    fn is_default_timeout(it: &Duration) -> bool {
+        is_near_to(*it, Self::DEFAULT_TIMEOUT, Duration::from_millis(1))
+    }
+}
 impl Default for Config {
     fn default() -> Self {
         Self {
             program: "gtk4-launch".to_owned(),
             arg: Some("audacity".to_owned()),
+            timeout: Self::default_timeout(),
         }
     }
 }
@@ -247,6 +261,10 @@ impl AudacityApi {
 
     /// Launches Audacity.
     ///
+    /// Will return a handle to the running process or None if it did already exit.
+    /// This can be ignored/dropped to keep it running until the main program stops
+    /// or aborted to stop the running progress.
+    ///
     /// # Panics
     /// can panic, when loading of config fails.
     ///
@@ -254,17 +272,35 @@ impl AudacityApi {
     /// - [`LaunchError::IO`] when executing the commant failed
     /// - [`LaunchError::Failed`] when the launcher exited with an statuscode != 0
     /// - [`LaunchError::Terminated`] when the launcher was terminated by a signal
-    pub async fn launch(config: impl Into<Option<Config>> + Send) -> Result<(), LaunchError> {
-        let config = config.into().unwrap_or_else(Self::load_config);
-        // TODO allow command to run in background wenn, for example, not using gtk-launch
-        let mut command = tokio::process::Command::new(config.program);
-        if let Some(arg) = config.arg {
-            command.arg(arg);
+    #[allow(clippy::redundant_pub_crate)] // lint is triggered inside select!
+    pub async fn launch(
+        config: impl Into<Option<Config>> + Send,
+    ) -> Result<Option<tokio::task::JoinHandle<Result<(), LaunchError>>>, LaunchError> {
+        let config = config
+            .into()
+            .unwrap_or_else(|| Self::load_config().unwrap());
+        let mut future = Box::pin(async move {
+            let mut command = tokio::process::Command::new(config.program);
+            if let Some(arg) = config.arg {
+                command.arg(arg);
+            }
+            command.kill_on_drop(true);
+            LaunchError::from_status_code(command.status().await?.code())
+        });
+        trace!("waiting for audacity launcher");
+        tokio::select! {
+            result = &mut future => {
+                trace!("audacity launcher finished");
+                result.map(|_| None)
+            }
+            _ = tokio::time::sleep(config.timeout) => {
+                debug!("audacity launcher still running");
+                Ok(Some(tokio::spawn(future)))
+            }
         }
-        LaunchError::from_status_code(command.output().await?.status.code())
     }
-    fn load_config() -> Config {
-        confy::load::<Config>("audio-matcher", "audacity").unwrap()
+    fn load_config() -> Result<Config, confy::ConfyError> {
+        confy::load::<Config>("audio-matcher", "audacity")
     }
 
     /// creates a new Instance of `AudacityApi` for linux.
