@@ -190,15 +190,15 @@ impl LaunchError {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Config {
-    launcher: String,
-    audacity_app_name: String,
+    program: String,
+    arg: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            launcher: "gtk4-launch".to_owned(),
-            audacity_app_name: "audacity".to_owned(),
+            program: "gtk4-launch".to_owned(),
+            arg: Some("audacity".to_owned()),
         }
     }
 }
@@ -256,14 +256,12 @@ impl AudacityApi {
     /// - [`LaunchError::Terminated`] when the launcher was terminated by a signal
     pub async fn launch(config: impl Into<Option<Config>> + Send) -> Result<(), LaunchError> {
         let config = config.into().unwrap_or_else(Self::load_config);
-        LaunchError::from_status_code(
-            tokio::process::Command::new(config.launcher)
-                .arg(config.audacity_app_name)
-                .output()
-                .await?
-                .status
-                .code(),
-        )
+        // TODO allow command to run in background wenn, for example, not using gtk-launch
+        let mut command = tokio::process::Command::new(config.program);
+        if let Some(arg) = config.arg {
+            command.arg(arg);
+        }
+        LaunchError::from_status_code(command.output().await?.status.code())
     }
     fn load_config() -> Config {
         confy::load::<Config>("audio-matcher", "audacity").unwrap()
