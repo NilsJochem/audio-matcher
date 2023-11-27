@@ -114,9 +114,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             "remove all lables you don't want to remove and then press enter to start exporting",
             None,
         );
-        audacity_api
-            .write_assume_empty(audacity::command::ExportMultiple)
-            .await?;
+        //TODO find out how to fix "Ihr Stapelverarbeitungs-Befehl ExportAudio wurde nicht erkannt."
+        // audacity_api
+        //     .write_assume_empty(audacity::command::ExportAudio)
+        //     .await?;
 
         let (mut tags, missing) = tags
             .into_iter()

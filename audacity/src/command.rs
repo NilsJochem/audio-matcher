@@ -195,7 +195,9 @@ pub enum NoOut<'a> {
 
     ImportLabels,
     ExportLabels,
-    ExportMultiple,
+
+    #[cfg_attr(feature = "aud_v_3_3_x", command(name = "ExportMultiple"))]
+    ExportAudio,
     Import2 {
         #[command(display_with = "filename.display()")]
         filename: &'a Path,
