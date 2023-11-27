@@ -22,7 +22,7 @@ use crate::{
     matcher::{mp3_reader::SampleType, start_as_duration},
     worker::ChapterList,
 };
-use common::extensions::vec::FindOrPush;
+use common::extensions::{iter::IteratorExt, vec::FindOrPush};
 
 #[must_use]
 pub fn build_timelabel_name<S1: AsRef<OsStr>, S2: AsRef<OsStr>>(
@@ -60,9 +60,9 @@ where
     peaks
         .map(move |p| start_as_duration(p, sr))
         .tuple_windows()
-        .enumerate()
+        .lzip(1..)
         .map(move |(i, (start, end))| {
-            TimeLabel::new_with_pattern(start + delay_start, end, i + 1, name_pattern)
+            TimeLabel::new_with_pattern(start + delay_start, end, i, name_pattern)
         })
 }
 #[derive(Debug, Clone)]

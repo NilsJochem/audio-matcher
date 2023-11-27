@@ -2,10 +2,16 @@
 pub trait IteratorExt: Iterator + Sized {
     /// creates an [`ExactSizeIterator`] from `self` with `size`
     fn with_size(self, size: usize) -> ExactSizeWrapper<Self>;
+    /// zips `other` to the left og `self`
+    fn lzip<I: Iterator>(self, other: I) -> std::iter::Zip<I, Self>;
 }
 impl<Iter: Iterator> IteratorExt for Iter {
     fn with_size(self, size: usize) -> ExactSizeWrapper<Self> {
         ExactSizeWrapper::new(self, size)
+    }
+    #[inline]
+    fn lzip<I: Iterator>(self, other: I) -> std::iter::Zip<I, Self> {
+        other.zip(self)
     }
 }
 /// extentions for all Iterators over [futures](core::future::Future)

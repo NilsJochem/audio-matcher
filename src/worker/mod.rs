@@ -1,6 +1,6 @@
 use audacity::AudacityApi;
 use common::extensions::{
-    iter::{CloneIteratorExt, FutIterExt, State},
+    iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
     vec::PushReturn,
 };
 use futures::TryFutureExt;
@@ -228,7 +228,7 @@ impl<'a> ChapterList for &'a Index<'a> {
     fn chapter_iter(&self) -> Box<(dyn Iterator<Item = (ChapterNumber, Cow<'_, str>)> + '_)> {
         Box::new(
             Index::chapter_iter(self)
-                .enumerate()
+                .lzip(1..)
                 .map(|(i, entry)| (ChapterNumber::from(i), entry.title)),
         )
     }
@@ -616,9 +616,9 @@ async fn merge_parts<'a>(
             // don't add only label at 0
             for (i, offset) in std::iter::once(Duration::ZERO)
                 .chain(offsets.into_iter())
-                .enumerate()
+                .lzip(1..)
             {
-                tag.set_chapter(i, offset, Some(&format!("Part {}", i + 1)));
+                tag.set_chapter(i, offset, Some(&format!("Part {i}")));
             }
         }
     }

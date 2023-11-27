@@ -109,11 +109,11 @@ fn print_offsets(peaks: &[find_peaks::Peak<SampleType>], sr: u16) {
     if peaks.is_empty() {
         info!("no offsets found");
     }
-    for (i, peak) in peaks.iter().enumerate() {
+    for (i, peak) in peaks.iter().lzip(1..) {
         let duration = start_as_duration(peak, sr);
         info!(
             "Offset {}: {:0>2}:{:0>2}:{:0>2} with prominence {}",
-            i + 1,
+            i,
             duration.hours(),
             duration.minutes(),
             duration.seconds(),
