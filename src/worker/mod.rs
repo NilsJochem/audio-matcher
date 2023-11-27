@@ -93,7 +93,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
 
         // start rename
         if !args.skip_name() {
-            let _ = Inputs::input("press enter when you are ready to start renaming", None);
+            let _ = Inputs::read("press enter when you are ready to start renaming", None);
             rename_labels(args, audacity_api, m_index.as_mut()).await?;
             adjust_labels(audacity_api).await?;
 
@@ -110,7 +110,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             audacity::TrackHint::LabelTrackNr(0),
         )
         .await?;
-        let _ = Inputs::input(
+        let _ = Inputs::read(
             "remove all lables you don't want to remove and then press enter to start exporting",
             None,
         );
@@ -298,7 +298,7 @@ async fn rename_labels(
         const MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
         let chapter_number = match ac.as_mut() {
             Some(index) => {
-                let input = Inputs::input_with_suggestion(
+                let input = Inputs::read_with_suggestion(
                     format!("{MSG}: "),
                     expected_next_chapter_number
                         .map(|it| it.to_string())
@@ -311,7 +311,7 @@ async fn rename_labels(
                     .parse::<ChapterNumber>()
                     .ok()
             }
-            None => args.always_answer().try_input(
+            None => args.always_answer().try_read(
                 &format!(
                     "{MSG}{}: ",
                     expected_next_chapter_number
@@ -364,14 +364,14 @@ pub async fn read_index_from_args<'a, 'b>(
     const MSG: &str = "Welche Serie ist heute dran: ";
 
     let series = m_index.as_ref().map_or_else(
-        || Inputs::input(MSG, None),
+        || Inputs::read(MSG, None),
         |m_index| {
             let known = m_index
                 .get_possible()
                 .into_iter()
                 .map(|it| it.to_str().expect("only UTF-8").to_owned())
                 .collect_vec();
-            Inputs::input_with_suggestion(
+            Inputs::read_with_suggestion(
                 MSG,
                 None,
                 crate::args::autocompleter::VecCompleter::new(
@@ -408,7 +408,7 @@ pub async fn read_index_from_args<'a, 'b>(
         None => {
             let path = args
                 .always_answer()
-                .try_input(
+                .try_read(
                     "welche Index Datei m\u{f6}chtest du verwenden?: ",
                     Some(None),
                     |it| Some(Some(PathBuf::from(it))),
@@ -455,7 +455,7 @@ pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::E
             )
             .await?;
 
-        let _ = Inputs::input(
+        let _ = Inputs::read(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
             None,
         );
@@ -656,12 +656,12 @@ where
 }
 
 fn request_next_chapter_name() -> String {
-    Inputs::input("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
+    Inputs::read("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
 }
 
 fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> usize {
     input
-        .try_input(msg, default, |rin| rin.parse().ok())
+        .try_read(msg, default, |rin| rin.parse().ok())
         .expect("gib was vern\u{fc}nftiges ein")
 }
 

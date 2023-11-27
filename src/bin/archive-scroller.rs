@@ -17,7 +17,7 @@ fn main() {
             })
             .cloned()
             .unwrap_or_else(|| {
-                audio_matcher::args::Inputs::input("please input the path to the archive: ", None)
+                audio_matcher::args::Inputs::read("please input the path to the archive: ", None)
                     .into()
             })
     });

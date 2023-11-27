@@ -23,48 +23,6 @@ impl Inputs {
             trys: trys.into().unwrap_or(3),
         }
     }
-    #[must_use]
-    #[momo::momo]
-    pub fn ask_consent(self, msg: impl AsRef<str>) -> bool {
-        if self.yes || self.no {
-            return self.yes;
-        }
-        self.try_input(format!("{msg} [y/n]: "), None, |rin| {
-            if ["y", "yes", "j", "ja"].contains(&rin.as_str()) {
-                return Some(true);
-            } else if ["n", "no", "nein"].contains(&rin.as_str()) {
-                return Some(false);
-            }
-            None
-        })
-        .unwrap_or_else(|| {
-            info!("probably not");
-            false
-        })
-    }
-
-    pub fn try_input<T>(
-        &self,
-        msg: impl AsRef<str>,
-        default: Option<T>,
-        map: impl FnMut(String) -> Option<T>,
-    ) -> Option<T> {
-        Self::inner_read(
-            msg,
-            default,
-            Some("couldn't parse that, please try again: "),
-            map,
-            0..self.trys,
-        )
-    }
-    pub fn map_input<T>(
-        msg: impl AsRef<str>,
-        default: impl Into<Option<T>>,
-        retry_msg: Option<impl AsRef<str>>,
-        map: impl FnMut(String) -> Option<T>,
-    ) -> T {
-        Self::inner_read(msg, default, retry_msg, map, 1..).unwrap_or_else(|| unreachable!())
-    }
 
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
@@ -75,10 +33,10 @@ impl Inputs {
         mut map: impl FnMut(String) -> Option<T>,
         trys: impl IntoIterator<Item = u8>,
     ) -> Option<T> {
-        let default = default.into();
-        let retry_msg = retry_msg.as_ref().map(std::convert::AsRef::as_ref);
-
         let msg = msg.as_ref();
+        let retry_msg = retry_msg.as_ref().map(std::convert::AsRef::as_ref);
+        let default = default.into();
+
         print!("{msg}");
         for _ in trys {
             let rin: String = text_io::read!("{}\n");
@@ -94,31 +52,74 @@ impl Inputs {
         None
     }
 
+    const DEFAULT_RETRY_MSG: &str = "couldn't parse that, please try again: ";
+    pub fn read(msg: impl AsRef<str>, default: Option<String>) -> String {
+        Self::inner_read(
+            msg,
+            default,
+            Some(Self::DEFAULT_RETRY_MSG),
+            Some,
+            std::iter::once(1),
+        )
+        .unwrap_or_else(|| unreachable!())
+    }
+    pub fn map_read<T>(
+        msg: impl AsRef<str>,
+        default: impl Into<Option<T>>,
+        retry_msg: Option<impl AsRef<str>>,
+        map: impl FnMut(String) -> Option<T>,
+    ) -> T {
+        Self::inner_read(msg, default, retry_msg, map, 1..).unwrap_or_else(|| unreachable!())
+    }
     // TODO remove trys from Self
-    const A: Self = Self {
-        yes: false,
-        no: false,
-        trys: 1,
-    };
-    #[must_use]
-    pub fn input(msg: impl AsRef<str>, default: Option<String>) -> String {
-        Self::A
-            .try_input(msg, default, Some)
-            .unwrap_or_else(|| unreachable!())
+    pub fn try_read<T>(
+        &self,
+        msg: impl AsRef<str>,
+        default: Option<T>,
+        map: impl FnMut(String) -> Option<T>,
+    ) -> Option<T> {
+        Self::inner_read(
+            msg,
+            default,
+            Some(Self::DEFAULT_RETRY_MSG),
+            map,
+            1..self.trys,
+        )
     }
 
     #[must_use]
-    pub fn input_with_suggestion(
+    #[momo::momo]
+    pub fn ask_consent(self, msg: impl AsRef<str>) -> bool {
+        if self.yes || self.no {
+            return self.yes;
+        }
+        self.try_read(format!("{msg} [y/n]: "), None, |it| {
+            if ["y", "yes", "j", "ja"].contains(&it.as_str()) {
+                Some(true)
+            } else if ["n", "no", "nein"].contains(&it.as_str()) {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            info!("probably not");
+            false
+        })
+    }
+
+    #[must_use]
+    pub fn read_with_suggestion(
         msg: impl AsRef<str>,
         initial: Option<&str>,
         mut suggestor: impl autocompleter::MyAutocomplete,
     ) -> String {
         let mut text = inquire::Text::new(msg.as_ref());
         text.initial_value = initial;
-        // SAFTY: the reference to suggestor must be kept alive until sc is dropped. black-box should do this.
+        // SAFTY: the reference to suggestor must be kept alive until ac is dropped. black-box should do this.
         let ac = unsafe { autocompleter::BorrowCompleter::new(&mut suggestor) };
         let res = text.with_autocomplete(ac).prompt().unwrap();
-        std::hint::black_box(suggestor);
+        drop(std::hint::black_box(suggestor));
         res
     }
 }

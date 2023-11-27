@@ -106,15 +106,15 @@ impl Iterator for CommandReader {
         if self.is_finnished {
             return None;
         }
-        let command = Inputs::map_input("$> ", Command::Help, None::<&str>, |input| match input
-            .parse::<Command>(
-        ) {
-            Ok(command) => Some(command),
-            Err(err) => {
-                if !input.is_empty() {
-                    warn!("{err}");
+        let command = Inputs::map_read("$> ", Command::Help, None::<&str>, |input| {
+            match input.parse::<Command>() {
+                Ok(command) => Some(command),
+                Err(err) => {
+                    if !input.is_empty() {
+                        warn!("{err}");
+                    }
+                    None
                 }
-                None
             }
         });
 
