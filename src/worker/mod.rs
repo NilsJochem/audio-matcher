@@ -19,7 +19,7 @@ use toml::value::{Date, Datetime};
 
 use crate::{
     archive::data::{build_timelabel_name, ChapterNumber},
-    args::Inputs,
+    args::{autocompleter, Inputs},
     worker::tagger::{Album, Artist, Genre, TaggedFile, Title, TotalTracks, Track, Year},
 };
 
@@ -182,29 +182,29 @@ async fn prepare_project(
 #[derive(Debug)]
 pub struct ChapterCompleter<'a> {
     index: Box<dyn ChapterList + 'a + Send + Sync>,
-    filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+    metric: Box<dyn crate::args::autocompleter::StrMetric + Send + Sync>,
 }
 impl<'a> ChapterCompleter<'a> {
     pub fn new(
         index: impl ChapterList + 'a + Send + Sync,
-        filter: impl crate::args::autocompleter::StrFilter + Send + Sync + 'static,
+        metric: impl crate::args::autocompleter::StrMetric + Send + Sync + 'static,
     ) -> Self {
-        Self::new_boxed(Box::new(index), Box::new(filter))
+        Self::new_boxed(Box::new(index), Box::new(metric))
     }
 
     #[must_use]
     pub fn new_boxed(
         index: Box<dyn ChapterList + 'a + Send + Sync>,
-        filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+        metric: Box<dyn crate::args::autocompleter::StrMetric + Send + Sync>,
     ) -> Self {
-        Self { index, filter }
+        Self { index, metric }
     }
     #[must_use]
     pub fn index(&self) -> &dyn ChapterList {
         self.index.as_ref()
     }
-    fn filter(&self) -> &dyn crate::args::autocompleter::StrFilter {
-        self.filter.as_ref()
+    fn metric(&self) -> &dyn crate::args::autocompleter::StrMetric {
+        self.metric.as_ref()
     }
 }
 
@@ -256,11 +256,13 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
                         .collect_vec()
                 }
             }
-            Err(_) => self
-                .index()
-                .chapter_iter()
-                .filter(|(_, option)| self.filter().filter(option, input))
-                .collect_vec(),
+            Err(_) => autocompleter::sort_with(
+                self.metric(),
+                self.index().chapter_iter(),
+                input,
+                |(_, it)| it,
+            )
+            .collect_vec(),
         }
         .into_iter()
         .map(|(i, chapter)| format!("{i} {chapter}"))
@@ -289,8 +291,7 @@ async fn rename_labels(
     let (series, index) = read_index_from_args(args, m_index).await?;
     let index = index.as_deref();
     let mut ac = index.as_ref().map(|&index| {
-        // TODO better filter
-        ChapterCompleter::new(index, crate::args::autocompleter::StartsWithIgnoreCase {})
+        ChapterCompleter::new(index, crate::args::autocompleter::Levenshtein::new(true))
     });
 
     let labels = labels.into_values().next().unwrap();
@@ -301,7 +302,7 @@ async fn rename_labels(
         let chapter_number = match ac.as_mut() {
             Some(index) => {
                 let input = Inputs::read_with_suggestion(
-                    format!("{MSG}: "),
+                    format!("{MSG}:"),
                     expected_next_chapter_number
                         .map(|it| it.to_string())
                         .as_deref(),
@@ -363,7 +364,7 @@ pub async fn read_index_from_args<'a, 'b>(
     args: &Arguments,
     m_index: Option<&'b mut MultiIndex<'a>>,
 ) -> Result<(String, Option<common::boo::Boo<'b, Index<'a>>>), crate::worker::index::Error> {
-    const MSG: &str = "Welche Serie ist heute dran: ";
+    const MSG: &str = "Welche Serie ist heute dran:";
 
     let series = m_index.as_ref().map_or_else(
         || Inputs::read(MSG, None),
@@ -378,7 +379,7 @@ pub async fn read_index_from_args<'a, 'b>(
                 None,
                 crate::args::autocompleter::VecCompleter::new(
                     known,
-                    crate::args::autocompleter::StartsWithIgnoreCase {},
+                    crate::args::autocompleter::Levenshtein::new(true),
                 ),
             )
         },
@@ -718,6 +719,22 @@ mod tests {
             .into_iter()
             .collect_vec(),
             calc_merged_offsets(data.into_iter())
+        );
+    }
+
+    #[ignore = "needs user input"]
+    #[tokio::test]
+    async fn test_chapter_completer() {
+        let metric = autocompleter::Levenshtein::new(true);
+        let binding = Index::try_read_from_path(
+            "/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current/Gruselkabinett/index.toml",
+        )
+        .await
+        .unwrap();
+
+        println!(
+            "read {:?}",
+            Inputs::read_with_suggestion("$>", None, ChapterCompleter::new(&binding, metric))
         );
     }
 }
