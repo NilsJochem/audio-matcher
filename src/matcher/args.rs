@@ -1,7 +1,8 @@
 use clap::{Args, Parser};
 use std::{path::PathBuf, time::Duration};
 
-use crate::args::{parse_duration, Inputs, OutputLevel};
+use crate::args::parse_duration;
+use common::args::{debug::OutputLevel, input::Inputs};
 
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]

@@ -4,8 +4,9 @@ use std::{
     time::Duration,
 };
 
-use crate::args::{parse_duration, ConfigArgs, Inputs, OutputLevel};
+use crate::args::{parse_duration, ConfigArgs};
 use clap::Parser;
+use common::args::{debug::OutputLevel, input::Inputs};
 
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use crate::args::{ConfigArgs, Inputs, OutputLevel};
+use crate::args::ConfigArgs;
+use common::args::{debug::OutputLevel, input::Inputs};
 
 #[derive(Debug, Parser, Clone)]
 #[clap(version = env!("CARGO_PKG_VERSION"))]

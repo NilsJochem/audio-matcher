@@ -5,9 +5,10 @@ use log::{debug, warn};
 use shellwords::MismatchedQuotes;
 use thiserror::Error;
 
-use crate::{
-    args::{autocompleter::VecCompleter, Inputs},
-    worker::ChapterCompleter,
+use crate::worker::ChapterCompleter;
+use common::args::input::{
+    autocompleter::{self, VecCompleter},
+    Inputs,
 };
 
 use self::data::Archive;
@@ -134,10 +135,10 @@ struct CliCompleter<'a> {
     archive: &'a Archive,
     series_completer: VecCompleter,
     chapter_completer: Option<ChapterCompleter<'a>>,
-    filter: Box<dyn crate::args::autocompleter::StrFilter + Send + Sync>,
+    filter: Box<dyn common::str::filter::StrFilter + Send + Sync>,
 }
-impl<'a> crate::args::autocompleter::MyAutocomplete for CliCompleter<'a> {
-    fn get_suggestions(&mut self, _input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
+impl<'a> autocompleter::Autocomplete for CliCompleter<'a> {
+    fn get_suggestions(&mut self, _input: &str) -> Result<Vec<String>, autocompleter::Error> {
         todo!()
     }
 
@@ -145,7 +146,7 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for CliCompleter<'a> {
         &mut self,
         _input: &str,
         _highlighted_suggestion: Option<String>,
-    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
+    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
         todo!()
     }
 }

@@ -1,7 +1,10 @@
 use audacity::AudacityApi;
-use common::extensions::{
-    iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
-    vec::PushReturn,
+use common::{
+    args::input::autocompleter,
+    extensions::{
+        iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
+        vec::PushReturn,
+    },
 };
 use futures::TryFutureExt;
 use itertools::{Itertools, Position};
@@ -19,9 +22,9 @@ use toml::value::{Date, Datetime};
 
 use crate::{
     archive::data::{build_timelabel_name, ChapterNumber},
-    args::{autocompleter, Inputs},
     worker::tagger::{Album, Artist, Genre, TaggedFile, Title, TotalTracks, Track, Year},
 };
+use common::args::input::Inputs;
 
 use self::{
     args::Arguments,
@@ -182,12 +185,12 @@ async fn prepare_project(
 #[derive(Debug)]
 pub struct ChapterCompleter<'a> {
     index: Box<dyn ChapterList + 'a + Send + Sync>,
-    metric: Box<dyn crate::args::autocompleter::StrMetric + Send + Sync>,
+    metric: Box<dyn common::str::filter::StrMetric + Send + Sync>,
 }
 impl<'a> ChapterCompleter<'a> {
     pub fn new(
         index: impl ChapterList + 'a + Send + Sync,
-        metric: impl crate::args::autocompleter::StrMetric + Send + Sync + 'static,
+        metric: impl common::str::filter::StrMetric + Send + Sync + 'static,
     ) -> Self {
         Self::new_boxed(Box::new(index), Box::new(metric))
     }
@@ -195,7 +198,7 @@ impl<'a> ChapterCompleter<'a> {
     #[must_use]
     pub fn new_boxed(
         index: Box<dyn ChapterList + 'a + Send + Sync>,
-        metric: Box<dyn crate::args::autocompleter::StrMetric + Send + Sync>,
+        metric: Box<dyn common::str::filter::StrMetric + Send + Sync>,
     ) -> Self {
         Self { index, metric }
     }
@@ -203,7 +206,7 @@ impl<'a> ChapterCompleter<'a> {
     pub fn index(&self) -> &dyn ChapterList {
         self.index.as_ref()
     }
-    fn metric(&self) -> &dyn crate::args::autocompleter::StrMetric {
+    fn metric(&self) -> &dyn common::str::filter::StrMetric {
         self.metric.as_ref()
     }
 }
@@ -235,8 +238,8 @@ impl<'a> ChapterList for &'a Index<'a> {
     }
 }
 
-impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
+impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
         Ok(match input.parse::<ChapterNumber>() {
             Ok(number) => {
                 if number.is_maybe {
@@ -256,7 +259,7 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
                         .collect_vec()
                 }
             }
-            Err(_) => autocompleter::sort_with(
+            Err(_) => common::str::filter::sort_with(
                 self.metric(),
                 self.index().chapter_iter(),
                 input,
@@ -273,7 +276,7 @@ impl<'a> crate::args::autocompleter::MyAutocomplete for ChapterCompleter<'a> {
         &mut self,
         _input: &str,
         highlighted_suggestion: Option<String>,
-    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
+    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
         Ok(highlighted_suggestion)
     }
 }
@@ -290,9 +293,9 @@ async fn rename_labels(
 
     let (series, index) = read_index_from_args(args, m_index).await?;
     let index = index.as_deref();
-    let mut ac = index.as_ref().map(|&index| {
-        ChapterCompleter::new(index, crate::args::autocompleter::Levenshtein::new(true))
-    });
+    let mut ac = index
+        .as_ref()
+        .map(|&index| ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true)));
 
     let labels = labels.into_values().next().unwrap();
     let mut expected_next_chapter_number: Option<ChapterNumber> = None;
@@ -377,9 +380,9 @@ pub async fn read_index_from_args<'a, 'b>(
             Inputs::read_with_suggestion(
                 MSG,
                 None,
-                crate::args::autocompleter::VecCompleter::new(
+                autocompleter::VecCompleter::new(
                     known,
-                    crate::args::autocompleter::Levenshtein::new(true),
+                    common::str::filter::Levenshtein::new(true),
                 ),
             )
         },
@@ -725,7 +728,7 @@ mod tests {
     #[ignore = "needs user input"]
     #[tokio::test]
     async fn test_chapter_completer() {
-        let metric = autocompleter::Levenshtein::new(true);
+        let metric = common::str::filter::Levenshtein::new(true);
         let binding = Index::try_read_from_path(
             "/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current/Gruselkabinett/index.toml",
         )

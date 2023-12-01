@@ -1,4 +1,3 @@
-//! A module for converting the case of strings
 use itertools::Itertools;
 use std::{borrow::Cow, collections::HashSet};
 use thiserror::Error;
