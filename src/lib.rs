@@ -37,7 +37,3 @@ pub const APP_NAME: &str = "audio-matcher"; // on change remember to change valu
 const fn offset_range(range: &std::ops::Range<usize>, offset: usize) -> std::ops::Range<usize> {
     (range.start + offset)..(range.end + offset)
 }
-// TODO exchange with:
-// pub (const) fn split_duration(duration: &Duration) -> (u64, u64, u64) {
-//    (duration.hours(), duration.minutes(), duration.seconds())
-// }

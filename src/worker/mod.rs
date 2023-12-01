@@ -111,10 +111,11 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         )
         .await?;
         let _ = Inputs::read(
-            "remove all lables you don't want to remove and then press enter to start exporting",
+            // "remove all lables you don't want to export and then press enter to start exporting",
+            "remove all lables you don't want to remove, then press Ctrl+Shift+E to export and then press enter to continue",
             None,
         );
-        //TODO find out how to fix "Ihr Stapelverarbeitungs-Befehl ExportAudio wurde nicht erkannt."
+        // TODO find out how to fix "Ihr Stapelverarbeitungs-Befehl ExportAudio wurde nicht erkannt."
         // audacity_api
         //     .write_assume_empty(audacity::command::ExportAudio)
         //     .await?;
