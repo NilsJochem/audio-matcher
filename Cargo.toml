@@ -9,8 +9,12 @@ members = ["common", "audacity", "progress_bar", "opus_tag"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-itertools = "0.11"
-clap = { version = "4.3", features = ["derive"] }
+common = { path = "./common" }
+progress_bar = { path = "./progress_bar" }
+audacity = { path = "./audacity" }
+opus_tag = { path = "./opus_tag" }
+itertools = "0.12.0"
+clap = { version = "4.4", features = ["derive"] }
 thiserror = "1.0"
 derive_builder = "0.12"
 lazy-init = "0.5"
@@ -19,15 +23,11 @@ chrono = "0.4"
 regex = "1.8"
 lazy_static = "1.4"
 glob = "0.3"
-common = { path = "./common" }
-progress_bar = { path = "./progress_bar" }
-audacity = { path = "./audacity" }
-opus_tag = { path = "./opus_tag" }
 log = "0.4"
 derive_more = "0.99"
 confy = "0.5"
 serde = "1.0"
-toml = "0.7"
+toml = "0.8"
 async-trait = "0.1"
 lazycell = "1.3"
 momo = "0.2"
