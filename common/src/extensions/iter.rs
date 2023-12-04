@@ -4,6 +4,14 @@ pub trait IteratorExt: Iterator + Sized {
     fn with_size(self, size: usize) -> ExactSizeWrapper<Self>;
     /// zips `other` to the left og `self`
     fn lzip<I: Iterator>(self, other: I) -> std::iter::Zip<I, Self>;
+    /// checks if `self` is ordered
+    #[allow(clippy::wrong_self_convention)]
+    fn is_sorted(self) -> bool
+    where
+        Self::Item: Ord;
+    /// checks if `self` is ordered by `ord`
+    #[allow(clippy::wrong_self_convention)]
+    fn is_sorted_by(self, ord: impl FnMut(&Self::Item, &Self::Item) -> std::cmp::Ordering) -> bool;
 }
 impl<Iter: Iterator> IteratorExt for Iter {
     fn with_size(self, size: usize) -> ExactSizeWrapper<Self> {
@@ -12,6 +20,25 @@ impl<Iter: Iterator> IteratorExt for Iter {
     #[inline]
     fn lzip<I: Iterator>(self, other: I) -> std::iter::Zip<I, Self> {
         other.zip(self)
+    }
+    fn is_sorted(self) -> bool
+    where
+        Self::Item: Ord,
+    {
+        IteratorExt::is_sorted_by(self, Self::Item::cmp)
+    }
+    fn is_sorted_by(
+        self,
+        mut ord: impl FnMut(&Self::Item, &Self::Item) -> std::cmp::Ordering,
+    ) -> bool {
+        let mut last = None;
+        for item in self {
+            if last.is_some_and(|last| ord(&last, &item).is_gt()) {
+                return false;
+            }
+            last = Some(item);
+        }
+        true
     }
 }
 /// extentions for all Iterators over [futures](core::future::Future)
