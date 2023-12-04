@@ -165,12 +165,14 @@ impl Archive {
         indent: &'a str,
         print_index: bool,
         print_all: bool,
+        print_missing: bool,
     ) -> ArchiveDisplay<'a> {
         ArchiveDisplay {
             archive: self,
             indent,
             print_index,
             print_all,
+            print_missing,
         }
     }
 
@@ -245,6 +247,7 @@ pub struct ArchiveDisplay<'a> {
     indent: &'a str,
     print_index: bool,
     print_all: bool,
+    print_missing: bool,
 }
 impl<'a> Display for ArchiveDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -261,7 +264,11 @@ impl<'a> Display for ArchiveDisplay<'a> {
             write!(
                 f,
                 "{}",
-                series.as_display(&format!("{pad}{}", self.indent), self.print_all)
+                series.as_display(
+                    &format!("{pad}{}", self.indent),
+                    self.print_all,
+                    self.print_missing
+                )
             )?;
             if let Pos::First | Pos::Middle = pos {
                 f.write_char('\n')?;
@@ -288,11 +295,17 @@ impl Series {
         }
     }
     #[must_use]
-    const fn as_display<'a>(&'a self, indent: &'a str, print_chapters: bool) -> SeriesDisplay<'a> {
+    const fn as_display<'a>(
+        &'a self,
+        indent: &'a str,
+        print_chapters: bool,
+        print_missing: bool,
+    ) -> SeriesDisplay<'a> {
         SeriesDisplay {
             series: self,
             indent,
             print_chapters,
+            print_missing,
         }
     }
 }
@@ -300,24 +313,52 @@ struct SeriesDisplay<'a> {
     series: &'a Series,
     indent: &'a str,
     print_chapters: bool,
+    print_missing: bool,
 }
 impl<'a> Display for SeriesDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.series.name)?;
-        if self.print_chapters {
-            let mut nr_len = 0;
+        if self.print_chapters && !self.series.is_empty() {
+            assert!(
+                IteratorExt::is_sorted(self.series.chapters.iter()),
+                "assumes series.chapter to be sorted"
+            );
+            let max_chapter_nr = self.series.chapters.last().unwrap().nr.nr;
+            let nr_len = ((max_chapter_nr + 1) as f64).log10().ceil() as usize; // +1 needed so the breakpoint is earlier. [1-10] -> 1 => [0-9] -> 1
             let mut contains_extra = false;
+
             for chapter in &self.series.chapters {
-                nr_len = nr_len.max(((chapter.nr.nr + 1) as f64).log10().ceil() as usize); // +1 needed so the breakpoint is earlier. [1-10] -> 1 => [0-9] -> 1
                 contains_extra |= chapter.nr.is_maybe | chapter.nr.is_partial;
             }
-            for chapter in &self.series.chapters {
-                write!(
-                    f,
-                    "\n{}{}",
-                    self.indent,
-                    chapter.as_display(Some((nr_len, false)), contains_extra)
-                )?;
+
+            let mut chapters = self.series.chapters.iter().peekable();
+            for i in 1.. {
+                if chapters.peek().is_none() {
+                    break;
+                }
+                let mut found_some = false;
+                while let Some(chapter) = chapters.peek() {
+                    if chapter.nr.nr != i {
+                        break;
+                    }
+                    found_some = true;
+                    write!(
+                        f,
+                        "\n{}{}",
+                        self.indent,
+                        chapter.as_display(Some((nr_len, false)), contains_extra)
+                    )?;
+                    chapters.next();
+                }
+                if !found_some && self.print_missing {
+                    write!(
+                        f,
+                        "\n{}{}",
+                        self.indent,
+                        Chapter::new(i.into(), None)
+                            .as_display(Some((nr_len, false)), contains_extra)
+                    )?;
+                }
             }
         }
         Ok(())
@@ -660,7 +701,11 @@ mod test {
             ));
             assert_eq!(
                 "gute show\n.5?  - unbekannt []\n.6   - bekannt []",
-                ser.as_display(".", true).to_string()
+                ser.as_display(".", true, false).to_string()
+            );
+            assert_eq!(
+                "gute show\n.1   - []\n.2   - []\n.3   - []\n.4   - []\n.5?  - unbekannt []\n.6   - bekannt []",
+                ser.as_display(".", true, true).to_string()
             );
         }
     }

@@ -23,10 +23,11 @@ pub fn run(args: &self::args::Arguments) -> Result<(), crate::matcher::errors::C
     if args.interactive {
         holder.work_commands(CommandReader::default());
     } else {
-        holder.work_commands(std::iter::once(Command::List {
+        holder.work_commands(std::iter::once(Some(Command::List {
             indent: "\t".to_owned(),
             print_all: true,
-        }));
+            print_missing: false,
+        })));
     }
     Ok(())
 }
@@ -41,19 +42,26 @@ impl Holder {
             path,
         }
     }
-    fn work_commands(&mut self, iter: impl Iterator<Item = Command>) {
+    fn work_commands(&mut self, iter: impl Iterator<Item = Option<Command>>) {
         for command in iter {
             debug!("processsing {command:?}");
             match command {
-                Command::Exit => break,
-                Command::Help => {} // Cli::command_for_update().print_long_help().unwrap(),
-                Command::Reload { path } => {
+                None | Some(Command::Exit) => {}
+                Some(Command::Reload { path }) => {
                     self.archive = Archive::read(path.as_deref().unwrap_or(&self.path));
                 }
-                Command::List { indent, print_all } => {
-                    println!("{}", self.archive.as_display(&indent, false, print_all));
+                Some(Command::List {
+                    indent,
+                    print_all,
+                    print_missing,
+                }) => {
+                    println!(
+                        "{}",
+                        self.archive
+                            .as_display(&indent, false, print_all, print_missing)
+                    );
                 }
-                Command::Rename => println!("comming soon"),
+                Some(Command::Rename) => println!("comming soon"),
             }
         }
     }
@@ -66,19 +74,22 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum Command {
     Exit,
-    Help,
+    // Help,
     Reload {
         path: Option<PathBuf>,
     },
     List {
-        #[clap(default_value_t = String::from("/t"))]
+        #[clap(default_value_t = String::from("\t"))]
         indent: String,
         /// should chapters be printed
         #[clap(name = "print_chapters", short = 'c', long)]
         print_all: bool,
+        /// should missing chapters be printed
+        #[clap(name = "print_missing", short = 'm', long)]
+        print_missing: bool,
     },
     Rename,
 }
@@ -101,15 +112,15 @@ pub struct CommandReader {
     is_finnished: bool,
 }
 impl Iterator for CommandReader {
-    type Item = Command;
+    type Item = Option<Command>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.is_finnished {
             return None;
         }
-        let command = Inputs::map_read("$> ", Command::Help, None::<&str>, |input| {
+        let command = Inputs::map_read("$> ", Some(None), None::<&str>, |input| {
             match input.parse::<Command>() {
-                Ok(command) => Some(command),
+                Ok(command) => Some(Some(command)),
                 Err(err) => {
                     if !input.is_empty() {
                         warn!("{err}");
@@ -119,7 +130,7 @@ impl Iterator for CommandReader {
             }
         });
 
-        if matches!(command, Command::Exit) {
+        if matches!(command, Some(Command::Exit)) {
             debug!("read Exit, stoping read");
             self.is_finnished = true;
         } else {
