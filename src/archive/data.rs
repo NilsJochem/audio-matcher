@@ -124,6 +124,14 @@ impl Archive {
         let mut archive = Self { data: Vec::new() };
         for (source, labels) in value {
             for label in labels {
+                if label
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.strip_prefix('#').is_some())
+                {
+                    debug!("skipping {:?}", label.name);
+                    continue;
+                }
                 let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", String::as_str)) else {
                     warn!("name {:?} in {source} couldn't be parsed to Series", label.name);
                     continue;
@@ -133,7 +141,7 @@ impl Archive {
                     || Series::new(series_name.to_owned()),
                     |it| it.name == series_name,
                 );
-
+                // TODO handle mixed modifiers in one source
                 let chapter = series.chapters.find_or_push_else(
                     || Chapter::new(ch_nr, chapter_name.map(std::borrow::ToOwned::to_owned)),
                     |it| it.nr == ch_nr,
@@ -243,7 +251,7 @@ impl<'a> Display for ArchiveDisplay<'a> {
         use itertools::Position as Pos;
         let pad_len = self
             .print_index
-            .then(|| (self.archive.data.len() as f64).log10().ceil() as usize);
+            .then(|| ((self.archive.data.len() + 1) as f64).log10().ceil() as usize); // +1 needed so the breakpoint is earlier. [1-10] -> 1 => [0-9] -> 1
         let pad = pad_len.map_or_else(String::new, |l| " ".repeat(l + 3));
 
         for (pos, (i, series)) in self.archive.data.iter().enumerate().with_position() {
@@ -300,8 +308,8 @@ impl<'a> Display for SeriesDisplay<'a> {
             let mut nr_len = 0;
             let mut contains_extra = false;
             for chapter in &self.series.chapters {
-                nr_len = nr_len.max((chapter.nr.nr as f64).log10().ceil() as usize);
-                contains_extra |= chapter.nr.is_maybe;
+                nr_len = nr_len.max(((chapter.nr.nr + 1) as f64).log10().ceil() as usize); // +1 needed so the breakpoint is earlier. [1-10] -> 1 => [0-9] -> 1
+                contains_extra |= chapter.nr.is_maybe | chapter.nr.is_partial;
             }
             for chapter in &self.series.chapters {
                 write!(

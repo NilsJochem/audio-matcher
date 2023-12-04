@@ -242,8 +242,8 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
         Ok(match input.parse::<ChapterNumber>() {
             Ok(number) => {
-                if number.is_maybe {
-                    // number ends  with '?', so nothing more will come
+                if number.is_maybe || number.is_partial {
+                    // number ends  with '?' or '-', so nothing more will come
                     self.index()
                         .get(number)
                         .map_or_else(Vec::new, |it| vec![(number, it)])
