@@ -95,19 +95,19 @@ impl Archive {
     pub fn parse_line(line: &str) -> Option<(&str, ChapterNumber, Option<usize>, Option<&str>)> {
         const REG_SERIES: &str = "series";
         const REG_NUMBER: &str = "nr";
-        const REG_EXTRA: &str = "extra";
         const REG_CHAPTER: &str = "chapter";
         const REG_PART: &str = "part";
         lazy_static! {
-            static ref RE: Regex = Regex::new(&format!("^(?P<{REG_SERIES}>.+?) (?P<{REG_NUMBER}>\\d+)(?P<{REG_EXTRA}>\\?)?(?:\\.(?P<{REG_PART}>\\d+))?(?: (?P<{REG_CHAPTER}>.+))?$")).unwrap();
+            static ref RE: Regex = Regex::new(&format!("^(?P<{REG_SERIES}>.+?) (?P<{REG_NUMBER}>{})(?:\\.(?P<{REG_PART}>\\d+))?(?: (?P<{REG_CHAPTER}>.+))?$", ChapterNumber::REGEX_PATTERN)).unwrap();
         }
         let captures = RE.captures(line)?;
 
         let series = captures.name(REG_SERIES).unwrap().as_str();
-        let ch_nr = ChapterNumber::new(
-            captures.name(REG_NUMBER).unwrap().as_str().parse().unwrap(),
-            captures.name(REG_EXTRA).is_some(),
-        );
+
+        let ch_nr = captures.name(REG_NUMBER).unwrap().as_str();
+        let ch_nr = ch_nr.parse::<ChapterNumber>().unwrap_or_else(|err| {
+            panic!("failed to read ChapterNumber {ch_nr:?}, because {err:?}")
+        });
         let part = captures
             .name(REG_PART)
             .and_then(|it| it.as_str().parse().ok());
@@ -385,10 +385,16 @@ impl<'a> Display for ChapterDisplay<'a> {
 pub struct ChapterNumber {
     pub nr: usize,
     pub is_maybe: bool,
+    pub is_partial: bool,
 }
 impl ChapterNumber {
+    const REGEX_PATTERN: &str = "\\d+\\??\\-?";
     pub const fn new(nr: usize, is_maybe: bool) -> Self {
-        Self { nr, is_maybe }
+        Self {
+            nr,
+            is_maybe,
+            is_partial: false,
+        }
     }
     pub const fn next(mut self) -> Self {
         self.nr += 1;
@@ -406,13 +412,13 @@ impl ChapterNumber {
     /// ```
     /// use audio_matcher::archive::data::ChapterNumber;
     ///
-    /// let nr = ChapterNumber::new(3, true);
+    /// let nr = ChapterNumber { nr: 3, is_maybe: true, is_partial: false };
     /// assert_eq!("3?", nr.as_display(None, false).to_string());
     /// assert_eq!("0003?", nr.as_display(Some((4, true)), false).to_string());
     ///
-    /// let nr = ChapterNumber::new(3, false);
-    /// assert_eq!("  3 ", nr.as_display(Some((3, false)), true).to_string());
-    /// assert_eq!("0003 ", nr.as_display(Some((4, true)), true).to_string());
+    /// let nr = ChapterNumber { nr: 3, is_maybe: false, is_partial: false };
+    /// assert_eq!("  3  ", nr.as_display(Some((3, false)), true).to_string());
+    /// assert_eq!("0003  ", nr.as_display(Some((4, true)), true).to_string());
     /// ```
     #[must_use]
     pub const fn as_display(
@@ -434,7 +440,11 @@ impl Display for ChapterNumber {
 }
 impl From<usize> for ChapterNumber {
     fn from(value: usize) -> Self {
-        Self::new(value, false)
+        Self {
+            nr: value,
+            is_maybe: false,
+            is_partial: false,
+        }
     }
 }
 pub struct ChapterNumberDisplay<'a> {
@@ -459,6 +469,11 @@ impl<'a> Display for ChapterNumberDisplay<'a> {
         } else if self.l_just {
             f.write_char(' ')?;
         }
+        if self.number.is_partial {
+            f.write_char('-')?;
+        } else if self.l_just {
+            f.write_char(' ')?;
+        }
         Ok(())
     }
 }
@@ -471,17 +486,23 @@ impl std::str::FromStr for ChapterNumber {
     /// ```
     /// use audio_matcher::archive::data::ChapterNumber;
     ///
-    /// assert_eq!(Ok(ChapterNumber::new(3, true)), "3?".parse::<ChapterNumber>());
-    /// assert_eq!(Ok(ChapterNumber::new(3, false)), "3".parse::<ChapterNumber>());
-    /// assert_eq!(Ok(ChapterNumber::new(3, true)), "003?".parse::<ChapterNumber>());
-    /// assert_eq!(Ok(ChapterNumber::new(3, false)), " 3 ".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: true , is_partial: false}),    "3?".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: false, is_partial: false}),     "3".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: true , is_partial: false}),  "003?".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: false, is_partial: false}),   " 3 ".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: true , is_partial: true }), "003?-".parse::<ChapterNumber>());
+    /// assert_eq!(Ok(ChapterNumber { nr: 3, is_maybe: false, is_partial: true }),  " 3- ".parse::<ChapterNumber>());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let value = s.trim();
-        let strip = value.strip_suffix('?');
+        let strip_minus = value.strip_suffix('-');
+        let value = strip_minus.unwrap_or(value);
+        let strip_question = value.strip_suffix('?'); // TODO maybe allow flipped
+        let value = strip_question.unwrap_or(value);
         Ok(Self {
-            nr: strip.unwrap_or(value).parse::<usize>()?,
-            is_maybe: strip.is_some(),
+            nr: value.parse::<usize>()?,
+            is_maybe: strip_question.is_some(),
+            is_partial: strip_minus.is_some(),
         })
     }
 }
@@ -563,7 +584,14 @@ mod test {
                 .expect("failed to match");
 
             assert_eq!("Gruselkabinett", cap.0);
-            assert_eq!(ChapterNumber::new(6, false), cap.1);
+            assert_eq!(
+                ChapterNumber {
+                    nr: 6,
+                    is_maybe: false,
+                    is_partial: false
+                },
+                cap.1
+            );
             assert_eq!(Some(2), cap.2);
             assert_eq!(Some("Das verfluchte Haus"), cap.3);
         }
@@ -572,7 +600,14 @@ mod test {
             let cap = Archive::parse_line("Gruselkabinett 6").expect("failed to match");
 
             assert_eq!("Gruselkabinett", cap.0);
-            assert_eq!(ChapterNumber::new(6, false), cap.1);
+            assert_eq!(
+                ChapterNumber {
+                    nr: 6,
+                    is_maybe: false,
+                    is_partial: false
+                },
+                cap.1
+            );
         }
 
         #[test]
@@ -580,7 +615,14 @@ mod test {
             let cap = Archive::parse_line("Gruselkabinett 6 Multipart 1").expect("failed to match");
 
             assert_eq!("Gruselkabinett", cap.0);
-            assert_eq!(ChapterNumber::new(6, false), cap.1);
+            assert_eq!(
+                ChapterNumber {
+                    nr: 6,
+                    is_maybe: false,
+                    is_partial: false
+                },
+                cap.1
+            );
             assert_eq!(None, cap.2);
             assert_eq!(Some("Multipart 1"), cap.3);
         }
@@ -593,15 +635,23 @@ mod test {
         fn format() {
             let mut ser = Series::new("gute show".to_owned());
             ser.chapters.push(Chapter::new(
-                ChapterNumber::new(5, true),
+                ChapterNumber {
+                    nr: 5,
+                    is_maybe: true,
+                    is_partial: false,
+                },
                 Some("unbekannt".to_owned()),
             ));
             ser.chapters.push(Chapter::new(
-                ChapterNumber::new(6, false),
+                ChapterNumber {
+                    nr: 6,
+                    is_maybe: false,
+                    is_partial: false,
+                },
                 Some("bekannt".to_owned()),
             ));
             assert_eq!(
-                "gute show\n.5? - unbekannt []\n.6  - bekannt []",
+                "gute show\n.5?  - unbekannt []\n.6   - bekannt []",
                 ser.as_display(".", true).to_string()
             );
         }
@@ -612,7 +662,14 @@ mod test {
 
         #[test]
         fn format_with_parts() {
-            let mut ch = Chapter::new(ChapterNumber::new(15, false), None);
+            let mut ch = Chapter::new(
+                ChapterNumber {
+                    nr: 15,
+                    is_maybe: false,
+                    is_partial: false,
+                },
+                None,
+            );
             ch.parts.insert("station-2023_1_1".parse().unwrap(), 2);
             assert_eq!(
                 "15 - [station - 2023-01-01]",
@@ -629,7 +686,11 @@ mod test {
         #[test]
         fn format_with_name() {
             let ch = Chapter::new(
-                ChapterNumber::new(15, false),
+                ChapterNumber {
+                    nr: 15,
+                    is_maybe: false,
+                    is_partial: false,
+                },
                 Some("chapter name".to_owned()),
             );
             assert_eq!(
@@ -678,35 +739,67 @@ mod test {
         use super::*;
         #[test]
         fn format_no_just() {
-            let nr = ChapterNumber::new(3, false);
+            let nr = ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false,
+            };
             assert_eq!("3", nr.as_display(None, false).to_string());
 
-            let nr = ChapterNumber::new(30, true);
+            let nr = ChapterNumber {
+                nr: 30,
+                is_maybe: true,
+                is_partial: false,
+            };
             assert_eq!("30?", nr.as_display(None, false).to_string());
         }
         #[test]
         fn format_0_r_just() {
-            let nr = ChapterNumber::new(3, false);
+            let nr = ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false,
+            };
             assert_eq!("0003", nr.as_display(Some((4, true)), false).to_string());
 
-            let nr = ChapterNumber::new(30, true);
+            let nr = ChapterNumber {
+                nr: 30,
+                is_maybe: true,
+                is_partial: false,
+            };
             assert_eq!("0030?", nr.as_display(Some((4, true)), false).to_string());
         }
         #[test]
         fn format_space_r_just() {
-            let nr = ChapterNumber::new(3, false);
+            let nr = ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false,
+            };
             assert_eq!("   3", nr.as_display(Some((4, false)), false).to_string());
 
-            let nr = ChapterNumber::new(30, true);
+            let nr = ChapterNumber {
+                nr: 30,
+                is_maybe: true,
+                is_partial: false,
+            };
             assert_eq!("  30?", nr.as_display(Some((4, false)), false).to_string());
         }
         #[test]
         fn format_l_just() {
-            let nr = ChapterNumber::new(3, false);
-            assert_eq!("3 ", nr.as_display(None, true).to_string());
+            let nr = ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false,
+            };
+            assert_eq!("3  ", nr.as_display(None, true).to_string());
 
-            let nr = ChapterNumber::new(30, true);
-            assert_eq!("30?", nr.as_display(None, true).to_string());
+            let nr = ChapterNumber {
+                nr: 30,
+                is_maybe: true,
+                is_partial: false,
+            };
+            assert_eq!("30? ", nr.as_display(None, true).to_string());
         }
     }
 }

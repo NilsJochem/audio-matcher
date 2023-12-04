@@ -252,7 +252,7 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
                     (0..self.index().len())
                         .filter_map(|i| {
                             i.to_string().starts_with(&number.nr.to_string()).then(|| {
-                                let number = ChapterNumber::new(i, false);
+                                let number = ChapterNumber::from(i);
                                 (number, self.index().get(number).unwrap())
                             })
                         })

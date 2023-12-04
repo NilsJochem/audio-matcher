@@ -545,7 +545,11 @@ mod tests {
             Index::from_slice_iter(data.into_iter(), "not used", parser::Txt::WithoutArtist)
                 .unwrap();
         assert_eq!(
-            index.get(ChapterNumber::new(1, false)),
+            index.get(ChapterNumber {
+                nr: 1,
+                is_maybe: false,
+                is_partial: false
+            }),
             ChapterEntry {
                 title: Cow::Borrowed(data[0]),
                 artist: None,
@@ -553,7 +557,11 @@ mod tests {
             }
         );
         assert_eq!(
-            index.get(ChapterNumber::new(2, false)),
+            index.get(ChapterNumber {
+                nr: 2,
+                is_maybe: false,
+                is_partial: false
+            }),
             ChapterEntry {
                 title: Cow::Borrowed(data[1]),
                 artist: None,
@@ -561,14 +569,25 @@ mod tests {
             }
         );
         assert_eq!(
-            index.get(ChapterNumber::new(3, false)),
+            index.get(ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false
+            }),
             ChapterEntry {
                 title: Cow::Borrowed(data[3]),
                 artist: None,
                 release: None
             }
         );
-        assert_eq!(index.try_get(ChapterNumber::new(4, false)), None);
+        assert_eq!(
+            index.try_get(ChapterNumber {
+                nr: 4,
+                is_maybe: false,
+                is_partial: false
+            }),
+            None
+        );
     }
     #[test]
     fn rename_empty() {
@@ -619,10 +638,38 @@ mod tests {
             parser::Txt::WithArtist,
         )
         .unwrap();
-        assert_eq!(index.get(ChapterNumber::new(1, false)), data[0]);
-        assert_eq!(index.get(ChapterNumber::new(2, false)), data[1]);
-        assert_eq!(index.get(ChapterNumber::new(3, false)), data[3]);
-        assert_eq!(index.try_get(ChapterNumber::new(4, false)), None);
+        assert_eq!(
+            index.get(ChapterNumber {
+                nr: 1,
+                is_maybe: false,
+                is_partial: false
+            }),
+            data[0]
+        );
+        assert_eq!(
+            index.get(ChapterNumber {
+                nr: 2,
+                is_maybe: false,
+                is_partial: false
+            }),
+            data[1]
+        );
+        assert_eq!(
+            index.get(ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false
+            }),
+            data[3]
+        );
+        assert_eq!(
+            index.try_get(ChapterNumber {
+                nr: 4,
+                is_maybe: false,
+                is_partial: false
+            }),
+            None
+        );
     }
 
     #[test]
@@ -674,7 +721,11 @@ mod tests {
                 artist: Some(Cow::Borrowed("artist")),
                 release: None
             },
-            index.get(ChapterNumber::new(1, false))
+            index.get(ChapterNumber {
+                nr: 1,
+                is_maybe: false,
+                is_partial: false
+            })
         );
         assert_eq!(
             ChapterEntry {
@@ -682,7 +733,11 @@ mod tests {
                 artist: Some(Cow::Borrowed("artist")),
                 release: None
             },
-            index.get(ChapterNumber::new(2, false))
+            index.get(ChapterNumber {
+                nr: 2,
+                is_maybe: false,
+                is_partial: false
+            })
         );
         assert_eq!(
             ChapterEntry {
@@ -690,9 +745,20 @@ mod tests {
                 artist: Some(Cow::Borrowed("other artist")),
                 release: None
             },
-            index.get(ChapterNumber::new(3, false))
+            index.get(ChapterNumber {
+                nr: 3,
+                is_maybe: false,
+                is_partial: false
+            })
         );
-        assert_eq!(None, index.try_get(ChapterNumber::new(4, false)));
+        assert_eq!(
+            None,
+            index.try_get(ChapterNumber {
+                nr: 4,
+                is_maybe: false,
+                is_partial: false
+            })
+        );
     }
 
     #[test]
@@ -713,18 +779,30 @@ mod tests {
         .unwrap();
         assert_eq!(
             Some(DateOrYear::Year(2000)),
-            index.get(ChapterNumber::new(1, false)).release
+            index
+                .get(ChapterNumber {
+                    nr: 1,
+                    is_maybe: false,
+                    is_partial: false
+                })
+                .release
         );
         assert_eq!(
             Some(DateOrYear::Year(2001)),
-            index.get(ChapterNumber::new(2, false)).release
+            index
+                .get(ChapterNumber {
+                    nr: 2,
+                    is_maybe: false,
+                    is_partial: false
+                })
+                .release
         );
         assert!(matches!(
-            index.get(ChapterNumber::new(3, false)).release.as_ref().unwrap(),
+            index.get(ChapterNumber { nr: 3, is_maybe: false, is_partial: false }).release.as_ref().unwrap(),
             DateOrYear::Date(date) if date.date.unwrap().year == 2002
         ));
         assert!(matches!(
-            index.get(ChapterNumber::new(4, false)).release.as_ref().unwrap(),
+            index.get(ChapterNumber { nr: 4, is_maybe: false, is_partial: false }).release.as_ref().unwrap(),
             DateOrYear::Date(date) if date.date.unwrap().year == 2003
         ));
     }
