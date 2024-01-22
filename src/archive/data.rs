@@ -437,7 +437,7 @@ pub struct ChapterNumber {
     pub is_partial: bool,
 }
 impl ChapterNumber {
-    const REGEX_PATTERN: &str = "\\d+\\??\\-?";
+    const REGEX_PATTERN: &'static str = "\\d+\\??\\-?";
     pub const fn new(nr: usize, is_maybe: bool) -> Self {
         Self {
             nr,
@@ -573,8 +573,8 @@ pub enum SourceErrorKind {
     InvalidDate,
 }
 impl Source {
-    const FILE_DATE_FMT: &str = "%Y_%m_%d";
-    const DISPLAY_DATE_FMT: &str = "%Y-%m-%d";
+    const FILE_DATE_FMT: &'static str = "%Y_%m_%d";
+    const DISPLAY_DATE_FMT: &'static str = "%Y-%m-%d";
     pub fn from_path(value: impl AsRef<Path>) -> Result<Self, SourceErrorKind> {
         let path = value.as_ref().with_extension("");
         let file_name = path.file_name().ok_or(SourceErrorKind::NotAFile)?;

@@ -390,7 +390,7 @@ impl MultiIndex<'static> {
 }
 
 impl<'a> MultiIndex<'a> {
-    pub const SUBSERIES_DELIMENITER: &str = ": ";
+    pub const SUBSERIES_DELIMENITER: &'static str = ": ";
     async fn possible(path: impl AsRef<Path> + Send + Sync) -> HashMap<OsString, Index<'a>> {
         let path = path.as_ref();
         let mut known = HashMap::new();

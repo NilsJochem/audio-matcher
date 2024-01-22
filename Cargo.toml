@@ -5,11 +5,11 @@ edition = "2021"
 default-run = "audio-matcher"
 
 [workspace]
-members = ["common", "audacity", "progress_bar", "opus_tag"]
+members = ["audacity", "progress_bar", "opus_tag"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-common = { path = "./common" }
+common = { path = "./../lib/rust_common" }
 progress_bar = { path = "./progress_bar" }
 audacity = { path = "./audacity" }
 opus_tag = { path = "./opus_tag" }
