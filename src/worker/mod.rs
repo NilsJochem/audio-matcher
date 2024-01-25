@@ -250,11 +250,10 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
                 } else {
                     // find all possible numbers starting with current input
                     (0..self.index().len())
-                        .filter_map(|i| {
-                            i.to_string().starts_with(&number.nr.to_string()).then(|| {
-                                let number = ChapterNumber::from(i);
-                                (number, self.index().get(number).unwrap())
-                            })
+                        .filter(|&i| i.to_string().starts_with(&number.nr.to_string()))
+                        .map(|i| {
+                            let number = ChapterNumber::from(i);
+                            (number, self.index().get(number).unwrap())
                         })
                         .collect_vec()
                 }
