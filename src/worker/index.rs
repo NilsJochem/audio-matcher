@@ -520,13 +520,13 @@ mod tests {
     #[tokio::test]
     async fn list_possibilitys() {
         let m_index =
-            MultiIndex::new("/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current".into()).await;
+            MultiIndex::new("/home/nilsj/Musik/newly ripped/Aufnahmen/current".into()).await;
         assert_eq!(
             vec![
-                "Die Letzte Fahrt der Nautilus",
-                "Goldagengarden",
                 "Gruselkabinett",
+                "Kassandras Kinder",
                 "Sherlock Holmes",
+                "Terra Mortis",
                 "test"
             ],
             m_index.get_possible().into_iter().collect_vec()

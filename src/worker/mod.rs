@@ -532,7 +532,9 @@ async fn merge_parts<'a>(
         .write_assume_empty(audacity::command::RemoveTracks)
         .await?;
     let grouped_labels = labels.iter().into_group_map_by(|label| {
-        let Some((series, nr,_, chapter)) = crate::archive::data::Archive::parse_line(label.name.as_ref().unwrap()) else {
+        let Some((series, nr, _, chapter)) =
+            crate::archive::data::Archive::parse_line(label.name.as_ref().unwrap())
+        else {
             panic!("couldn't parse {:?}", label.name.as_ref().unwrap());
         };
         (series, nr, chapter)
@@ -730,7 +732,7 @@ mod tests {
     async fn test_chapter_completer() {
         let metric = common::str::filter::Levenshtein::new(true);
         let binding = Index::try_read_from_path(
-            "/media/nilsj/SData/Audio/newly ripped/Aufnahmen/current/Gruselkabinett/index.toml",
+            "/home/nilsj/Musik/newly ripped/Aufnahmen/current/Gruselkabinett/index.toml",
         )
         .await
         .unwrap();
