@@ -5,12 +5,11 @@ edition = "2021"
 default-run = "audio-matcher"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-# TODO change local dependencies to git deps
 [dependencies]
-common = { path = "./../lib/rust/common" }
-progress_bar = { path = "./../lib/rust/progress_bar" }
-audacity = { path = "./../lib/rust/audacity" }
-opus_tag = { path = "./../lib/rust/opus_tag" }
+common = { git = "ssh://git@github.com/NilsJochem/rust-common" }
+progress_bar = { git = "ssh://git@github.com/NilsJochem/progress_bar" }
+audacity = { git = "ssh://git@github.com/NilsJochem/audacity" }
+opus_tag = { git = "ssh://git@github.com/NilsJochem/opus_tag" }
 itertools = "0.12.0"
 clap = { version = "4.4", features = ["derive"] }
 thiserror = "1.0"
