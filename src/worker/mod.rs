@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
+
 use toml::value::{Date, Datetime};
 
 use crate::{
@@ -71,6 +72,223 @@ impl LazyApi {
         })
     }
 }
+mod progress {
+    use itertools::{Itertools, Position};
+    use std::path::PathBuf;
+    use tokio::{
+        fs,
+        io::{AsyncBufReadExt, AsyncWriteExt},
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum ProgressState {
+        Loaded,
+        Named,
+        Done,
+    }
+    impl<'a> TryFrom<&'a str> for ProgressState {
+        type Error = &'a str;
+
+        fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+            match value.to_ascii_lowercase().as_str() {
+                "loaded" => Ok(Self::Loaded),
+                "named" => Ok(Self::Named),
+                "done" => Ok(Self::Done),
+                _ => Err(value),
+            }
+        }
+    }
+    impl From<ProgressState> for &'static str {
+        fn from(value: ProgressState) -> Self {
+            match value {
+                ProgressState::Loaded => "loaded",
+                ProgressState::Named => "named",
+                ProgressState::Done => "done",
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Progress {
+        file: PathBuf,
+        content: Vec<(String, ProgressState)>,
+        need_save: bool,
+    }
+    impl Progress {
+        pub async fn read(path: impl Into<PathBuf>) -> Result<Self, std::io::Error> {
+            let mut content = Vec::new();
+            let path = path.into();
+            let mut lines = tokio::io::BufReader::new(fs::File::open(&path).await?).lines();
+            while let Some(line) = lines.next_line().await? {
+                match line
+                    .rsplit_once(' ')
+                    .map(|(path, state)| (path, ProgressState::try_from(state)))
+                {
+                    None => log::warn!("can't parse"),
+                    Some((path, Err(state))) => log::warn!("unkown state {state:?} for {path}"),
+                    Some((path, Ok(state))) => {
+                        if let Some((pos, (old_path, _))) =
+                            content.iter().find_position(|&(it, _)| path == it)
+                        {
+                            todo!("duplicate at {pos}:{old_path:?} {}:{path:?}", content.len());
+                        } else {
+                            content.push((path.to_owned(), state));
+                        }
+                    }
+                }
+            }
+
+            Ok(Self {
+                file: path,
+                content,
+                need_save: false,
+            })
+        }
+
+        pub async fn delete(self) -> std::io::Result<()> {
+            if fs::try_exists(&self.file).await? {
+                fs::remove_file(self.file).await?;
+            }
+            Ok(())
+        }
+        pub async fn save(&self) -> std::io::Result<()> {
+            if !self.need_save {
+                return Ok(());
+            }
+            todo!("save full file")
+        }
+        pub async fn append(
+            &mut self,
+            name: impl AsRef<str>,
+            state: ProgressState,
+        ) -> std::io::Result<()> {
+            // assumes no external change to the file
+            self.save().await?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .read(true)
+                .create(true)
+                .open(&self.file)
+                .await?;
+
+            let line = format!("{} {state:?}\n", name.as_ref());
+
+            match self
+                .content
+                .iter_mut()
+                .with_position()
+                .filter(|(_, (last_name, _))| last_name.as_str() == name.as_ref())
+                .last()
+            {
+                None => self.content.push((name.as_ref().to_owned(), state)),
+                Some((Position::Last | Position::Only, last)) => {
+                    last.1 = state;
+                    common::io::truncate_last_lines::<1>(&mut file).await?;
+                }
+                Some((Position::First | Position::Middle, _last)) => {
+                    todo!("handle non last occurance");
+                }
+            }
+            file.write_all(line.as_bytes()).await?;
+            file.flush().await
+        }
+        //todo truncate
+        #[allow(dead_code)]
+        pub fn set(&mut self, name: String, state: ProgressState) {
+            // todo try append
+            if let Some(last) = self
+                .content
+                .iter_mut()
+                .find(|(last_name, _)| last_name.as_str() == name.as_str())
+                .map(|(_, state)| state)
+            {
+                *last = state;
+            } else {
+                self.content.push((name, state));
+            }
+            self.need_save = true;
+        }
+        #[allow(dead_code)]
+        pub fn remove(&mut self, name: impl AsRef<str>) {
+            if let Some((pos, _)) = self
+                .content
+                .iter()
+                .find_position(|(last_name, _)| last_name.as_str() == name.as_ref())
+            {
+                // todo truncate
+                // if pos == self.content.len()-1 {
+                //  self.truncate(1);
+                //  return;
+                // }
+                self.content.remove(pos);
+                self.need_save = true;
+            }
+        }
+        pub fn get(&self, name: impl AsRef<str>) -> Option<ProgressState> {
+            self.content
+                .iter()
+                .find(|(last_name, _)| last_name.as_str() == name.as_ref())
+                .map(|(_, state)| *state)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn read() {
+            let data = Progress::read(PathBuf::from("./res/progress.txt"))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                vec![
+                    ("element 1".to_owned(), ProgressState::Done),
+                    ("element 2".to_owned(), ProgressState::Loaded),
+                    ("element 3".to_owned(), ProgressState::Done),
+                    ("element 4".to_owned(), ProgressState::Named)
+                ],
+                data.content
+            );
+        }
+        #[tokio::test]
+        async fn get() {
+            let data = Progress::read(PathBuf::from("./res/progress.txt"))
+                .await
+                .unwrap();
+
+            assert_eq!(Some(ProgressState::Done), data.get("element 1"));
+            assert_eq!(Some(ProgressState::Loaded), data.get("element 2"));
+            assert_eq!(Some(ProgressState::Done), data.get("element 3"));
+            assert_eq!(Some(ProgressState::Named), data.get("element 4"));
+            assert_eq!(None, data.get("element 5"));
+        }
+        #[tokio::test]
+        async fn append() {
+            let file = common::io::TmpFile::new_copy(
+                PathBuf::from("./res/progress_append.txt"),
+                "./res/progress.txt",
+            )
+            .unwrap();
+            let mut data = Progress::read(file.as_ref()).await.unwrap();
+            data.append("element 4", ProgressState::Done).await.unwrap();
+
+            assert_eq!(
+                Some(ProgressState::Done),
+                data.get("element 4"),
+                "failed to update internal data"
+            );
+
+            let data = Progress::read(file.as_ref()).await.unwrap();
+            assert_eq!(
+                Some(ProgressState::Done),
+                data.get("element 4"),
+                "failed to update file"
+            );
+        }
+    }
+}
 
 pub async fn run(args: &Arguments) -> Result<(), Error> {
     assert!(
@@ -82,20 +300,36 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         Some(path) => Some((MultiIndex::new(path.to_owned())).await),
         None => None,
     };
+    let mut already_done = progress::Progress::read(args.tmp_path().join(".done.txt"))
+        .await
+        .unwrap();
 
     for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let label_path = audio_path.with_extension("txt");
         let audacity_api = audacity_api.get_api_handle().await?;
 
-        if !args.skip_load() {
+        let name = audio_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let state = already_done.get(&name);
+
+        if !args.skip_load() && state.is_some_and(|state| state >= progress::ProgressState::Loaded)
+        {
             prepare_project(audacity_api, audio_path, &label_path).await?;
+            already_done
+                .append(&name, progress::ProgressState::Loaded)
+                .await
+                .unwrap();
         }
-        audacity_api
-            .zoom_to(audacity::Selection::All, audacity::Save::Discard)
-            .await?;
 
         // start rename
-        if !args.skip_name() {
+        if !args.skip_name() && state.is_some_and(|state| state >= progress::ProgressState::Named) {
+            audacity_api
+                .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+                .await?;
+
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
             rename_labels(args, audacity_api, m_index.as_mut()).await?;
             adjust_labels(audacity_api).await?;
@@ -103,50 +337,61 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             audacity_api
                 .export_all_labels_to(label_path, args.dry_run())
                 .await?;
+
+            already_done
+                .append(&name, progress::ProgressState::Named)
+                .await
+                .unwrap();
         }
-
-        //start export
-        let tags = merge_parts(
-            args,
-            audacity_api,
-            m_index.as_mut().expect("need index"),
-            audacity::TrackHint::LabelTrackNr(0),
-        )
-        .await?;
-        let _ = Inputs::read(
-            // "remove all lables you don't want to export and then press enter to start exporting",
-            "remove all lables you don't want to remove, then press Ctrl+Shift+E to export and then press enter to continue",
-            None,
-        );
-        // TODO find out how to fix "Ihr Stapelverarbeitungs-Befehl ExportAudio wurde nicht erkannt."
-        // audacity_api
-        //     .write_assume_empty(audacity::command::ExportAudio)
-        //     .await?;
-
-        let (mut tags, missing) = tags
-            .into_iter()
-            .partition::<Vec<_>, _>(|tag| tag.path().exists());
-
-        missing.into_iter().for_each(TaggedFile::drop_changes);
-
-        if tags.is_empty() {
-            log::warn!("no files exported, skipping move");
-        } else {
-            for tag in &mut tags {
-                tag.reload_empty()
-                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
-                tag.save_changes(false)
-                    .map_err(|err| Error::Tag(tag.path().into(), err))?;
-            }
-            move_results(
-                tags.iter(),
-                args.tmp_path(),
-                args.index_folder().unwrap_or_else(|| args.tmp_path()),
+        if state.is_some_and(|state| state >= progress::ProgressState::Done) {
+            //start export
+            let tags = merge_parts(
                 args,
+                audacity_api,
+                m_index.as_mut().expect("need index"),
+                audacity::TrackHint::LabelTrackNr(0),
             )
             .await?;
+            let _ = Inputs::read(
+                // "remove all lables you don't want to export and then press enter to start exporting",
+                "remove all lables you don't want to remove, then press Ctrl+Shift+E to export and then press enter to continue",
+                None,
+            );
+            // TODO find out how to fix "Ihr Stapelverarbeitungs-Befehl ExportAudio wurde nicht erkannt."
+            // audacity_api
+            //     .write_assume_empty(audacity::command::ExportAudio)
+            //     .await?;
+
+            let (mut tags, missing) = tags
+                .into_iter()
+                .partition::<Vec<_>, _>(|tag| tag.path().exists());
+
+            missing.into_iter().for_each(TaggedFile::drop_changes);
+
+            if tags.is_empty() {
+                log::warn!("no files exported, skipping move");
+            } else {
+                for tag in &mut tags {
+                    tag.reload_empty()
+                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                    tag.save_changes(false)
+                        .map_err(|err| Error::Tag(tag.path().into(), err))?;
+                }
+                move_results(
+                    tags.iter(),
+                    args.tmp_path(),
+                    args.index_folder().unwrap_or_else(|| args.tmp_path()),
+                    args,
+                )
+                .await?;
+            }
+            drop(tags);
+
+            already_done
+                .append(name, progress::ProgressState::Done)
+                .await
+                .unwrap();
         }
-        drop(tags);
 
         if !args.skip_load() {
             // clear audacity after each round, but exit in last round
@@ -158,7 +403,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await?;
         }
     }
-
+    already_done.delete().await.unwrap();
     Ok(())
 }
 
