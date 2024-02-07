@@ -1,6 +1,6 @@
 use audacity::AudacityApi;
 use common::{
-    args::input::autocompleter,
+    args::input::autocompleter::{self, VecCompleter},
     extensions::{
         iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
         vec::PushReturn,
@@ -607,32 +607,90 @@ async fn rename_labels(
     Ok(())
 }
 
+#[derive(Debug)]
+struct WithCommandsCompleter<'cac, AC> {
+    ac: AC,
+    command_prefix: char,
+    commands: &'cac mut VecCompleter,
+}
+impl<'a, AC: common::args::input::autocompleter::Autocomplete>
+    common::args::input::autocompleter::Autocomplete for WithCommandsCompleter<'a, AC>
+{
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
+        match input.strip_prefix(self.command_prefix) {
+            Some(command) => self
+                .commands
+                .get_suggestions(command)
+                .map(|mut list| list.map(|it| format!("{}{it}", self.command_prefix))),
+            None => self.ac.get_suggestions(input),
+        }
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
+        match input.strip_prefix(self.command_prefix) {
+            Some(command) => self
+                .commands
+                .get_completion(command, highlighted_suggestion)
+                .map(|it| it.map(|it| format!("{}{it}", self.command_prefix))),
+            None => self.ac.get_completion(input, highlighted_suggestion),
+        }
+    }
+}
+
+const COMMAND_PREFIX: char = '>';
+// wrongly marked as not working
+lazy_static::lazy_static! {
+    static ref COMMAND_AC: std::sync::Mutex<VecCompleter> = std::sync::Mutex::new(
+        VecCompleter::from_iter(
+            ["reload"],
+            common::str::filter::Levenshtein::new(true),
+        )
+    );
+}
+
 pub async fn read_index_from_args<'a, 'b>(
     args: &Arguments,
-    m_index: Option<&'b mut MultiIndex<'a>>,
+    mut m_index: Option<&'b mut MultiIndex<'a>>,
 ) -> Result<(String, Option<common::boo::Boo<'b, Index<'a>>>), crate::worker::index::Error> {
     const MSG: &str = "Welche Serie ist heute dran:";
 
-    let series = m_index.as_ref().map_or_else(
-        || Inputs::read(MSG, None),
-        |m_index| {
+    let series = match m_index.as_mut() {
+        None => Inputs::read(MSG, None),
+        Some(m_index) => loop {
             let known = m_index
                 .get_possible()
                 .into_iter()
                 .map(|it| it.to_str().expect("only UTF-8").to_owned())
                 .collect_vec();
-            Inputs::read_with_suggestion(
+            let read = Inputs::read_with_suggestion(
                 MSG,
                 None,
-                autocompleter::VecCompleter::new(
-                    known,
-                    common::str::filter::Levenshtein::new(true),
-                ),
-            )
+                WithCommandsCompleter {
+                    ac: autocompleter::VecCompleter::new(
+                        known,
+                        common::str::filter::Levenshtein::new(true),
+                    ),
+                    command_prefix: COMMAND_PREFIX,
+                    commands: &mut COMMAND_AC.lock().unwrap(),
+                },
+            );
+            match read.strip_prefix(COMMAND_PREFIX) {
+                Some("reload") => {
+                    m_index.reload().await;
+                    continue;
+                }
+                Some(command) => println!("unkown command {command}"),
+                None => break read,
+            }
         },
-    );
-    if let Some(series) = series.strip_prefix('#') {
-        return Ok((series[1..].to_owned(), None));
+    };
+
+    if let Some(value) = filter_direct(&series) {
+        return Ok((value, None));
     }
     let index = match m_index {
         Some(m_index) => {
@@ -683,6 +741,13 @@ pub async fn read_index_from_args<'a, 'b>(
         }
     };
     Ok((series, index))
+}
+
+fn filter_direct<'a>(series: impl AsRef<str>) -> Option<String> {
+    series
+        .as_ref()
+        .strip_prefix('#')
+        .map(|series| series[1..].to_owned())
 }
 
 pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {

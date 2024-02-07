@@ -445,6 +445,9 @@ impl<'a> MultiIndex<'a> {
 
         known
     }
+    pub async fn reload(&mut self) {
+        self.data = Self::possible(&self.folder).await;
+    }
     pub fn get_possible(&self) -> impl IntoIterator<Item = &OsStr> {
         self.data.keys().map(OsString::as_ref).sorted()
     }
