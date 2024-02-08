@@ -1,6 +1,7 @@
 use audacity::AudacityApi;
 use common::{
     args::input::autocompleter::{self, VecCompleter},
+    boo::Boo,
     extensions::{
         iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
         vec::PushReturn,
@@ -535,7 +536,10 @@ async fn rename_labels(
     let labels = audacity.get_label_info().await?;
     assert!(labels.len() == 1, "expecting one label track");
 
-    let (series, index) = read_index_from_args(args, m_index).await?;
+    let (series, index) = match m_index {
+        Some(m_index) => m_index.read_index_from_args(args).await?,
+        None => ().read_index_from_args(args).await?,
+    };
     let index = index.as_deref();
     let mut ac = index
         .as_ref()
@@ -641,6 +645,7 @@ impl<'a, AC: common::args::input::autocompleter::Autocomplete>
     }
 }
 
+const MSG: &str = "Welche Serie ist heute dran:";
 const COMMAND_PREFIX: char = '>';
 // wrongly marked as not working
 lazy_static::lazy_static! {
@@ -652,102 +657,164 @@ lazy_static::lazy_static! {
     );
 }
 
-pub async fn read_index_from_args<'a, 'b>(
-    args: &Arguments,
-    mut m_index: Option<&'b mut MultiIndex<'a>>,
-) -> Result<(String, Option<common::boo::Boo<'b, Index<'a>>>), crate::worker::index::Error> {
-    const MSG: &str = "Welche Serie ist heute dran:";
-
-    let series = match m_index.as_mut() {
-        None => Inputs::read(MSG, None),
-        Some(m_index) => loop {
-            let known = m_index
-                .get_possible()
-                .into_iter()
-                .map(|it| it.to_str().expect("only UTF-8").to_owned())
-                .collect_vec();
-            let read = Inputs::read_with_suggestion(
-                MSG,
-                None,
-                WithCommandsCompleter {
-                    ac: autocompleter::VecCompleter::new(
-                        known,
-                        common::str::filter::Levenshtein::new(true),
-                    ),
-                    command_prefix: COMMAND_PREFIX,
-                    commands: &mut COMMAND_AC.lock().unwrap(),
-                },
-            );
-            match read.strip_prefix(COMMAND_PREFIX) {
-                Some("reload") => {
-                    m_index.reload().await;
-                    continue;
-                }
-                Some(command) => println!("unkown command {command}"),
-                None => break read,
+pub enum Void {}
+pub enum LoopControlFlow<B, R, Res> {
+    Continue,
+    Break(B),
+    Return(R),
+    Result(Res),
+}
+pub trait IndexAccessor<'b, 'i: 'b> {
+    async fn read_index_from_args(
+        mut self,
+        args: &Arguments,
+    ) -> Result<(String, Option<common::boo::Boo<'b, Index<'i>>>), crate::worker::index::Error>
+    where
+        Self: Sized + 'b,
+    {
+        let mut m_index = std::ptr::NonNull::from(&mut self);
+        loop {
+            // SAFTY reseting lifetime each loop, as there are no references kept on retry
+            let m_index = unsafe { m_index.as_mut() };
+            let series = match m_index.read_series(args).await {
+                LoopControlFlow::Continue => continue,
+                LoopControlFlow::Result(series) => series,
+                LoopControlFlow::Break(_) | LoopControlFlow::Return(_) => unreachable!(),
+            };
+            if let Some(value) = Self::filter_direct(&series) {
+                return Ok((value, None));
             }
-        },
-    };
 
-    if let Some(value) = filter_direct(&series) {
-        return Ok((value, None));
+            match m_index.get_index(args, &series).await {
+                LoopControlFlow::Continue => continue,
+                LoopControlFlow::Return(err) => return Err(err),
+                LoopControlFlow::Result(index) => return Ok((series, index)),
+                LoopControlFlow::Break(_) => unreachable!(),
+            };
+        }
     }
-    let index = match m_index {
-        Some(m_index) => {
-            // SAFTY: path points to the path of m_index.
-            // This is needed, because the mutable borrow of get_index makes it impossible to get a reference to Path, even if they will not interact.
-            let path = unsafe { std::ptr::NonNull::from(m_index.path()).as_ref() };
-            let map = m_index.get_index(OsString::from(series.as_str())).await;
-            match map {
-                Ok(x) => Some(common::boo::Boo::Borrowed(x)),
-                Err(index::Error::SeriesNotFound) => {
-                    todo!("couldn't find {series:?} in {:?} re-ask for series", path)
-                }
-                Err(index::Error::NoIndexFile) => todo!("ask for direct path"),
-                Err(index::Error::NotSupportedFile(_)) => unreachable!(),
-                Err(
-                    index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _),
-                ) => {
-                    // SAFTY: we are in an error path of map, so map is always an error
-                    return Err(unsafe { map.unwrap_err_unchecked() });
-                }
-            }
-        }
-        None => {
-            let path = args
-                .always_answer()
-                .try_read(
-                    "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                    Some(None),
-                    |it| Some(Some(PathBuf::from(it))),
-                )
-                .unwrap_or_else(|| unreachable!());
-            match path {
-                Some(path) => crate::worker::index::Index::try_read_from_path(path)
-                    .await
-                    .map(common::boo::Boo::Owned)
-                    .map(Some)
-                    .or_else(|err| match err {
-                        index::Error::SeriesNotFound => unreachable!(),
-                        index::Error::NoIndexFile | index::Error::NotSupportedFile(_) => {
-                            todo!("re-ask for path")
-                        }
-                        index::Error::Parse(_, _)
-                        | index::Error::Serde(_)
-                        | index::Error::IO(_, _) => Err(err),
-                    })?,
-                None => None,
-            }
-        }
-    };
-    Ok((series, index))
+
+    fn filter_direct<'a>(series: impl AsRef<str>) -> Option<String> {
+        series
+            .as_ref()
+            .strip_prefix('#')
+            .map(|series| series[1..].to_owned())
+    }
+
+    async fn read_series(&mut self, args: &Arguments) -> LoopControlFlow<Void, Void, String>;
+    async fn get_index<'s: 'b>(
+        &'s mut self,
+        args: &Arguments,
+        series: &str,
+    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>>;
+}
+impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for &mut MultiIndex<'i> {
+    async fn read_series(&mut self, args: &Arguments) -> LoopControlFlow<Void, Void, String> {
+        <MultiIndex<'i> as IndexAccessor<'b, 'i>>::read_series(self, args).await
+    }
+
+    async fn get_index<'s: 'b>(
+        &'s mut self,
+        args: &Arguments,
+        series: &str,
+    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>> {
+        <MultiIndex<'i> as IndexAccessor<'b, 'i>>::get_index(self, args, series).await
+    }
 }
 
-fn filter_direct<'a>(series: impl AsRef<str>) -> Option<String> {
-    series
-        .as_ref()
-        .strip_prefix('#')
-        .map(|series| series[1..].to_owned())
+impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for MultiIndex<'i> {
+    async fn read_series(&mut self, _args: &Arguments) -> LoopControlFlow<Void, Void, String> {
+        let known = self
+            .get_possible()
+            .into_iter()
+            .map(|it| it.to_str().expect("only UTF-8").to_owned())
+            .collect_vec();
+        let read = Inputs::read_with_suggestion(
+            MSG,
+            None,
+            WithCommandsCompleter {
+                ac: autocompleter::VecCompleter::new(
+                    known,
+                    common::str::filter::Levenshtein::new(true),
+                ),
+                command_prefix: COMMAND_PREFIX,
+                commands: &mut COMMAND_AC.lock().unwrap(),
+            },
+        );
+        match read.strip_prefix(COMMAND_PREFIX) {
+            Some("reload") => {
+                self.reload().await;
+                LoopControlFlow::Continue
+            }
+            Some(command) => {
+                println!("unkown command {command}");
+                LoopControlFlow::Continue
+            }
+            None => LoopControlFlow::Result(read),
+        }
+    }
+    async fn get_index<'s: 'b>(
+        &'s mut self,
+        args: &Arguments,
+        series: &str,
+    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>> {
+        // SAFTY: path points to the path of m_index.
+        // This is needed, because the mutable borrow of get_index makes it impossible to get a reference to Path, even if they will not interact.
+        let path = unsafe { std::ptr::NonNull::from(self.path()).as_ref() };
+        let map = self.get_index(OsString::from(series)).await;
+        match map {
+            Ok(x) => LoopControlFlow::Result(Some(common::boo::Boo::Borrowed(x))),
+            Err(index::Error::SeriesNotFound) => {
+                log::info!("couldn't find {series:?} in {path:?} re-ask for series");
+                LoopControlFlow::Continue
+            }
+            Err(index::Error::NoIndexFile) => {
+                todo!("ask for direct path")
+                // ().get_index(args, series).await
+            }
+            Err(index::Error::NotSupportedFile(_)) => unreachable!(),
+            Err(index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _)) => {
+                // SAFTY: we are in an error path of map, so map is always an error
+                LoopControlFlow::Return(unsafe { map.unwrap_err_unchecked() })
+            }
+        }
+    }
+}
+
+impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for () {
+    async fn read_series(&mut self, _args: &Arguments) -> LoopControlFlow<Void, Void, String> {
+        LoopControlFlow::Result(Inputs::read(MSG, None))
+    }
+    async fn get_index<'s: 'b>(
+        &'s mut self,
+        args: &Arguments,
+        _series: &str,
+    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>> {
+        let path = args
+            .always_answer()
+            .try_read(
+                "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                Some(None),
+                |it| Some(Some(PathBuf::from(it))),
+            )
+            .unwrap_or_else(|| unreachable!());
+        match path {
+            Some(path) => {
+                let map = crate::worker::index::Index::try_read_from_path(path).await;
+                match map {
+                    Ok(index) => LoopControlFlow::Result(Some(Boo::Owned(index))),
+                    Err(index::Error::SeriesNotFound) => unreachable!(),
+                    Err(index::Error::NoIndexFile | index::Error::NotSupportedFile(_)) => {
+                        todo!("re-ask for path")
+                    }
+                    Err(
+                        index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _),
+                    ) => LoopControlFlow::Return(unsafe { map.unwrap_err_unchecked() }),
+                }
+            }
+            None => LoopControlFlow::Result(None),
+        }
+    }
 }
 
 pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
