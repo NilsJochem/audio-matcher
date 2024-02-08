@@ -6,6 +6,7 @@ use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
     ffi::{OsStr, OsString},
+    fmt::Debug,
     path::{Path, PathBuf},
 };
 use toml::value::Datetime;
@@ -380,7 +381,14 @@ pub struct MultiIndex<'a> {
     folder: PathBuf,
     data: HashMap<OsString, Index<'a>>,
 }
-
+impl<'i> Debug for MultiIndex<'i> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiIndex")
+            .field("folder", &self.folder)
+            .field("data", &self.data.keys())
+            .finish()
+    }
+}
 impl MultiIndex<'static> {
     #[must_use]
     pub async fn new(folder: PathBuf) -> Self {

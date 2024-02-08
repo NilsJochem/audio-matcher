@@ -429,6 +429,119 @@ async fn prepare_project(
 }
 
 #[derive(Debug)]
+enum CompleterState {
+    Command,
+    Series(String),
+    None,
+}
+#[derive(Debug)]
+pub struct FullNameCompleter<'c, 'i, Metric> {
+    state: CompleterState,
+    m_index: &'i mut MultiIndex<'i>,
+    metric: Metric,
+    command_prefix: &'static str,
+    commands: &'c [&'c str],
+}
+impl<'i, Metric: common::str::filter::StrMetric> FullNameCompleter<'static, 'i, Metric> {
+    #[must_use]
+    pub fn new(m_index: &'i mut MultiIndex<'i>, metric: Metric) -> Self {
+        Self {
+            state: CompleterState::None,
+            m_index,
+            metric,
+            command_prefix: "> ",
+            commands: &["reload"],
+        }
+    }
+}
+
+impl<'c, 'i, Metric: common::str::filter::StrMetric + Clone + Send + Sync + 'static>
+    autocompleter::Autocomplete for FullNameCompleter<'c, 'i, Metric>
+{
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
+        if let Some(command) = input.strip_prefix(self.command_prefix) {
+            self.state = CompleterState::Command;
+            return Ok(common::str::filter::sort_with(
+                &self.metric,
+                self.commands.iter(),
+                command,
+                |it| it,
+            )
+            .map(|&it| format!("{}{}", self.command_prefix, it))
+            .collect_vec());
+        }
+
+        match &self.state {
+            CompleterState::Series(series) => {
+                if let Some(chapter_start) = input
+                    .strip_prefix(series)
+                    .and_then(|it| it.strip_prefix(' '))
+                {
+                    return match futures::executor::block_on(self.m_index.get_index(series.into()))
+                    {
+                        Ok(index) => ChapterCompleter::new(index, self.metric.clone())
+                            .get_suggestions(chapter_start)
+                            .map(|res| {
+                                res.into_iter()
+                                    .map(|it| format!("{series} {it}"))
+                                    .collect_vec()
+                            }),
+                        Err(index::Error::SeriesNotFound | index::Error::NoIndexFile) => {
+                            log::info!("couldn't find series, just let the user write stuff");
+                            Ok(Vec::new())
+                        }
+                        Err(err) => Err(err.into()),
+                    };
+                } else {
+                    self.state = CompleterState::None;
+                }
+            }
+            CompleterState::Command => self.state = CompleterState::None, // inputs startig with command prefix where already filtered
+            _ => {}
+        };
+
+        // only state = None remaining, ask for series
+        let known = self
+            .m_index
+            .get_possible()
+            .into_iter()
+            .map(|it| it.to_str().expect("only UTF-8"));
+        Ok(
+            common::str::filter::sort_with(&self.metric, known, input, |it| it)
+                .map(|it| it.to_owned())
+                .collect_vec(),
+        )
+    }
+
+    fn get_completion(
+        &mut self,
+        _input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
+        Ok(match &self.state {
+            CompleterState::Command | CompleterState::Series(_) => highlighted_suggestion,
+            CompleterState::None => {
+                if let Some(series) = highlighted_suggestion.clone() {
+                    self.state = CompleterState::Series(series);
+                }
+
+                highlighted_suggestion.map(|it| format!("{it} "))
+            }
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "user input test"]
+async fn full_ac_test() {
+    let mut m_index =
+        MultiIndex::new("/home/nilsj/Musik/newly ripped/Aufnahmen/current".into()).await;
+    let ac = FullNameCompleter::new(&mut m_index, common::str::filter::Levenshtein::new(true));
+    let res = common::args::input::Inputs::read_with_suggestion("gib ein Kapitel an:", None, ac);
+    println!("{res:?} wurde gelesen");
+}
+
+#[derive(Debug)]
 pub struct ChapterCompleter<'a> {
     index: Box<dyn ChapterList + 'a + Send + Sync>,
     metric: Box<dyn common::str::filter::StrMetric + Send + Sync>,
