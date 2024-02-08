@@ -82,12 +82,12 @@ mod progress {
     };
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    pub enum ProgressState {
+    pub enum State {
         Loaded,
         Named,
         Done,
     }
-    impl<'a> TryFrom<&'a str> for ProgressState {
+    impl<'a> TryFrom<&'a str> for State {
         type Error = &'a str;
 
         fn try_from(value: &'a str) -> Result<Self, Self::Error> {
@@ -99,12 +99,12 @@ mod progress {
             }
         }
     }
-    impl From<ProgressState> for &'static str {
-        fn from(value: ProgressState) -> Self {
+    impl From<State> for &'static str {
+        fn from(value: State) -> Self {
             match value {
-                ProgressState::Loaded => "loaded",
-                ProgressState::Named => "named",
-                ProgressState::Done => "done",
+                State::Loaded => "loaded",
+                State::Named => "named",
+                State::Done => "done",
             }
         }
     }
@@ -112,18 +112,18 @@ mod progress {
     #[derive(Debug)]
     pub struct Progress {
         file: PathBuf,
-        content: Vec<(String, ProgressState)>,
+        content: Vec<(String, State)>,
         need_save: bool,
     }
     impl Progress {
-        pub async fn read(path: impl Into<PathBuf>) -> Result<Self, std::io::Error> {
+        pub async fn read(path: impl Into<PathBuf> + Send) -> Result<Self, std::io::Error> {
             let mut content = Vec::new();
             let path = path.into();
             let mut lines = tokio::io::BufReader::new(fs::File::open(&path).await?).lines();
             while let Some(line) = lines.next_line().await? {
                 match line
                     .rsplit_once(' ')
-                    .map(|(path, state)| (path, ProgressState::try_from(state)))
+                    .map(|(path, state)| (path, State::try_from(state)))
                 {
                     None => log::warn!("can't parse"),
                     Some((path, Err(state))) => log::warn!("unkown state {state:?} for {path}"),
@@ -152,6 +152,7 @@ mod progress {
             }
             Ok(())
         }
+        #[allow(clippy::unused_async)]
         pub async fn save(&self) -> std::io::Result<()> {
             if !self.need_save {
                 return Ok(());
@@ -160,8 +161,8 @@ mod progress {
         }
         pub async fn append(
             &mut self,
-            name: impl AsRef<str>,
-            state: ProgressState,
+            name: impl AsRef<str> + Send,
+            state: State,
         ) -> std::io::Result<()> {
             // assumes no external change to the file
             self.save().await?;
@@ -195,7 +196,7 @@ mod progress {
         }
         //todo truncate
         #[allow(dead_code)]
-        pub fn set(&mut self, name: String, state: ProgressState) {
+        pub fn set(&mut self, name: String, state: State) {
             // todo try append
             if let Some(last) = self
                 .content
@@ -225,7 +226,7 @@ mod progress {
                 self.need_save = true;
             }
         }
-        pub fn get(&self, name: impl AsRef<str>) -> Option<ProgressState> {
+        pub fn get(&self, name: impl AsRef<str>) -> Option<State> {
             self.content
                 .iter()
                 .find(|(last_name, _)| last_name.as_str() == name.as_ref())
@@ -245,10 +246,10 @@ mod progress {
 
             assert_eq!(
                 vec![
-                    ("element 1".to_owned(), ProgressState::Done),
-                    ("element 2".to_owned(), ProgressState::Loaded),
-                    ("element 3".to_owned(), ProgressState::Done),
-                    ("element 4".to_owned(), ProgressState::Named)
+                    ("element 1".to_owned(), State::Done),
+                    ("element 2".to_owned(), State::Loaded),
+                    ("element 3".to_owned(), State::Done),
+                    ("element 4".to_owned(), State::Named)
                 ],
                 data.content
             );
@@ -259,10 +260,10 @@ mod progress {
                 .await
                 .unwrap();
 
-            assert_eq!(Some(ProgressState::Done), data.get("element 1"));
-            assert_eq!(Some(ProgressState::Loaded), data.get("element 2"));
-            assert_eq!(Some(ProgressState::Done), data.get("element 3"));
-            assert_eq!(Some(ProgressState::Named), data.get("element 4"));
+            assert_eq!(Some(State::Done), data.get("element 1"));
+            assert_eq!(Some(State::Loaded), data.get("element 2"));
+            assert_eq!(Some(State::Done), data.get("element 3"));
+            assert_eq!(Some(State::Named), data.get("element 4"));
             assert_eq!(None, data.get("element 5"));
         }
         #[tokio::test]
@@ -273,17 +274,17 @@ mod progress {
             )
             .unwrap();
             let mut data = Progress::read(file.as_ref()).await.unwrap();
-            data.append("element 4", ProgressState::Done).await.unwrap();
+            data.append("element 4", State::Done).await.unwrap();
 
             assert_eq!(
-                Some(ProgressState::Done),
+                Some(State::Done),
                 data.get("element 4"),
                 "failed to update internal data"
             );
 
             let data = Progress::read(file.as_ref()).await.unwrap();
             assert_eq!(
-                Some(ProgressState::Done),
+                Some(State::Done),
                 data.get("element 4"),
                 "failed to update file"
             );
@@ -316,17 +317,16 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             .into_owned();
         let state = already_done.get(&name);
 
-        if !args.skip_load() && state.is_some_and(|state| state >= progress::ProgressState::Loaded)
-        {
+        if !args.skip_load() && state.is_some_and(|state| state >= progress::State::Loaded) {
             prepare_project(audacity_api, audio_path, &label_path).await?;
             already_done
-                .append(&name, progress::ProgressState::Loaded)
+                .append(&name, progress::State::Loaded)
                 .await
                 .unwrap();
         }
 
         // start rename
-        if !args.skip_name() && state.is_some_and(|state| state >= progress::ProgressState::Named) {
+        if !args.skip_name() && state.is_some_and(|state| state >= progress::State::Named) {
             audacity_api
                 .zoom_to(audacity::Selection::All, audacity::Save::Discard)
                 .await?;
@@ -340,11 +340,11 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await?;
 
             already_done
-                .append(&name, progress::ProgressState::Named)
+                .append(&name, progress::State::Named)
                 .await
                 .unwrap();
         }
-        if state.is_some_and(|state| state >= progress::ProgressState::Done) {
+        if state.is_some_and(|state| state >= progress::State::Done) {
             //start export
             let tags = merge_parts(
                 args,
@@ -389,7 +389,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             drop(tags);
 
             already_done
-                .append(name, progress::ProgressState::Done)
+                .append(name, progress::State::Done)
                 .await
                 .unwrap();
         }
@@ -622,10 +622,11 @@ impl<'a, AC: common::args::input::autocompleter::Autocomplete>
 {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
         match input.strip_prefix(self.command_prefix) {
-            Some(command) => self
-                .commands
-                .get_suggestions(command)
-                .map(|mut list| list.map(|it| format!("{}{it}", self.command_prefix))),
+            Some(command) => self.commands.get_suggestions(command).map(|list| {
+                list.into_iter()
+                    .map(|it| format!("{}{it}", self.command_prefix))
+                    .collect_vec()
+            }),
             None => self.ac.get_suggestions(input),
         }
     }
@@ -647,7 +648,6 @@ impl<'a, AC: common::args::input::autocompleter::Autocomplete>
 
 const MSG: &str = "Welche Serie ist heute dran:";
 const COMMAND_PREFIX: char = '>';
-// wrongly marked as not working
 lazy_static::lazy_static! {
     static ref COMMAND_AC: std::sync::Mutex<VecCompleter> = std::sync::Mutex::new(
         VecCompleter::from_iter(
@@ -657,14 +657,15 @@ lazy_static::lazy_static! {
     );
 }
 
-pub enum Void {}
-pub enum LoopControlFlow<B, R, Res> {
+enum Void {}
+#[allow(dead_code)]
+enum LoopControlFlow<B, R, Res> {
     Continue,
     Break(B),
     Return(R),
     Result(Res),
 }
-pub trait IndexAccessor<'b, 'i: 'b> {
+trait IndexAccessor<'b, 'i: 'b> {
     async fn read_index_from_args(
         mut self,
         args: &Arguments,
@@ -672,10 +673,9 @@ pub trait IndexAccessor<'b, 'i: 'b> {
     where
         Self: Sized + 'b,
     {
-        let mut m_index = std::ptr::NonNull::from(&mut self);
         loop {
             // SAFTY reseting lifetime each loop, as there are no references kept on retry
-            let m_index = unsafe { m_index.as_mut() };
+            let m_index = unsafe { std::ptr::NonNull::from(&mut self).as_mut() };
             let series = match m_index.read_series(args).await {
                 LoopControlFlow::Continue => continue,
                 LoopControlFlow::Result(series) => series,
@@ -694,7 +694,7 @@ pub trait IndexAccessor<'b, 'i: 'b> {
         }
     }
 
-    fn filter_direct<'a>(series: impl AsRef<str>) -> Option<String> {
+    fn filter_direct(series: impl AsRef<str>) -> Option<String> {
         series
             .as_ref()
             .strip_prefix('#')
@@ -755,7 +755,7 @@ impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for MultiIndex<'i> {
     }
     async fn get_index<'s: 'b>(
         &'s mut self,
-        args: &Arguments,
+        _args: &Arguments,
         series: &str,
     ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>> {
         // SAFTY: path points to the path of m_index.
@@ -770,7 +770,7 @@ impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for MultiIndex<'i> {
             }
             Err(index::Error::NoIndexFile) => {
                 todo!("ask for direct path")
-                // ().get_index(args, series).await
+                // ().get_index(_args, series).await
             }
             Err(index::Error::NotSupportedFile(_)) => unreachable!(),
             Err(index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _)) => {
