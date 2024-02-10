@@ -119,7 +119,15 @@ mod progress {
         pub async fn read(path: impl Into<PathBuf> + Send) -> Result<Self, std::io::Error> {
             let mut content = Vec::new();
             let path = path.into();
-            let mut lines = tokio::io::BufReader::new(fs::File::open(&path).await?).lines();
+            let mut lines = tokio::io::BufReader::new(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&path)
+                    .await?,
+            )
+            .lines();
             while let Some(line) = lines.next_line().await? {
                 match line
                     .rsplit_once(' ')
