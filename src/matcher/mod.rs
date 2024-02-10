@@ -75,10 +75,12 @@ pub fn run(args: &args::Arguments) -> Result<(), CliError> {
 
         trace!("collecting main duration");
         let m_duration = mp3_reader::mp3_duration(main_file, false)?;
+        let samples = (m_duration.as_secs_f64() * sr as f64) as usize;
+        trace!("duration is {m_duration:?} with sr {sr} impling #{samples} samples");
         trace!("calculation chunks");
         let peaks = audio_matcher::calc_chunks(
             sr,
-            m_samples.with_size((m_duration.as_secs_f64() * sr as f64) as usize),
+            m_samples.with_size(samples),
             &algo,
             true,
             audio_matcher::Config::from_args(args, s_duration),
