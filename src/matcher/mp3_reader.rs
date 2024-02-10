@@ -67,8 +67,13 @@ fn frame_iterator(
 
 #[test]
 fn wierd_length() {
+    use common::extensions::duration::{duration_from_h_m_s_m, Ext};
     let len = mp3_duration::from_path("res/local/89.0rtl-2023_12_29 (04).mp3").unwrap();
-    assert!(len > common::extensions::duration::duration_from_h_m_s_m(2, 10, 0, 0), "reportet lenfth of {len:?} to short");
+    let target = duration_from_h_m_s_m(2, 11, 49, 0);
+    assert!(
+        len.is_near_to(target, Duration::from_secs(1)),
+        "expected {target:?}, got length of {len:?}"
+    );
 }
 
 pub fn mp3_duration(path: impl AsRef<Path>, use_parallel: bool) -> Result<Duration, CliError> {
