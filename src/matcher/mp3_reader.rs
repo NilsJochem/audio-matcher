@@ -65,6 +65,12 @@ fn frame_iterator(
     ))
 }
 
+#[test]
+fn wierd_length() {
+    let len = mp3_duration::from_path("res/local/89.0rtl-2023_12_29 (04).mp3").unwrap();
+    assert!(len > common::extensions::duration::duration_from_h_m_s_m(2, 10, 0, 0), "reportet lenfth of {len:?} to short");
+}
+
 pub fn mp3_duration(path: impl AsRef<Path>, use_parallel: bool) -> Result<Duration, CliError> {
     use crate::worker::tagger;
     let path = path.as_ref();
