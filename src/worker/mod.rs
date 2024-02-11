@@ -1,9 +1,10 @@
-use audacity::AudacityApi;
+use audacity::{data::TimeLabel, AudacityApi};
 use common::{
     args::input::autocompleter::{self, VecCompleter},
     boo::Boo,
     extensions::{
         iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
+        option::Ext,
         vec::PushReturn,
     },
 };
@@ -155,8 +156,10 @@ mod progress {
             })
         }
 
+        #[allow(dead_code)]
         pub async fn delete(self) -> std::io::Result<()> {
             if fs::try_exists(&self.file).await? {
+                log::debug!("deleting progress file");
                 fs::remove_file(self.file).await?;
             }
             Ok(())
@@ -326,16 +329,18 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             .into_owned();
         let state = already_done.get(&name);
 
-        if !args.skip_load() && state.is_some_and(|state| state >= progress::State::Loaded) {
+        if !args.skip_load() && state.is_none_or(|state| state < progress::State::Loaded) {
             prepare_project(audacity_api, audio_path, &label_path).await?;
             already_done
                 .append(&name, progress::State::Loaded)
                 .await
                 .unwrap();
+        } else {
+            log::debug!("skipping load")
         }
 
         // start rename
-        if !args.skip_name() && state.is_some_and(|state| state >= progress::State::Named) {
+        if !args.skip_name() && state.is_none_or(|state| state < progress::State::Named) {
             audacity_api
                 .zoom_to(audacity::Selection::All, audacity::Save::Discard)
                 .await?;
@@ -352,8 +357,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .append(&name, progress::State::Named)
                 .await
                 .unwrap();
+        } else {
+            log::debug!("skipping naming")
         }
-        if state.is_some_and(|state| state >= progress::State::Done) {
+        if state.is_none_or(|state| state < progress::State::Done) {
             //start export
             let tags = merge_parts(
                 args,
@@ -401,6 +408,8 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .append(name, progress::State::Done)
                 .await
                 .unwrap();
+        } else {
+            log::debug!("skipping export")
         }
 
         if !args.skip_load() {
@@ -413,7 +422,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await?;
         }
     }
-    already_done.delete().await.unwrap();
+    // download of progress done in external script
     Ok(())
 }
 
@@ -686,8 +695,15 @@ async fn rename_labels<'i>(
     const ASK_PARTS_MSG: &str = "Wie viele Teile hat die n\u{e4}chste Folge";
     const ASK_NUMBER_MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
 
-    let mut labels = audacity.get_label_info().await?;
-    assert!(labels.len() == 1, "expecting one label track");
+    async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
+        let labels = api.get_label_info().await?;
+        Ok(labels
+            .into_values()
+            .exactly_one()
+            .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
+    }
+
+    let mut labels = get_labels(audacity).await?;
 
     if let Some(m_index) = m_index {
         let mut expected_next: Option<(String, ChapterNumber)> = None;
@@ -695,9 +711,12 @@ async fn rename_labels<'i>(
         let mut i = 0;
         while i < labels.len() {
             let (series, chapter_number, chapter_name) = loop {
-                let ac =
+                let mut ac =
                     FullNameCompleter::new(m_index, common::str::filter::Levenshtein::new(true));
-                let prefix = ac.command_prefix;
+                if let Some((series, _)) = expected_next.as_ref() {
+                    ac.state = CompleterState::Series(series.clone())
+                }
+                let command_prefix = ac.command_prefix;
                 let res = common::args::input::Inputs::read_with_suggestion(
                     ASK_ALL_MSG,
                     expected_next
@@ -706,14 +725,13 @@ async fn rename_labels<'i>(
                         .as_deref(),
                     ac,
                 );
-                match res.strip_prefix(prefix).map(str::parse) {
+                match res.strip_prefix(command_prefix).map(str::parse) {
                     Some(Ok(Command::ReloadIndex)) => {
                         m_index.reload().await;
                         continue;
                     }
                     Some(Ok(Command::ReloadLable)) => {
-                        labels = audacity.get_label_info().await?;
-                        assert!(labels.len() == 1, "expecting one label track");
+                        labels = get_labels(audacity).await?;
                         continue;
                     }
                     Some(Err(command)) => {
@@ -769,7 +787,6 @@ async fn rename_labels<'i>(
             ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true))
         });
 
-        let labels = labels.into_values().next().unwrap();
         let mut expected_next_chapter_number: Option<ChapterNumber> = None;
         let mut i = 0;
         while i < labels.len() {
