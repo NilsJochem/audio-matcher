@@ -1103,41 +1103,6 @@ mod rename_labels {
     }
 }
 
-#[derive(Debug)]
-struct WithCommandsCompleter<'cac, AC> {
-    ac: AC,
-    command_prefix: char,
-    commands: &'cac mut VecCompleter,
-}
-impl<'a, AC: common::args::input::autocompleter::Autocomplete>
-    common::args::input::autocompleter::Autocomplete for WithCommandsCompleter<'a, AC>
-{
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
-        match input.strip_prefix(self.command_prefix) {
-            Some(command) => self.commands.get_suggestions(command).map(|list| {
-                list.into_iter()
-                    .map(|it| format!("{}{it}", self.command_prefix))
-                    .collect_vec()
-            }),
-            None => self.ac.get_suggestions(input),
-        }
-    }
-
-    fn get_completion(
-        &mut self,
-        input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
-        match input.strip_prefix(self.command_prefix) {
-            Some(command) => self
-                .commands
-                .get_completion(command, highlighted_suggestion)
-                .map(|it| it.map(|it| format!("{}{it}", self.command_prefix))),
-            None => self.ac.get_completion(input, highlighted_suggestion),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 #[error("couldn't move file {file:?} to {dst:?}, with reason \"{source}\"")]
 pub struct MoveError {
