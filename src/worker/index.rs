@@ -464,6 +464,13 @@ impl<'a> MultiIndex<'a> {
         &self.folder
     }
 
+    pub fn has_index(&self, series: &OsString) -> bool {
+        self.data.contains_key(series)
+    }
+    pub fn get_known_index(&mut self, series: OsString) -> Option<&Index<'a>> {
+        self.data.get(&series)
+    }
+
     pub async fn get_index(&mut self, series: OsString) -> Result<&Index<'a>, Error> {
         if let Entry::Vacant(entry) = self.data.entry(series.clone()) {
             entry.insert(Index::try_read_index(self.folder.clone(), series.clone()).await?);

@@ -351,7 +351,6 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             audacity_api
                 .zoom_to(audacity::Selection::All, audacity::Save::Discard)
                 .await?;
-
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
 
             if let Some(m_index) = m_index.as_mut() {
@@ -364,6 +363,9 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 rename_labels::adjust_labels(audacity_api).await?;
             }
 
+            audacity_api
+                .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+                .await?;
             audacity_api
                 .export_all_labels_to(label_path, args.dry_run())
                 .await?;
@@ -626,21 +628,17 @@ mod rename_labels {
                         .strip_prefix(series)
                         .and_then(|it| it.strip_prefix(' '))
                     {
-                        return match futures::executor::block_on(
-                            self.m_index.get_index(series.into()),
-                        ) {
-                            Ok(index) => ChapterCompleter::new(index, self.metric.clone())
+                        return if let Some(index) = self.m_index.get_known_index(series.into()) {
+                            ChapterCompleter::new(index, self.metric.clone())
                                 .get_suggestions(chapter_start)
                                 .map(|res| {
                                     res.into_iter()
                                         .map(|it| format!("{series} {it}"))
                                         .collect_vec()
-                                }),
-                            Err(IdxError::SeriesNotFound | IdxError::NoIndexFile) => {
-                                log::info!("couldn't find series, just let the user write stuff");
-                                Ok(Vec::new())
-                            }
-                            Err(err) => Err(err.into()),
+                                })
+                        } else {
+                            println!("couldn't find series, just let the user write stuff");
+                            Ok(Vec::new())
                         };
                     }
                     self.state = CompleterState::None;
@@ -924,7 +922,7 @@ mod rename_labels {
         api: &'a mut AudacityApi,
         m_index: &'r mut MultiIndex<'i>,
         labels: Vec<TimeLabel>,
-        last_read: Option<(String, ChapterNumber, usize)>,
+        last_read: Option<(String, ChapterNumber, usize, String)>,
         i: usize,
     }
     impl<'a, 'r, 'i> FancyNamer<'a, 'r, 'i> {
@@ -950,20 +948,27 @@ mod rename_labels {
                 )
                 .await?;
                 let (series, chapter_number, chapter_name, part) = loop {
+                    let initial = match self.last_read.as_ref() {
+                        Some((series, nr, _, chapter)) => {
+                            Some(if self.m_index.has_index(&series.into()) {
+                                format!("{series} {nr}")
+                            } else {
+                                format!("{series} {nr} {chapter}") // keep chapter when no index is found
+                            })
+                        }
+                        None => None,
+                    };
                     let mut ac = FullNameCompleter::new(
                         self.m_index,
                         common::str::filter::Levenshtein::new(true),
                     );
-                    if let Some((series, _, _)) = self.last_read.as_ref() {
+                    if let Some((series, _, _, _)) = self.last_read.as_ref() {
                         ac.state = CompleterState::Series(series.clone());
                     }
                     let command_prefix = ac.command_prefix;
                     let res = common::args::input::Inputs::read_with_suggestion(
                         ASK_ALL_MSG,
-                        self.last_read
-                            .as_ref()
-                            .map(|(series, nr, _)| format!("{series} {nr}"))
-                            .as_deref(),
+                        initial.as_deref(),
                         ac,
                     );
 
@@ -973,7 +978,7 @@ mod rename_labels {
                             continue;
                         }
                         Some(Err(command)) => {
-                            log::info!("unkown command {command:?}");
+                            println!("unkown command {command:?}");
                             continue;
                         }
                         None => {}
@@ -991,11 +996,11 @@ mod rename_labels {
                         let part = self
                             .last_read
                             .as_ref()
-                            .filter(|(last_series, last_nr, _)| {
+                            .filter(|(last_series, last_nr, _, _)| {
                                 last_series == series && *last_nr == nr
                             })
-                            .map_or(1, |(_, _, last_part)| last_part + 1);
-                        self.last_read = Some((series.to_owned(), nr, part));
+                            .map_or(1, |(_, _, last_part, _)| last_part + 1);
+                        self.last_read = Some((series.to_owned(), nr, part, chapter.clone()));
                         break (series.to_owned(), nr, chapter, part);
                     }
                     println!("konnte {res} nicht erkennen");
@@ -1076,9 +1081,7 @@ mod rename_labels {
                 None,
             );
         }
-        audacity
-            .zoom_to(audacity::Selection::All, audacity::Save::Discard)
-            .await
+        Ok(())
     }
     async fn zoom_to_label(
         api: &mut audacity::AudacityApi,
@@ -1215,8 +1218,6 @@ async fn merge_parts<'a>(
     let mut tags = Vec::new();
     for ((series, chapter_number, chapter_name), offsets) in offsets {
         let chapter_name = chapter_name.unwrap();
-        let index = m_index.get_index(OsString::from(series)).await.unwrap();
-        let entry = index.get(chapter_number);
 
         let mut path = args.tmp_path().to_path_buf();
         path.push(build_timelabel_name::<OsStr, _, _>(
@@ -1232,22 +1233,27 @@ async fn merge_parts<'a>(
         tag.set::<Album>(series.as_ref());
         tag.set::<Genre>(args.genre());
         tag.set::<Track>(chapter_number.nr as u32);
-        tag.set::<TotalTracks>(index.main_len() as u32);
-        if let Some(artist) = entry.artist {
-            tag.set::<Artist>(artist.as_ref());
-        }
-        match entry.release {
-            Some(
-                index::DateOrYear::Year(year)
-                | index::DateOrYear::Date(Datetime {
-                    date: Some(Date { year, .. }),
-                    ..
-                }),
-            ) => tag.set::<Year>(year as i32),
-            Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
-                log::warn!("release didn't have a date");
+
+        if let Some(index) = m_index.get_index(OsString::from(series)).await.ok() {
+            let entry = index.get(chapter_number);
+
+            tag.set::<TotalTracks>(index.main_len() as u32);
+            if let Some(artist) = entry.artist {
+                tag.set::<Artist>(artist.as_ref());
             }
-            None => {}
+            match entry.release {
+                Some(
+                    index::DateOrYear::Year(year)
+                    | index::DateOrYear::Date(Datetime {
+                        date: Some(Date { year, .. }),
+                        ..
+                    }),
+                ) => tag.set::<Year>(year as i32),
+                Some(index::DateOrYear::Date(Datetime { date: None, .. })) => {
+                    log::warn!("release didn't have a date");
+                }
+                None => {}
+            }
         }
         if !offsets.is_empty() {
             // don't add only label at 0
