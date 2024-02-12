@@ -1,9 +1,8 @@
-use audacity::{data::TimeLabel, AudacityApi};
+use audacity::AudacityApi;
 use common::{
     args::input::autocompleter::{self, VecCompleter},
-    boo::Boo,
     extensions::{
-        iter::{CloneIteratorExt, FutIterExt, IteratorExt, State},
+        iter::{FutIterExt, IteratorExt},
         option::Ext,
         vec::PushReturn,
     },
@@ -17,7 +16,6 @@ use std::{
     ffi::OsString,
     fmt::{Debug, Write},
     path::{Path, PathBuf},
-    str::FromStr,
     time::Duration,
 };
 use thiserror::Error;
@@ -50,6 +48,15 @@ pub enum Error {
     Tag(PathBuf, #[source] tagger::Error),
 }
 
+enum Void {}
+#[allow(dead_code)]
+enum LoopControlFlow<B, R, Res> {
+    Continue,
+    Break(B),
+    Return(R),
+    Result(Res),
+}
+
 struct LazyApi {
     timeout: Option<Duration>,
     cache: Option<AudacityApi>,
@@ -80,7 +87,7 @@ mod progress {
     use std::path::PathBuf;
     use tokio::{
         fs,
-        io::{AsyncBufReadExt, AsyncWriteExt},
+        io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt},
     };
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -203,6 +210,7 @@ mod progress {
                     todo!("handle non last occurance");
                 }
             }
+            file.seek(std::io::SeekFrom::End(0)).await?;
             file.write_all(line.as_bytes()).await?;
             file.flush().await
         }
@@ -336,7 +344,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await
                 .unwrap();
         } else {
-            log::debug!("skipping load")
+            log::debug!("skipping load");
         }
 
         // start rename
@@ -348,12 +356,11 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
 
             if let Some(m_index) = m_index.as_mut() {
-                rename_labels_fancy(args, audacity_api, m_index).await?;
-                adjust_labels(audacity_api).await?;
+                rename_labels::name_and_adjust(audacity_api, m_index).await?;
             } else {
                 // TODO clean else path
-                rename_labels(args, audacity_api).await?;
-                adjust_labels(audacity_api).await?;
+                rename_labels::old(args, audacity_api).await?;
+                rename_labels::adjust_labels(audacity_api).await?;
             }
 
             audacity_api
@@ -365,7 +372,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await
                 .unwrap();
         } else {
-            log::debug!("skipping naming")
+            log::debug!("skipping naming");
         }
         if state.is_none_or(|state| state < progress::State::Done) {
             //start export
@@ -416,7 +423,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await
                 .unwrap();
         } else {
-            log::debug!("skipping export")
+            log::debug!("skipping export");
         }
 
         if !args.skip_load() {
@@ -451,146 +458,6 @@ async fn prepare_project(
         .import_labels_from(label_path, None::<&str>)
         .await?;
     Ok(())
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Command {
-    ReloadIndex,
-    ReloadLable,
-}
-impl FromStr for Command {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "reload_lable" => Ok(Self::ReloadLable),
-            "reload_index" => Ok(Self::ReloadIndex),
-            _ => Err(s.to_owned()),
-        }
-    }
-}
-impl From<Command> for &'static str {
-    fn from(value: Command) -> Self {
-        match value {
-            Command::ReloadLable => "reload_lable",
-            Command::ReloadIndex => "reload_index",
-        }
-    }
-}
-impl Command {
-    fn iter() -> std::array::IntoIter<Self, 2> {
-        [Self::ReloadIndex, Self::ReloadLable].into_iter()
-    }
-}
-
-#[derive(Debug)]
-enum CompleterState {
-    Command,
-    Series(String),
-    None,
-}
-#[derive(Debug)]
-pub struct FullNameCompleter<'r, 'i, Metric> {
-    state: CompleterState,
-    m_index: &'r mut MultiIndex<'i>,
-    metric: Metric,
-    command_prefix: &'static str,
-}
-impl<'i, 'r, Metric: common::str::filter::StrMetric> FullNameCompleter<'r, 'i, Metric> {
-    #[must_use]
-    pub fn new(m_index: &'r mut MultiIndex<'i>, metric: Metric) -> Self {
-        Self {
-            state: CompleterState::None,
-            m_index,
-            metric,
-            command_prefix: "> ",
-        }
-    }
-}
-
-impl<'r, 'i, Metric: common::str::filter::StrMetric + Clone + Send + Sync + 'static>
-    autocompleter::Autocomplete for FullNameCompleter<'r, 'i, Metric>
-{
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
-        if let Some(command) = input.strip_prefix(self.command_prefix) {
-            self.state = CompleterState::Command;
-            return Ok(common::str::filter::sort_with(
-                &self.metric,
-                Command::iter().map(<&'static str as From<_>>::from),
-                command,
-                |it| it,
-            )
-            .map(|it| format!("{}{}", self.command_prefix, it))
-            .collect_vec());
-        }
-
-        match &self.state {
-            CompleterState::Series(series) => {
-                if let Some(chapter_start) = input
-                    .strip_prefix(series)
-                    .and_then(|it| it.strip_prefix(' '))
-                {
-                    return match futures::executor::block_on(self.m_index.get_index(series.into()))
-                    {
-                        Ok(index) => ChapterCompleter::new(index, self.metric.clone())
-                            .get_suggestions(chapter_start)
-                            .map(|res| {
-                                res.into_iter()
-                                    .map(|it| format!("{series} {it}"))
-                                    .collect_vec()
-                            }),
-                        Err(index::Error::SeriesNotFound | index::Error::NoIndexFile) => {
-                            log::info!("couldn't find series, just let the user write stuff");
-                            Ok(Vec::new())
-                        }
-                        Err(err) => Err(err.into()),
-                    };
-                }
-                self.state = CompleterState::None;
-            }
-            CompleterState::Command => self.state = CompleterState::None, // inputs startig with command prefix where already filtered
-            CompleterState::None => {}
-        };
-
-        // only state = None remaining, ask for series
-        let known = self
-            .m_index
-            .get_possible()
-            .into_iter()
-            .map(|it| it.to_str().expect("only UTF-8"));
-        Ok(
-            common::str::filter::sort_with(&self.metric, known, input, |it| it)
-                .map(std::borrow::ToOwned::to_owned)
-                .collect_vec(),
-        )
-    }
-
-    fn get_completion(
-        &mut self,
-        _input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
-        Ok(match &self.state {
-            CompleterState::Command | CompleterState::Series(_) => highlighted_suggestion,
-            CompleterState::None => {
-                if let Some(series) = highlighted_suggestion.clone() {
-                    self.state = CompleterState::Series(series);
-                }
-
-                highlighted_suggestion.map(|it| format!("{it} "))
-            }
-        })
-    }
-}
-
-#[tokio::test]
-#[ignore = "user input test"]
-async fn full_ac_test() {
-    let mut m_index =
-        MultiIndex::new("/home/nilsj/Musik/newly ripped/Aufnahmen/current".into()).await;
-    let ac = FullNameCompleter::new(&mut m_index, common::str::filter::Levenshtein::new(true));
-    let res = common::args::input::Inputs::read_with_suggestion("gib ein Kapitel an:", None, ac);
-    println!("{res:?} wurde gelesen");
 }
 
 #[derive(Debug)]
@@ -691,174 +558,468 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
     }
 }
 
-///expecting that number of parts divides the length of the input or default to 4
-const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
-const ASK_ALL_MSG: &str = "Was ist die n\u{e4}chste Folge:";
-const ASK_PARTS_MSG: &str = "Wie viele Teile hat die n\u{e4}chste Folge";
-const ASK_NUMBER_MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
+mod rename_labels {
+    use itertools::Itertools;
+    use std::{borrow::Cow, path::PathBuf, str::FromStr, time::Duration};
 
-async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
-    let labels = api.get_label_info().await?;
-    Ok(labels
-        .into_values()
-        .exactly_one()
-        .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
-}
+    use audacity::{data::TimeLabel, AudacityApi};
+    use common::{
+        args::input::{
+            autocompleter::{self, VecCompleter},
+            Inputs,
+        },
+        boo::Boo,
+        extensions::iter::{CloneIteratorExt, State},
+    };
 
-async fn rename_labels(args: &Arguments, api: &mut audacity::AudacityApi) -> Result<(), Error> {
-    let labels = get_labels(api).await?;
-    let (series, index) = ().read_index_from_args(args).await?;
-    let index = index.as_deref();
-    let mut ac = index
-        .as_ref()
-        .map(|&index| ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true)));
+    use super::{args::Arguments, ChapterCompleter, Error, LoopControlFlow, Void};
+    use crate::{
+        archive::data::{build_timelabel_name, ChapterNumber},
+        worker::index::{Error as IdxError, Index, MultiIndex},
+    };
 
-    let mut expected_next_chapter_number: Option<ChapterNumber> = None;
-    let mut i = 0;
-    while i < labels.len() {
-        let chapter_number = match ac.as_mut() {
-            Some(index) => {
-                let input = Inputs::read_with_suggestion(
-                    format!("{ASK_NUMBER_MSG}:"),
-                    expected_next_chapter_number
-                        .map(|it| it.to_string())
-                        .as_deref(),
-                    index,
-                );
-                input
-                    .split_once(' ')
-                    .map_or(input.as_ref(), |it| it.0)
-                    .parse::<ChapterNumber>()
-                    .ok()
-            }
-            None => args.always_answer().try_read(
-                &format!(
-                    "{ASK_NUMBER_MSG}{}: ",
-                    expected_next_chapter_number
-                        .map_or_else(String::new, |next| format!(", erwarte {next}"))
-                ),
-                expected_next_chapter_number,
-                |rin| rin.parse::<ChapterNumber>().ok(),
-            ),
-        }
-        .expect("gib was vern\u{fc}nftiges ein");
-        expected_next_chapter_number = Some(chapter_number.next());
-
-        let chapter_name = index.map_or_else(
-            || Cow::Owned(request_next_chapter_name()),
-            |it| it.get(chapter_number).title,
-        );
-
-        let remaining = labels.len() - i;
-        let expected_number = EXPECTED_PARTS
-            .get(labels.len())
-            .map_or(4, |i| *i)
-            .min(remaining);
-        let number = read_number(
-            args.always_answer(),
-            &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
-            Some(expected_number),
-        )
-        .min(remaining);
-        for j in 0..number {
-            let name = build_timelabel_name(
-                series.as_str(),
-                &chapter_number,
-                j + 1,
-                chapter_name.as_ref(),
-            );
-            let name = name.to_str().expect("only utf-8 support");
-            api.set_label(i + j, Some(name), None, None, Some(false))
-                .await?;
-        }
-        i += number;
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    enum Command {
+        ReloadIndex,
+        ReloadLabel,
+        Restart,
     }
-    Ok(())
-}
+    impl FromStr for Command {
+        type Err = String;
 
-async fn rename_labels_fancy(
-    args: &Arguments,
-    api: &mut audacity::AudacityApi,
-    m_index: &mut MultiIndex<'_>,
-) -> Result<(), Error> {
-    let mut labels = get_labels(api).await?;
-    let mut last_read: Option<(String, ChapterNumber)> = None;
-    let mut i = 0;
-    Ok(while i < labels.len() {
-        let (series, chapter_number, chapter_name) =
-            read_next_series(api, m_index, &mut labels, &last_read).await?;
-
-        last_read = Some((series.clone(), chapter_number));
-
-        let remaining = labels.len() - i;
-        let expected_number = EXPECTED_PARTS
-            .get(labels.len())
-            .map_or(4, |i| *i)
-            .min(remaining);
-        let number = read_number(
-            args.always_answer(),
-            &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
-            Some(expected_number),
-        )
-        .min(remaining);
-        for j in 0..number {
-            let name = build_timelabel_name(series.as_str(), &chapter_number, j + 1, &chapter_name);
-            let name = name.to_str().expect("only utf-8 support");
-            api.set_label(i + j, Some(name), None, None, Some(false))
-                .await?;
-        }
-        i += number;
-    })
-}
-
-async fn read_next_series(
-    api: &mut audacity::AudacityApi,
-    m_index: &mut MultiIndex<'_>,
-    labels: &mut Vec<TimeLabel>,
-    last_read: &Option<(String, ChapterNumber)>,
-) -> Result<(String, ChapterNumber, String), Error> {
-    Ok(loop {
-        let mut ac = FullNameCompleter::new(m_index, common::str::filter::Levenshtein::new(true));
-        if let Some((series, _)) = last_read.as_ref() {
-            ac.state = CompleterState::Series(series.clone())
-        }
-        let command_prefix = ac.command_prefix;
-        let res = common::args::input::Inputs::read_with_suggestion(
-            ASK_ALL_MSG,
-            last_read
-                .as_ref()
-                .map(|(series, nr)| format!("{series} {}", nr.next()))
-                .as_deref(),
-            ac,
-        );
-        match res.strip_prefix(command_prefix).map(str::parse) {
-            Some(Ok(Command::ReloadIndex)) => {
-                m_index.reload().await;
-                continue;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s {
+                "reload_label" => Ok(Self::ReloadLabel),
+                "reload_index" => Ok(Self::ReloadIndex),
+                "resize" => Ok(Self::Restart),
+                _ => Err(s.to_owned()),
             }
-            Some(Ok(Command::ReloadLable)) => {
-                *labels = get_labels(api).await?;
-                continue;
-            }
-            Some(Err(command)) => {
-                log::info!("unkown command {command:?}");
-                continue;
-            }
-            None => {}
         }
-        if let Some((series, nr, _, chapter)) = crate::archive::data::Archive::parse_line(&res) {
-            let chapter = match chapter {
-                Some(chapter) => chapter.to_owned(),
-                None => match m_index.get_index(series.into()).await {
-                    Ok(index) => index.get(nr).title.into_owned(),
-                    Err(_) => request_next_chapter_name(),
-                },
+    }
+    impl From<Command> for &'static str {
+        fn from(value: Command) -> Self {
+            match value {
+                Command::ReloadLabel => "reload_label",
+                Command::ReloadIndex => "reload_index",
+                Command::Restart => "resize",
+            }
+        }
+    }
+    impl Command {
+        fn iter() -> std::array::IntoIter<Self, 2> {
+            [Self::ReloadIndex, Self::ReloadLabel].into_iter()
+        }
+    }
+
+    #[derive(Debug)]
+    enum CompleterState {
+        Command,
+        Series(String),
+        None,
+    }
+    #[derive(Debug)]
+    pub struct FullNameCompleter<'r, 'i, Metric> {
+        state: CompleterState,
+        m_index: &'r mut MultiIndex<'i>,
+        metric: Metric,
+        command_prefix: &'static str,
+    }
+    impl<'i, 'r, Metric: common::str::filter::StrMetric> FullNameCompleter<'r, 'i, Metric> {
+        #[must_use]
+        pub fn new(m_index: &'r mut MultiIndex<'i>, metric: Metric) -> Self {
+            Self {
+                state: CompleterState::None,
+                m_index,
+                metric,
+                command_prefix: "> ",
+            }
+        }
+    }
+
+    impl<'r, 'i, Metric: common::str::filter::StrMetric + Clone + Send + Sync + 'static>
+        autocompleter::Autocomplete for FullNameCompleter<'r, 'i, Metric>
+    {
+        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, autocompleter::Error> {
+            if let Some(command) = input.strip_prefix(self.command_prefix) {
+                self.state = CompleterState::Command;
+                return Ok(common::str::filter::sort_with(
+                    &self.metric,
+                    Command::iter().map(<&'static str as From<_>>::from),
+                    command,
+                    |it| it,
+                )
+                .map(|it| format!("{}{}", self.command_prefix, it))
+                .collect_vec());
+            }
+
+            match &self.state {
+                CompleterState::Series(series) => {
+                    if let Some(chapter_start) = input
+                        .strip_prefix(series)
+                        .and_then(|it| it.strip_prefix(' '))
+                    {
+                        return match futures::executor::block_on(
+                            self.m_index.get_index(series.into()),
+                        ) {
+                            Ok(index) => ChapterCompleter::new(index, self.metric.clone())
+                                .get_suggestions(chapter_start)
+                                .map(|res| {
+                                    res.into_iter()
+                                        .map(|it| format!("{series} {it}"))
+                                        .collect_vec()
+                                }),
+                            Err(IdxError::SeriesNotFound | IdxError::NoIndexFile) => {
+                                log::info!("couldn't find series, just let the user write stuff");
+                                Ok(Vec::new())
+                            }
+                            Err(err) => Err(err.into()),
+                        };
+                    }
+                    self.state = CompleterState::None;
+                }
+                CompleterState::Command => self.state = CompleterState::None, // inputs startig with command prefix where already filtered
+                CompleterState::None => {}
             };
-            break (series.to_owned(), nr, chapter);
+
+            // only state = None remaining, ask for series
+            let known = self
+                .m_index
+                .get_possible()
+                .into_iter()
+                .map(|it| it.to_str().expect("only UTF-8"));
+            Ok(
+                common::str::filter::sort_with(&self.metric, known, input, |it| it)
+                    .map(std::borrow::ToOwned::to_owned)
+                    .collect_vec(),
+            )
         }
 
-        println!("konnte {res} nicht erkennen");
-    })
+        fn get_completion(
+            &mut self,
+            _input: &str,
+            highlighted_suggestion: Option<String>,
+        ) -> Result<autocompleter::Replacement, autocompleter::Error> {
+            Ok(match &self.state {
+                CompleterState::Command | CompleterState::Series(_) => highlighted_suggestion,
+                CompleterState::None => {
+                    if let Some(series) = highlighted_suggestion.clone() {
+                        self.state = CompleterState::Series(series);
+                    }
+
+                    highlighted_suggestion.map(|it| format!("{it} "))
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "user input test"]
+    async fn full_ac_test() {
+        let mut m_index =
+            MultiIndex::new("/home/nilsj/Musik/newly ripped/Aufnahmen/current".into()).await;
+        let ac = FullNameCompleter::new(&mut m_index, common::str::filter::Levenshtein::new(true));
+        let res =
+            common::args::input::Inputs::read_with_suggestion("gib ein Kapitel an:", None, ac);
+        println!("{res:?} wurde gelesen");
+    }
+
+    ///expecting that number of parts divides the length of the input or default to 4
+    const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
+    const ASK_ALL_MSG: &str = "Was ist die n\u{e4}chste Folge:";
+    const ASK_PARTS_MSG: &str = "Wie viele Teile hat die n\u{e4}chste Folge";
+    const ASK_NUMBER_MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
+    const MSG: &str = "Welche Serie ist heute dran:";
+
+    async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
+        let labels = api.get_label_info().await?;
+        Ok(labels
+            .into_values()
+            .exactly_one()
+            .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
+    }
+    fn request_next_chapter_name() -> String {
+        Inputs::read("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
+    }
+    fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> usize {
+        input
+            .try_read(msg, default, |rin| rin.parse().ok())
+            .expect("gib was vern\u{fc}nftiges ein")
+    }
+
+    lazy_static::lazy_static! {
+        static ref COMMAND_AC: std::sync::Mutex<VecCompleter> = std::sync::Mutex::new(
+            VecCompleter::from_iter(
+                ["reload"],
+                common::str::filter::Levenshtein::new(true),
+            )
+        );
+    }
+
+    trait IndexAccessor<'b, 'i: 'b> {
+        async fn read_index_from_args(
+            mut self,
+            args: &Arguments,
+        ) -> Result<(String, Option<common::boo::Boo<'b, Index<'i>>>), IdxError>
+        where
+            Self: Sized + 'b,
+        {
+            loop {
+                // SAFTY reseting lifetime each loop, as there are no references kept on retry
+                let m_index = unsafe { std::ptr::NonNull::from(&mut self).as_mut() };
+                let series = match m_index.read_series(args).await {
+                    LoopControlFlow::Continue => continue,
+                    LoopControlFlow::Result(series) => series,
+                    LoopControlFlow::Break(_) | LoopControlFlow::Return(_) => unreachable!(),
+                };
+                if let Some(value) = Self::filter_direct(&series) {
+                    return Ok((value, None));
+                }
+
+                match m_index.get_index(args, &series).await {
+                    LoopControlFlow::Continue => continue,
+                    LoopControlFlow::Return(err) => return Err(err),
+                    LoopControlFlow::Result(index) => return Ok((series, index)),
+                    LoopControlFlow::Break(_) => unreachable!(),
+                };
+            }
+        }
+
+        fn filter_direct(series: impl AsRef<str>) -> Option<String> {
+            series
+                .as_ref()
+                .strip_prefix('#')
+                .map(|series| series[1..].to_owned())
+        }
+
+        async fn read_series(&mut self, args: &Arguments) -> LoopControlFlow<Void, Void, String>;
+        async fn get_index<'s: 'b>(
+            &'s mut self,
+            args: &Arguments,
+            series: &str,
+        ) -> LoopControlFlow<Void, IdxError, Option<Boo<'b, Index<'i>>>>;
+    }
+    impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for () {
+        async fn read_series(&mut self, _args: &Arguments) -> LoopControlFlow<Void, Void, String> {
+            LoopControlFlow::Result(Inputs::read(MSG, None))
+        }
+        async fn get_index<'s: 'b>(
+            &'s mut self,
+            args: &Arguments,
+            _series: &str,
+        ) -> LoopControlFlow<Void, IdxError, Option<Boo<'b, Index<'i>>>> {
+            let path = args
+                .always_answer()
+                .try_read(
+                    "welche Index Datei m\u{f6}chtest du verwenden?: ",
+                    Some(None),
+                    |it| Some(Some(PathBuf::from(it))),
+                )
+                .unwrap_or_else(|| unreachable!());
+            match path {
+                Some(path) => {
+                    let map = crate::worker::index::Index::try_read_from_path(path).await;
+                    match map {
+                        Ok(index) => LoopControlFlow::Result(Some(Boo::Owned(index))),
+                        Err(IdxError::SeriesNotFound) => unreachable!(),
+                        Err(IdxError::NoIndexFile | IdxError::NotSupportedFile(_)) => {
+                            todo!("re-ask for path")
+                        }
+                        Err(IdxError::Parse(_, _) | IdxError::Serde(_) | IdxError::IO(_, _)) => {
+                            LoopControlFlow::Return(unsafe { map.unwrap_err_unchecked() })
+                        }
+                    }
+                }
+                None => LoopControlFlow::Result(None),
+            }
+        }
+    }
+
+    pub async fn old(args: &Arguments, api: &mut audacity::AudacityApi) -> Result<(), Error> {
+        let labels = get_labels(api).await?;
+        let (series, index) = IndexAccessor::read_index_from_args((), args).await?;
+        let index = index.as_deref();
+        let mut ac = index.as_ref().map(|&index| {
+            ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true))
+        });
+
+        let mut expected_next_chapter_number: Option<ChapterNumber> = None;
+        let mut i = 0;
+        while i < labels.len() {
+            let chapter_number = match ac.as_mut() {
+                Some(index) => {
+                    let input = Inputs::read_with_suggestion(
+                        format!("{ASK_NUMBER_MSG}:"),
+                        expected_next_chapter_number
+                            .map(|it| it.to_string())
+                            .as_deref(),
+                        index,
+                    );
+                    input
+                        .split_once(' ')
+                        .map_or(input.as_ref(), |it| it.0)
+                        .parse::<ChapterNumber>()
+                        .ok()
+                }
+                None => args.always_answer().try_read(
+                    &format!(
+                        "{ASK_NUMBER_MSG}{}: ",
+                        expected_next_chapter_number
+                            .map_or_else(String::new, |next| format!(", erwarte {next}"))
+                    ),
+                    expected_next_chapter_number,
+                    |rin| rin.parse::<ChapterNumber>().ok(),
+                ),
+            }
+            .expect("gib was vern\u{fc}nftiges ein");
+            expected_next_chapter_number = Some(chapter_number.next());
+
+            let chapter_name = index.map_or_else(
+                || Cow::Owned(request_next_chapter_name()),
+                |it| it.get(chapter_number).title,
+            );
+
+            let remaining = labels.len() - i;
+            let expected_number = EXPECTED_PARTS
+                .get(labels.len())
+                .map_or(4, |i| *i)
+                .min(remaining);
+            let number = read_number(
+                args.always_answer(),
+                &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
+                Some(expected_number),
+            )
+            .min(remaining);
+            for j in 0..number {
+                let name = build_timelabel_name(
+                    series.as_str(),
+                    &chapter_number,
+                    j + 1,
+                    chapter_name.as_ref(),
+                );
+                let name = name.to_str().expect("only utf-8 support");
+                api.set_label(i + j, Some(name), None, None, Some(false))
+                    .await?;
+            }
+            i += number;
+        }
+        Ok(())
+    }
+    pub async fn name_and_adjust(
+        api: &mut audacity::AudacityApi,
+        m_index: &mut MultiIndex<'_>,
+    ) -> Result<(), Error> {
+        let mut labels = get_labels(api).await?;
+        let mut last_read: Option<(String, ChapterNumber, usize)> = None;
+        let mut i = 0;
+        while i < labels.len() {
+            zoom_to_label(api, labels.iter().open_border_pairs().nth(i).unwrap()).await?;
+            let (series, chapter_number, chapter_name, part) = {
+                loop {
+                    let mut ac = FullNameCompleter::new(
+                        m_index,
+                        common::str::filter::Levenshtein::new(true),
+                    );
+                    if let Some((series, _, _)) = last_read.as_ref() {
+                        ac.state = CompleterState::Series(series.clone());
+                    }
+                    let command_prefix = ac.command_prefix;
+                    let res = common::args::input::Inputs::read_with_suggestion(
+                        ASK_ALL_MSG,
+                        last_read
+                            .as_ref()
+                            .map(|(series, nr, _)| format!("{series} {nr}"))
+                            .as_deref(),
+                        ac,
+                    );
+
+                    if let Some(command) = res.strip_prefix(command_prefix).map(str::parse) {
+                        match command {
+                            Ok(Command::ReloadIndex) => {
+                                m_index.reload().await;
+                            }
+                            Ok(Command::ReloadLabel) => {
+                                labels = get_labels(api).await?;
+                            }
+                            Ok(Command::Restart) => {
+                                i = 0;
+                                labels = get_labels(api).await?;
+                            }
+                            Err(command) => {
+                                log::info!("unkown command {command:?}");
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some((series, nr, _, chapter)) =
+                        crate::archive::data::Archive::parse_line(&res)
+                    {
+                        let chapter = match chapter {
+                            Some(chapter) => chapter.to_owned(),
+                            None => match m_index.get_index(series.into()).await {
+                                Ok(index) => index.get(nr).title.into_owned(),
+                                Err(_) => request_next_chapter_name(),
+                            },
+                        };
+                        let part = last_read
+                            .filter(|(last_series, last_nr, _)| {
+                                last_series == series && *last_nr == nr
+                            })
+                            .map_or(1, |(_, _, last_part)| last_part + 1);
+                        last_read = Some((series.to_owned(), nr, part));
+                        break (series.to_owned(), nr, chapter, part);
+                    }
+                    println!("konnte {res} nicht erkennen");
+                }
+            };
+
+            let name = build_timelabel_name(series.as_str(), &chapter_number, part, &chapter_name);
+            let name = name.to_str().expect("only utf-8 support");
+            api.set_label(i, Some(name), None, None, Some(false))
+                .await?;
+            i += 1;
+        }
+        zoom_to_label(api, labels.iter().open_border_pairs().last().unwrap()).await?;
+        let _ = Inputs::read(
+            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
+            None,
+        );
+        Ok(())
+    }
+
+    pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
+        let labels = audacity.get_label_info().await?; // get new labels
+
+        for element in labels.values().flatten().open_border_pairs() {
+            zoom_to_label(audacity, element).await?;
+
+            let _ = Inputs::read(
+                "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
+                None,
+            );
+        }
+        audacity
+            .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+            .await
+    }
+    async fn zoom_to_label(
+        api: &mut audacity::AudacityApi,
+        label: State<&TimeLabel>,
+    ) -> Result<(), audacity::Error> {
+        let (prev_end, next_start) = match label {
+            State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
+            State::Middle(a, b) => (a.end, b.start),
+            State::End(b) => (b.end, b.end + Duration::from_secs(10)),
+        };
+        api.zoom_to(
+            audacity::Selection::Part {
+                start: prev_end - Duration::from_secs(10),
+                end: next_start + Duration::from_secs(10),
+                relative_to: audacity::RelativeTo::ProjectStart,
+            },
+            audacity::Save::Discard,
+        )
+        .await
+    }
 }
 
 #[derive(Debug)]
@@ -894,140 +1055,6 @@ impl<'a, AC: common::args::input::autocompleter::Autocomplete>
             None => self.ac.get_completion(input, highlighted_suggestion),
         }
     }
-}
-
-const MSG: &str = "Welche Serie ist heute dran:";
-lazy_static::lazy_static! {
-    static ref COMMAND_AC: std::sync::Mutex<VecCompleter> = std::sync::Mutex::new(
-        VecCompleter::from_iter(
-            ["reload"],
-            common::str::filter::Levenshtein::new(true),
-        )
-    );
-}
-
-enum Void {}
-#[allow(dead_code)]
-enum LoopControlFlow<B, R, Res> {
-    Continue,
-    Break(B),
-    Return(R),
-    Result(Res),
-}
-trait IndexAccessor<'b, 'i: 'b> {
-    async fn read_index_from_args(
-        mut self,
-        args: &Arguments,
-    ) -> Result<(String, Option<common::boo::Boo<'b, Index<'i>>>), crate::worker::index::Error>
-    where
-        Self: Sized + 'b,
-    {
-        loop {
-            // SAFTY reseting lifetime each loop, as there are no references kept on retry
-            let m_index = unsafe { std::ptr::NonNull::from(&mut self).as_mut() };
-            let series = match m_index.read_series(args).await {
-                LoopControlFlow::Continue => continue,
-                LoopControlFlow::Result(series) => series,
-                LoopControlFlow::Break(_) | LoopControlFlow::Return(_) => unreachable!(),
-            };
-            if let Some(value) = Self::filter_direct(&series) {
-                return Ok((value, None));
-            }
-
-            match m_index.get_index(args, &series).await {
-                LoopControlFlow::Continue => continue,
-                LoopControlFlow::Return(err) => return Err(err),
-                LoopControlFlow::Result(index) => return Ok((series, index)),
-                LoopControlFlow::Break(_) => unreachable!(),
-            };
-        }
-    }
-
-    fn filter_direct(series: impl AsRef<str>) -> Option<String> {
-        series
-            .as_ref()
-            .strip_prefix('#')
-            .map(|series| series[1..].to_owned())
-    }
-
-    async fn read_series(&mut self, args: &Arguments) -> LoopControlFlow<Void, Void, String>;
-    async fn get_index<'s: 'b>(
-        &'s mut self,
-        args: &Arguments,
-        series: &str,
-    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>>;
-}
-
-impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for () {
-    async fn read_series(&mut self, _args: &Arguments) -> LoopControlFlow<Void, Void, String> {
-        LoopControlFlow::Result(Inputs::read(MSG, None))
-    }
-    async fn get_index<'s: 'b>(
-        &'s mut self,
-        args: &Arguments,
-        _series: &str,
-    ) -> LoopControlFlow<Void, crate::worker::index::Error, Option<Boo<'b, Index<'i>>>> {
-        let path = args
-            .always_answer()
-            .try_read(
-                "welche Index Datei m\u{f6}chtest du verwenden?: ",
-                Some(None),
-                |it| Some(Some(PathBuf::from(it))),
-            )
-            .unwrap_or_else(|| unreachable!());
-        match path {
-            Some(path) => {
-                let map = crate::worker::index::Index::try_read_from_path(path).await;
-                match map {
-                    Ok(index) => LoopControlFlow::Result(Some(Boo::Owned(index))),
-                    Err(index::Error::SeriesNotFound) => unreachable!(),
-                    Err(index::Error::NoIndexFile | index::Error::NotSupportedFile(_)) => {
-                        todo!("re-ask for path")
-                    }
-                    Err(
-                        index::Error::Parse(_, _) | index::Error::Serde(_) | index::Error::IO(_, _),
-                    ) => LoopControlFlow::Return(unsafe { map.unwrap_err_unchecked() }),
-                }
-            }
-            None => LoopControlFlow::Result(None),
-        }
-    }
-}
-
-pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
-    let labels = audacity.get_label_info().await?; // get new labels
-
-    for element in labels.values().flatten().open_border_pairs() {
-        zoom_to_label(audacity, element).await?;
-
-        let _ = Inputs::read(
-            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
-            None,
-        );
-    }
-    audacity
-        .zoom_to(audacity::Selection::All, audacity::Save::Discard)
-        .await
-}
-
-async fn zoom_to_label(
-    api: &mut audacity::AudacityApi,
-    label: State<&TimeLabel>,
-) -> Result<(), audacity::Error> {
-    let (prev_end, next_start) = match label {
-        State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
-        State::Middle(a, b) => (a.end, b.start),
-        State::End(b) => (b.end, b.end + Duration::from_secs(10)),
-    };
-    api.zoom_to(
-        audacity::Selection::Part {
-            start: prev_end - Duration::from_secs(10),
-            end: next_start + Duration::from_secs(10),
-            relative_to: audacity::RelativeTo::ProjectStart,
-        },
-        audacity::Save::Discard,
-    )
-    .await
 }
 
 #[derive(Debug, Error)]
@@ -1220,16 +1247,6 @@ where
             out
         })
         .collect_vec()
-}
-
-fn request_next_chapter_name() -> String {
-    Inputs::read("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
-}
-
-fn read_number(input: Inputs, msg: impl AsRef<str>, default: Option<usize>) -> usize {
-    input
-        .try_read(msg, default, |rin| rin.parse().ok())
-        .expect("gib was vern\u{fc}nftiges ein")
 }
 
 #[cfg(test)]
