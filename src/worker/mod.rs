@@ -48,7 +48,6 @@ pub enum Error {
     Tag(PathBuf, #[source] tagger::Error),
 }
 
-enum Void {}
 #[allow(dead_code)]
 enum LoopControlFlow<B, R, Res> {
     Continue,
@@ -356,7 +355,9 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
 
             if let Some(m_index) = m_index.as_mut() {
-                rename_labels::name_and_adjust(audacity_api, m_index).await?;
+                // explicit binder, so Future is Send
+                let mut binder = rename_labels::FancyNamer::new(audacity_api, m_index).await?;
+                binder.rename().await?;
             } else {
                 // TODO clean else path
                 rename_labels::old(args, audacity_api).await?;
@@ -560,7 +561,7 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
 
 mod rename_labels {
     use itertools::Itertools;
-    use std::{borrow::Cow, path::PathBuf, str::FromStr, time::Duration};
+    use std::{borrow::Cow, convert::Infallible, path::PathBuf, str::FromStr, time::Duration};
 
     use audacity::{data::TimeLabel, AudacityApi};
     use common::{
@@ -572,46 +573,11 @@ mod rename_labels {
         extensions::iter::{CloneIteratorExt, State},
     };
 
-    use super::{args::Arguments, ChapterCompleter, Error, LoopControlFlow, Void};
+    use super::{args::Arguments, ChapterCompleter, Error, LoopControlFlow};
     use crate::{
         archive::data::{build_timelabel_name, ChapterNumber},
         worker::index::{Error as IdxError, Index, MultiIndex},
     };
-
-    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-    enum Command {
-        ReloadIndex,
-        ReloadLabel,
-        Restart,
-    }
-    impl FromStr for Command {
-        type Err = String;
-
-        fn from_str(s: &str) -> Result<Self, Self::Err> {
-            match s {
-                "reload_label" => Ok(Self::ReloadLabel),
-                "reload_index" => Ok(Self::ReloadIndex),
-                "resize" => Ok(Self::Restart),
-                "join" => Ok(Self::Join),
-                _ => Err(s.to_owned()),
-            }
-        }
-    }
-    impl From<Command> for &'static str {
-        fn from(value: Command) -> Self {
-            match value {
-                Command::ReloadLabel => "reload_label",
-                Command::ReloadIndex => "reload_index",
-                Command::Restart => "resize",
-                Command::Join => "join",
-            }
-        }
-    }
-    impl Command {
-        fn iter() -> std::array::IntoIter<Self, 2> {
-            [Self::ReloadIndex, Self::ReloadLabel].into_iter()
-        }
-    }
 
     #[derive(Debug)]
     enum CompleterState {
@@ -793,22 +759,28 @@ mod rename_labels {
                 .map(|series| series[1..].to_owned())
         }
 
-        async fn read_series(&mut self, args: &Arguments) -> LoopControlFlow<Void, Void, String>;
+        async fn read_series(
+            &mut self,
+            args: &Arguments,
+        ) -> LoopControlFlow<Infallible, Infallible, String>;
         async fn get_index<'s: 'b>(
             &'s mut self,
             args: &Arguments,
             series: &str,
-        ) -> LoopControlFlow<Void, IdxError, Option<Boo<'b, Index<'i>>>>;
+        ) -> LoopControlFlow<Infallible, IdxError, Option<Boo<'b, Index<'i>>>>;
     }
     impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for () {
-        async fn read_series(&mut self, _args: &Arguments) -> LoopControlFlow<Void, Void, String> {
+        async fn read_series(
+            &mut self,
+            _args: &Arguments,
+        ) -> LoopControlFlow<Infallible, Infallible, String> {
             LoopControlFlow::Result(Inputs::read(MSG, None))
         }
         async fn get_index<'s: 'b>(
             &'s mut self,
             args: &Arguments,
             _series: &str,
-        ) -> LoopControlFlow<Void, IdxError, Option<Boo<'b, Index<'i>>>> {
+        ) -> LoopControlFlow<Infallible, IdxError, Option<Boo<'b, Index<'i>>>> {
             let path = args
                 .always_answer()
                 .try_read(
@@ -906,111 +878,193 @@ mod rename_labels {
         }
         Ok(())
     }
-    pub async fn name_and_adjust(
-        api: &mut audacity::AudacityApi,
-        m_index: &mut MultiIndex<'_>,
-    ) -> Result<(), Error> {
-        let mut labels = get_labels(api).await?;
-        let mut last_read: Option<(String, ChapterNumber, usize)> = None;
-        let mut i = 0;
-        while i < labels.len() {
-            zoom_to_label(api, labels.iter().open_border_pairs().nth(i).unwrap()).await?;
-            let (series, chapter_number, chapter_name, part) = {
-                loop {
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    enum Command {
+        ReloadIndex,
+        ReloadLabel,
+        Restart,
+        Join,
+    }
+    impl FromStr for Command {
+        type Err = String;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s {
+                "reload_label" => Ok(Self::ReloadLabel),
+                "reload_index" => Ok(Self::ReloadIndex),
+                "resize" => Ok(Self::Restart),
+                "join" => Ok(Self::Join),
+                _ => Err(s.to_owned()),
+            }
+        }
+    }
+    impl From<Command> for &'static str {
+        fn from(value: Command) -> Self {
+            match value {
+                Command::ReloadLabel => "reload_label",
+                Command::ReloadIndex => "reload_index",
+                Command::Restart => "resize",
+                Command::Join => "join",
+            }
+        }
+    }
+    impl Command {
+        fn iter() -> std::array::IntoIter<Self, 4> {
+            [
+                Self::ReloadIndex,
+                Self::ReloadLabel,
+                Self::Restart,
+                Self::Join,
+            ]
+            .into_iter()
+        }
+    }
+
+    pub struct FancyNamer<'a, 'r, 'i> {
+        api: &'a mut AudacityApi,
+        m_index: &'r mut MultiIndex<'i>,
+        labels: Vec<TimeLabel>,
+        last_read: Option<(String, ChapterNumber, usize)>,
+        i: usize,
+    }
+    impl<'a, 'r, 'i> FancyNamer<'a, 'r, 'i> {
+        pub async fn new(
+            api: &'a mut AudacityApi,
+            m_index: &'r mut MultiIndex<'i>,
+        ) -> Result<Self, Error> {
+            let labels = get_labels(api).await?;
+            Ok(Self {
+                api,
+                m_index,
+                labels,
+                last_read: None,
+                i: 0,
+            })
+        }
+
+        pub async fn rename(&mut self) -> Result<(), Error> {
+            while self.i < self.labels.len() {
+                zoom_to_label(
+                    self.api,
+                    self.labels.iter().open_border_pairs().nth(self.i).unwrap(),
+                )
+                .await?;
+                let (series, chapter_number, chapter_name, part) = loop {
                     let mut ac = FullNameCompleter::new(
-                        m_index,
+                        self.m_index,
                         common::str::filter::Levenshtein::new(true),
                     );
-                    if let Some((series, _, _)) = last_read.as_ref() {
+                    if let Some((series, _, _)) = self.last_read.as_ref() {
                         ac.state = CompleterState::Series(series.clone());
                     }
                     let command_prefix = ac.command_prefix;
                     let res = common::args::input::Inputs::read_with_suggestion(
                         ASK_ALL_MSG,
-                        last_read
+                        self.last_read
                             .as_ref()
                             .map(|(series, nr, _)| format!("{series} {nr}"))
                             .as_deref(),
                         ac,
                     );
 
-                    if let Some(command) = res.strip_prefix(command_prefix).map(str::parse) {
-                        match command {
-                            Ok(Command::ReloadIndex) => {
-                                m_index.reload().await;
-                            }
-                            Ok(Command::ReloadLabel) => {
-                                labels = get_labels(api).await?;
-                            }
-                            Ok(Command::Restart) => {
-                                i = 0;
-                                labels = get_labels(api).await?;
-                            }
-                            Ok(Command::Join) => {
-                                if i == 0 {
-                                    log::warn!("can't join first");
-                                    continue;
-                                }
-                                // assumes no overlapping labels in this track so no reload of labels is needed
-                                let label_delete = labels.remove(i);
-                                api.select(audacity::Selection::Part {
-                                    start: label_delete.start,
-                                    end: label_delete.end,
-                                    relative_to: audacity::RelativeTo::ProjectStart,
-                                })
-                                .await?;
-                                api.select_tracks(std::iter::once(1)).await?;
-                                api.write_assume_empty(audacity::command::SplitDelete)
-                                    .await?;
-                                api.set_label(
-                                    i - 1,
-                                    None::<&str>,
-                                    None,
-                                    Some(label_delete.end),
-                                    None,
-                                )
-                                .await?;
-                            }
-                            Err(command) => {
-                                log::info!("unkown command {command:?}");
-                            }
+                    match res.strip_prefix(command_prefix).map(str::parse) {
+                        Some(Ok(command)) => {
+                            self.run_command(command).await?;
+                            continue;
                         }
-                        continue;
+                        Some(Err(command)) => {
+                            log::info!("unkown command {command:?}");
+                            continue;
+                        }
+                        None => {}
                     }
                     if let Some((series, nr, _, chapter)) =
                         crate::archive::data::Archive::parse_line(&res)
                     {
                         let chapter = match chapter {
                             Some(chapter) => chapter.to_owned(),
-                            None => match m_index.get_index(series.into()).await {
+                            None => match self.m_index.get_index(series.into()).await {
                                 Ok(index) => index.get(nr).title.into_owned(),
                                 Err(_) => request_next_chapter_name(),
                             },
                         };
-                        let part = last_read
+                        let part = self
+                            .last_read
+                            .as_ref()
                             .filter(|(last_series, last_nr, _)| {
                                 last_series == series && *last_nr == nr
                             })
                             .map_or(1, |(_, _, last_part)| last_part + 1);
-                        last_read = Some((series.to_owned(), nr, part));
+                        self.last_read = Some((series.to_owned(), nr, part));
                         break (series.to_owned(), nr, chapter, part);
                     }
                     println!("konnte {res} nicht erkennen");
-                }
-            };
+                };
 
-            let name = build_timelabel_name(series.as_str(), &chapter_number, part, &chapter_name);
-            let name = name.to_str().expect("only utf-8 support");
-            api.set_label(i, Some(name), None, None, Some(false))
-                .await?;
-            i += 1;
+                let name =
+                    build_timelabel_name(series.as_str(), &chapter_number, part, &chapter_name);
+                let name = name.to_str().expect("only utf-8 support");
+                self.api
+                    .set_label(self.i, Some(name), None, None, Some(false))
+                    .await?;
+                self.i += 1;
+            }
+            zoom_to_label(
+                self.api,
+                self.labels.iter().open_border_pairs().last().unwrap(),
+            )
+            .await?;
+            let _ = Inputs::read(
+                "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
+                None,
+            );
+            Ok(())
         }
-        zoom_to_label(api, labels.iter().open_border_pairs().last().unwrap()).await?;
-        let _ = Inputs::read(
-            "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
-            None,
-        );
-        Ok(())
+
+        async fn run_command(&mut self, command: Command) -> Result<(), Error> {
+            match command {
+                Command::ReloadIndex => {
+                    self.m_index.reload().await;
+                }
+                Command::ReloadLabel => {
+                    let old_i = self.labels.remove(self.i);
+                    self.labels = get_labels(self.api).await?;
+
+                    if old_i != self.labels[self.i] {
+                        // TODO shift i if it changed
+                    }
+                }
+                Command::Restart => {
+                    self.i = 0;
+                    self.last_read = None;
+                    self.labels = get_labels(self.api).await?;
+                }
+                Command::Join => {
+                    if self.i == 0 {
+                        log::warn!("can't join first");
+                        return Ok(());
+                    }
+                    // assumes no overlapping labels in this track so no reload of labels is needed
+                    let label_delete = self.labels.remove(self.i);
+                    self.api
+                        .select(audacity::Selection::Part {
+                            start: label_delete.start,
+                            end: label_delete.end,
+                            relative_to: audacity::RelativeTo::ProjectStart,
+                        })
+                        .await?;
+                    self.api.select_tracks(std::iter::once(1)).await?;
+                    self.api
+                        .write_assume_empty(audacity::command::SplitDelete)
+                        .await?;
+                    self.api
+                        .set_label(self.i - 1, None::<&str>, None, Some(label_delete.end), None)
+                        .await?;
+                }
+            }
+            Ok(())
+        }
     }
 
     pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
