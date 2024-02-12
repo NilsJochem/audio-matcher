@@ -1,6 +1,6 @@
 use audacity::AudacityApi;
 use common::{
-    args::input::autocompleter::{self, VecCompleter},
+    args::input::autocompleter,
     extensions::{
         iter::{FutIterExt, IteratorExt},
         option::Ext,
@@ -13,7 +13,7 @@ use log::trace;
 use std::{
     borrow::Cow,
     collections::HashMap,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fmt::{Debug, Write},
     path::{Path, PathBuf},
     time::Duration,
@@ -864,13 +864,12 @@ mod rename_labels {
             )
             .min(remaining);
             for j in 0..number {
-                let name = build_timelabel_name(
-                    series.as_str(),
+                let name = build_timelabel_name::<str, _, _>(
+                    &series,
                     &chapter_number,
                     j + 1,
                     chapter_name.as_ref(),
                 );
-                let name = name.to_str().expect("only utf-8 support");
                 api.set_label(i + j, Some(name), None, None, Some(false))
                     .await?;
             }
@@ -1003,8 +1002,7 @@ mod rename_labels {
                 };
 
                 let name =
-                    build_timelabel_name(series.as_str(), &chapter_number, part, &chapter_name);
-                let name = name.to_str().expect("only utf-8 support");
+                    build_timelabel_name::<str, _, _>(series, &chapter_number, part, &chapter_name);
                 self.api
                     .set_label(self.i, Some(name), None, None, Some(false))
                     .await?;
@@ -1120,7 +1118,7 @@ async fn move_results(
         .map(|tag| {
             let mut dst = to.as_ref().to_path_buf();
             let mut file = from.as_ref().to_path_buf();
-            let name = build_timelabel_name::<&str, &str>(
+            let name = build_timelabel_name::<OsStr, &str, &str>(
                 tag.get::<Album>(),
                 &(tag.get::<Track>().unwrap() as usize).into(),
                 None,
@@ -1221,7 +1219,7 @@ async fn merge_parts<'a>(
         let entry = index.get(chapter_number);
 
         let mut path = args.tmp_path().to_path_buf();
-        path.push(build_timelabel_name(
+        path.push(build_timelabel_name::<OsStr, _, _>(
             series,
             &chapter_number,
             None,

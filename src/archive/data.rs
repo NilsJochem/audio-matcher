@@ -24,26 +24,62 @@ use crate::{
 };
 use common::extensions::{iter::IteratorExt, vec::FindOrPush};
 
+pub trait StrOrOsStr {
+    type Owned: std::fmt::Write;
+    fn new() -> Self::Owned;
+
+    fn push(s: &mut Self::Owned, push: &Self);
+    fn push_char(s: &mut Self::Owned, push: char);
+}
+impl StrOrOsStr for str {
+    type Owned = String;
+    fn new() -> Self::Owned {
+        String::new()
+    }
+
+    fn push(s: &mut Self::Owned, push: &Self) {
+        s.push_str(push)
+    }
+
+    fn push_char(s: &mut Self::Owned, push: char) {
+        s.push(push)
+    }
+}
+impl StrOrOsStr for OsStr {
+    type Owned = OsString;
+    fn new() -> Self::Owned {
+        OsString::new()
+    }
+
+    fn push(s: &mut Self::Owned, push: &Self) {
+        s.push(push)
+    }
+
+    fn push_char(s: &mut Self::Owned, push: char) {
+        s.push(&push.to_string())
+    }
+}
+
 #[must_use]
-pub fn build_timelabel_name<S1: AsRef<OsStr>, S2: AsRef<OsStr>>(
+pub fn build_timelabel_name<S: StrOrOsStr + ?Sized, S1: AsRef<S>, S2: AsRef<S>>(
     series_name: impl Into<Option<S1>>,
     nr: &ChapterNumber,
     part: impl Into<Option<usize>>,
     chapter_name: impl Into<Option<S2>>,
-) -> OsString {
-    let mut name = OsString::new();
+) -> S::Owned {
+    let mut name = S::new();
 
     if let Some(series_name) = series_name.into() {
-        name.push(series_name);
-        name.push(" ");
+        S::push(&mut name, series_name.as_ref());
+        S::push_char(&mut name, ' ');
     }
     let _ = write!(name, "{nr}");
     if let Some(part) = part.into() {
         let _ = write!(name, ".{part}");
     }
     if let Some(chapter_name) = chapter_name.into() {
-        name.push(" ");
-        name.push(chapter_name);
+        S::push_char(&mut name, ' ');
+        S::push(&mut name, chapter_name.as_ref());
     }
     name
 }
@@ -132,8 +168,13 @@ impl Archive {
                     debug!("skipping {:?}", label.name);
                     continue;
                 }
-                let Some((series_name, ch_nr,_, chapter_name)) = Self::parse_line(label.name.as_ref().map_or("", String::as_str)) else {
-                    warn!("name {:?} in {source} couldn't be parsed to Series", label.name);
+                let Some((series_name, ch_nr, _, chapter_name)) =
+                    Self::parse_line(label.name.as_ref().map_or("", String::as_str))
+                else {
+                    warn!(
+                        "name {:?} in {source} couldn't be parsed to Series",
+                        label.name
+                    );
                     continue;
                 };
 
