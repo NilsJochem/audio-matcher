@@ -346,8 +346,15 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 .await?;
 
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
-            rename_labels(args, audacity_api, m_index.as_mut()).await?;
-            adjust_labels(audacity_api).await?;
+
+            if let Some(m_index) = m_index.as_mut() {
+                rename_labels_fancy(args, audacity_api, m_index).await?;
+                adjust_labels(audacity_api).await?;
+            } else {
+                // TODO clean else path
+                rename_labels(args, audacity_api).await?;
+                adjust_labels(audacity_api).await?;
+            }
 
             audacity_api
                 .export_all_labels_to(label_path, args.dry_run())
@@ -686,171 +693,172 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
 
 ///expecting that number of parts divides the length of the input or default to 4
 const EXPECTED_PARTS: [usize; 13] = [0, 1, 2, 3, 4, 3, 3, 4, 4, 3, 5, 4, 4];
-async fn rename_labels<'i>(
-    args: &Arguments,
-    audacity: &mut AudacityApi,
-    m_index: Option<&mut MultiIndex<'i>>,
-) -> Result<(), Error> {
-    const ASK_ALL_MSG: &str = "Was ist die n\u{e4}chste Folge:";
-    const ASK_PARTS_MSG: &str = "Wie viele Teile hat die n\u{e4}chste Folge";
-    const ASK_NUMBER_MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
+const ASK_ALL_MSG: &str = "Was ist die n\u{e4}chste Folge:";
+const ASK_PARTS_MSG: &str = "Wie viele Teile hat die n\u{e4}chste Folge";
+const ASK_NUMBER_MSG: &str = "Welche Nummer hat die n\u{e4}chste Folge";
 
-    async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
-        let labels = api.get_label_info().await?;
-        Ok(labels
-            .into_values()
-            .exactly_one()
-            .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
-    }
+async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
+    let labels = api.get_label_info().await?;
+    Ok(labels
+        .into_values()
+        .exactly_one()
+        .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
+}
 
-    let mut labels = get_labels(audacity).await?;
+async fn rename_labels(args: &Arguments, api: &mut audacity::AudacityApi) -> Result<(), Error> {
+    let labels = get_labels(api).await?;
+    let (series, index) = ().read_index_from_args(args).await?;
+    let index = index.as_deref();
+    let mut ac = index
+        .as_ref()
+        .map(|&index| ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true)));
 
-    if let Some(m_index) = m_index {
-        let mut expected_next: Option<(String, ChapterNumber)> = None;
-
-        let mut i = 0;
-        while i < labels.len() {
-            let (series, chapter_number, chapter_name) = loop {
-                let mut ac =
-                    FullNameCompleter::new(m_index, common::str::filter::Levenshtein::new(true));
-                if let Some((series, _)) = expected_next.as_ref() {
-                    ac.state = CompleterState::Series(series.clone())
-                }
-                let command_prefix = ac.command_prefix;
-                let res = common::args::input::Inputs::read_with_suggestion(
-                    ASK_ALL_MSG,
-                    expected_next
-                        .as_ref()
-                        .map(|(series, nr)| format!("{series} {nr}"))
+    let mut expected_next_chapter_number: Option<ChapterNumber> = None;
+    let mut i = 0;
+    while i < labels.len() {
+        let chapter_number = match ac.as_mut() {
+            Some(index) => {
+                let input = Inputs::read_with_suggestion(
+                    format!("{ASK_NUMBER_MSG}:"),
+                    expected_next_chapter_number
+                        .map(|it| it.to_string())
                         .as_deref(),
-                    ac,
+                    index,
                 );
-                match res.strip_prefix(command_prefix).map(str::parse) {
-                    Some(Ok(Command::ReloadIndex)) => {
-                        m_index.reload().await;
-                        continue;
-                    }
-                    Some(Ok(Command::ReloadLable)) => {
-                        labels = get_labels(audacity).await?;
-                        continue;
-                    }
-                    Some(Err(command)) => {
-                        log::info!("unkown command {command:?}");
-                        continue;
-                    }
-                    None => {}
-                }
-                if let Some((series, nr, _, chapter)) =
-                    crate::archive::data::Archive::parse_line(&res)
-                {
-                    let chapter = match chapter {
-                        Some(chapter) => chapter.to_owned(),
-                        None => match m_index.get_index(series.into()).await {
-                            Ok(index) => index.get(nr).title.into_owned(),
-                            Err(_) => request_next_chapter_name(),
-                        },
-                    };
-                    break (series.to_owned(), nr, chapter);
-                }
-
-                println!("konnte {res} nicht erkennen");
-            };
-
-            expected_next = Some((series.clone(), chapter_number.next()));
-
-            let remaining = labels.len() - i;
-            let expected_number = EXPECTED_PARTS
-                .get(labels.len())
-                .map_or(4, |i| *i)
-                .min(remaining);
-            let number = read_number(
-                args.always_answer(),
-                &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
-                Some(expected_number),
-            )
-            .min(remaining);
-            for j in 0..number {
-                let name =
-                    build_timelabel_name(series.as_str(), &chapter_number, j + 1, &chapter_name);
-                let name = name.to_str().expect("only utf-8 support");
-                audacity
-                    .set_label(i + j, Some(name), None, None, Some(false))
-                    .await?;
+                input
+                    .split_once(' ')
+                    .map_or(input.as_ref(), |it| it.0)
+                    .parse::<ChapterNumber>()
+                    .ok()
             }
-            i += number;
-        }
-    } else {
-        // TODO clean else path
-        let (series, index) = ().read_index_from_args(args).await?;
-        let index = index.as_deref();
-        let mut ac = index.as_ref().map(|&index| {
-            ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true))
-        });
-
-        let mut expected_next_chapter_number: Option<ChapterNumber> = None;
-        let mut i = 0;
-        while i < labels.len() {
-            let chapter_number = match ac.as_mut() {
-                Some(index) => {
-                    let input = Inputs::read_with_suggestion(
-                        format!("{ASK_NUMBER_MSG}:"),
-                        expected_next_chapter_number
-                            .map(|it| it.to_string())
-                            .as_deref(),
-                        index,
-                    );
-                    input
-                        .split_once(' ')
-                        .map_or(input.as_ref(), |it| it.0)
-                        .parse::<ChapterNumber>()
-                        .ok()
-                }
-                None => args.always_answer().try_read(
-                    &format!(
-                        "{ASK_NUMBER_MSG}{}: ",
-                        expected_next_chapter_number
-                            .map_or_else(String::new, |next| format!(", erwarte {next}"))
-                    ),
-                    expected_next_chapter_number,
-                    |rin| rin.parse::<ChapterNumber>().ok(),
+            None => args.always_answer().try_read(
+                &format!(
+                    "{ASK_NUMBER_MSG}{}: ",
+                    expected_next_chapter_number
+                        .map_or_else(String::new, |next| format!(", erwarte {next}"))
                 ),
-            }
-            .expect("gib was vern\u{fc}nftiges ein");
-            expected_next_chapter_number = Some(chapter_number.next());
-
-            let chapter_name = index.map_or_else(
-                || Cow::Owned(request_next_chapter_name()),
-                |it| it.get(chapter_number).title,
-            );
-
-            let remaining = labels.len() - i;
-            let expected_number = EXPECTED_PARTS
-                .get(labels.len())
-                .map_or(4, |i| *i)
-                .min(remaining);
-            let number = read_number(
-                args.always_answer(),
-                &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
-                Some(expected_number),
-            )
-            .min(remaining);
-            for j in 0..number {
-                let name = build_timelabel_name(
-                    series.as_str(),
-                    &chapter_number,
-                    j + 1,
-                    chapter_name.as_ref(),
-                );
-                let name = name.to_str().expect("only utf-8 support");
-                audacity
-                    .set_label(i + j, Some(name), None, None, Some(false))
-                    .await?;
-            }
-            i += number;
+                expected_next_chapter_number,
+                |rin| rin.parse::<ChapterNumber>().ok(),
+            ),
         }
-    }
+        .expect("gib was vern\u{fc}nftiges ein");
+        expected_next_chapter_number = Some(chapter_number.next());
 
+        let chapter_name = index.map_or_else(
+            || Cow::Owned(request_next_chapter_name()),
+            |it| it.get(chapter_number).title,
+        );
+
+        let remaining = labels.len() - i;
+        let expected_number = EXPECTED_PARTS
+            .get(labels.len())
+            .map_or(4, |i| *i)
+            .min(remaining);
+        let number = read_number(
+            args.always_answer(),
+            &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
+            Some(expected_number),
+        )
+        .min(remaining);
+        for j in 0..number {
+            let name = build_timelabel_name(
+                series.as_str(),
+                &chapter_number,
+                j + 1,
+                chapter_name.as_ref(),
+            );
+            let name = name.to_str().expect("only utf-8 support");
+            api.set_label(i + j, Some(name), None, None, Some(false))
+                .await?;
+        }
+        i += number;
+    }
     Ok(())
+}
+
+async fn rename_labels_fancy(
+    args: &Arguments,
+    api: &mut audacity::AudacityApi,
+    m_index: &mut MultiIndex<'_>,
+) -> Result<(), Error> {
+    let mut labels = get_labels(api).await?;
+    let mut last_read: Option<(String, ChapterNumber)> = None;
+    let mut i = 0;
+    Ok(while i < labels.len() {
+        let (series, chapter_number, chapter_name) =
+            read_next_series(api, m_index, &mut labels, &last_read).await?;
+
+        last_read = Some((series.clone(), chapter_number));
+
+        let remaining = labels.len() - i;
+        let expected_number = EXPECTED_PARTS
+            .get(labels.len())
+            .map_or(4, |i| *i)
+            .min(remaining);
+        let number = read_number(
+            args.always_answer(),
+            &format!("{ASK_PARTS_MSG}, erwarte {expected_number}: "),
+            Some(expected_number),
+        )
+        .min(remaining);
+        for j in 0..number {
+            let name = build_timelabel_name(series.as_str(), &chapter_number, j + 1, &chapter_name);
+            let name = name.to_str().expect("only utf-8 support");
+            api.set_label(i + j, Some(name), None, None, Some(false))
+                .await?;
+        }
+        i += number;
+    })
+}
+
+async fn read_next_series(
+    api: &mut audacity::AudacityApi,
+    m_index: &mut MultiIndex<'_>,
+    labels: &mut Vec<TimeLabel>,
+    last_read: &Option<(String, ChapterNumber)>,
+) -> Result<(String, ChapterNumber, String), Error> {
+    Ok(loop {
+        let mut ac = FullNameCompleter::new(m_index, common::str::filter::Levenshtein::new(true));
+        if let Some((series, _)) = last_read.as_ref() {
+            ac.state = CompleterState::Series(series.clone())
+        }
+        let command_prefix = ac.command_prefix;
+        let res = common::args::input::Inputs::read_with_suggestion(
+            ASK_ALL_MSG,
+            last_read
+                .as_ref()
+                .map(|(series, nr)| format!("{series} {}", nr.next()))
+                .as_deref(),
+            ac,
+        );
+        match res.strip_prefix(command_prefix).map(str::parse) {
+            Some(Ok(Command::ReloadIndex)) => {
+                m_index.reload().await;
+                continue;
+            }
+            Some(Ok(Command::ReloadLable)) => {
+                *labels = get_labels(api).await?;
+                continue;
+            }
+            Some(Err(command)) => {
+                log::info!("unkown command {command:?}");
+                continue;
+            }
+            None => {}
+        }
+        if let Some((series, nr, _, chapter)) = crate::archive::data::Archive::parse_line(&res) {
+            let chapter = match chapter {
+                Some(chapter) => chapter.to_owned(),
+                None => match m_index.get_index(series.into()).await {
+                    Ok(index) => index.get(nr).title.into_owned(),
+                    Err(_) => request_next_chapter_name(),
+                },
+            };
+            break (series.to_owned(), nr, chapter);
+        }
+
+        println!("konnte {res} nicht erkennen");
+    })
 }
 
 #[derive(Debug)]
@@ -990,21 +998,7 @@ pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::E
     let labels = audacity.get_label_info().await?; // get new labels
 
     for element in labels.values().flatten().open_border_pairs() {
-        let (prev_end, next_start) = match element {
-            State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
-            State::Middle(a, b) => (a.end, b.start),
-            State::End(b) => (b.end, b.end + Duration::from_secs(10)),
-        };
-        audacity
-            .zoom_to(
-                audacity::Selection::Part {
-                    start: prev_end - Duration::from_secs(10),
-                    end: next_start + Duration::from_secs(10),
-                    relative_to: audacity::RelativeTo::ProjectStart,
-                },
-                audacity::Save::Discard,
-            )
-            .await?;
+        zoom_to_label(audacity, element).await?;
 
         let _ = Inputs::read(
             "Dr\u{fc}ck Enter, wenn du bereit f\u{fc}r den n\u{e4}chsten Schritt bist",
@@ -1014,6 +1008,26 @@ pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::E
     audacity
         .zoom_to(audacity::Selection::All, audacity::Save::Discard)
         .await
+}
+
+async fn zoom_to_label(
+    api: &mut audacity::AudacityApi,
+    label: State<&TimeLabel>,
+) -> Result<(), audacity::Error> {
+    let (prev_end, next_start) = match label {
+        State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
+        State::Middle(a, b) => (a.end, b.start),
+        State::End(b) => (b.end, b.end + Duration::from_secs(10)),
+    };
+    api.zoom_to(
+        audacity::Selection::Part {
+            start: prev_end - Duration::from_secs(10),
+            end: next_start + Duration::from_secs(10),
+            relative_to: audacity::RelativeTo::ProjectStart,
+        },
+        audacity::Save::Discard,
+    )
+    .await
 }
 
 #[derive(Debug, Error)]
