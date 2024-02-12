@@ -592,6 +592,7 @@ mod rename_labels {
                 "reload_label" => Ok(Self::ReloadLabel),
                 "reload_index" => Ok(Self::ReloadIndex),
                 "resize" => Ok(Self::Restart),
+                "join" => Ok(Self::Join),
                 _ => Err(s.to_owned()),
             }
         }
@@ -602,6 +603,7 @@ mod rename_labels {
                 Command::ReloadLabel => "reload_label",
                 Command::ReloadIndex => "reload_index",
                 Command::Restart => "resize",
+                Command::Join => "join",
             }
         }
     }
@@ -943,6 +945,31 @@ mod rename_labels {
                             Ok(Command::Restart) => {
                                 i = 0;
                                 labels = get_labels(api).await?;
+                            }
+                            Ok(Command::Join) => {
+                                if i == 0 {
+                                    log::warn!("can't join first");
+                                    continue;
+                                }
+                                // assumes no overlapping labels in this track so no reload of labels is needed
+                                let label_delete = labels.remove(i);
+                                api.select(audacity::Selection::Part {
+                                    start: label_delete.start,
+                                    end: label_delete.end,
+                                    relative_to: audacity::RelativeTo::ProjectStart,
+                                })
+                                .await?;
+                                api.select_tracks(std::iter::once(1)).await?;
+                                api.write_assume_empty(audacity::command::SplitDelete)
+                                    .await?;
+                                api.set_label(
+                                    i - 1,
+                                    None::<&str>,
+                                    None,
+                                    Some(label_delete.end),
+                                    None,
+                                )
+                                .await?;
                             }
                             Err(command) => {
                                 log::info!("unkown command {command:?}");
