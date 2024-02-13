@@ -573,19 +573,15 @@ impl<'a> autocompleter::Autocomplete for ChapterCompleter<'a> {
 
 mod rename_labels {
     use itertools::Itertools;
-    use std::{borrow::Cow, convert::Infallible, path::PathBuf, str::FromStr, time::Duration};
+    use std::{borrow::Cow, path::PathBuf, str::FromStr, time::Duration};
 
     use audacity::{data::TimeLabel, AudacityApi};
     use common::{
-        args::input::{
-            autocompleter::{self, VecCompleter},
-            Inputs,
-        },
-        boo::Boo,
+        args::input::{autocompleter, Inputs},
         extensions::iter::{CloneIteratorExt, State},
     };
 
-    use super::{args::Arguments, ChapterCompleter, Error, LoopControlFlow};
+    use super::{args::Arguments, ChapterCompleter, Error};
     use crate::{
         archive::data::{build_timelabel_name, ChapterNumber},
         worker::index::{Error as IdxError, Index, MultiIndex},
@@ -722,73 +718,18 @@ mod rename_labels {
             .expect("gib was vern\u{fc}nftiges ein")
     }
 
-    lazy_static::lazy_static! {
-        static ref COMMAND_AC: std::sync::Mutex<VecCompleter> = std::sync::Mutex::new(
-            VecCompleter::from_iter(
-                ["reload"],
-                common::str::filter::Levenshtein::new(true),
-            )
-        );
-    }
-
-    trait IndexAccessor<'b, 'i: 'b> {
-        async fn read_index_from_args(
-            mut self,
-            args: &Arguments,
-        ) -> Result<(String, Option<common::boo::Boo<'b, Index<'i>>>), IdxError>
-        where
-            Self: Sized + 'b,
+    async fn read_index_from_args<'i>(
+        args: &Arguments,
+    ) -> Result<(String, Option<Index<'i>>), IdxError> {
+        let series = Inputs::read(MSG, None);
+        if let Some(value) = series
+            .strip_prefix('#')
+            .map(|series| series[1..].to_owned())
         {
-            loop {
-                // SAFTY reseting lifetime each loop, as there are no references kept on retry
-                let m_index = unsafe { std::ptr::NonNull::from(&mut self).as_mut() };
-                let series = match m_index.read_series(args).await {
-                    LoopControlFlow::Continue => continue,
-                    LoopControlFlow::Result(series) => series,
-                    LoopControlFlow::Break(_) | LoopControlFlow::Return(_) => unreachable!(),
-                };
-                if let Some(value) = Self::filter_direct(&series) {
-                    return Ok((value, None));
-                }
-
-                match m_index.get_index(args, &series).await {
-                    LoopControlFlow::Continue => continue,
-                    LoopControlFlow::Return(err) => return Err(err),
-                    LoopControlFlow::Result(index) => return Ok((series, index)),
-                    LoopControlFlow::Break(_) => unreachable!(),
-                };
-            }
+            return Ok((value, None));
         }
 
-        fn filter_direct(series: impl AsRef<str>) -> Option<String> {
-            series
-                .as_ref()
-                .strip_prefix('#')
-                .map(|series| series[1..].to_owned())
-        }
-
-        async fn read_series(
-            &mut self,
-            args: &Arguments,
-        ) -> LoopControlFlow<Infallible, Infallible, String>;
-        async fn get_index<'s: 'b>(
-            &'s mut self,
-            args: &Arguments,
-            series: &str,
-        ) -> LoopControlFlow<Infallible, IdxError, Option<Boo<'b, Index<'i>>>>;
-    }
-    impl<'b, 'i: 'b> IndexAccessor<'b, 'i> for () {
-        async fn read_series(
-            &mut self,
-            _args: &Arguments,
-        ) -> LoopControlFlow<Infallible, Infallible, String> {
-            LoopControlFlow::Result(Inputs::read(MSG, None))
-        }
-        async fn get_index<'s: 'b>(
-            &'s mut self,
-            args: &Arguments,
-            _series: &str,
-        ) -> LoopControlFlow<Infallible, IdxError, Option<Boo<'b, Index<'i>>>> {
+        let index = loop {
             let path = args
                 .always_answer()
                 .try_read(
@@ -798,28 +739,30 @@ mod rename_labels {
                 )
                 .unwrap_or_else(|| unreachable!());
             match path {
+                None => break None,
                 Some(path) => {
                     let map = crate::worker::index::Index::try_read_from_path(path).await;
                     match map {
-                        Ok(index) => LoopControlFlow::Result(Some(Boo::Owned(index))),
+                        Ok(index) => break Some(index),
                         Err(IdxError::SeriesNotFound) => unreachable!(),
                         Err(IdxError::NoIndexFile | IdxError::NotSupportedFile(_)) => {
-                            todo!("re-ask for path")
+                            println!("couldn't find requested index, try again");
+                            continue;
                         }
                         Err(IdxError::Parse(_, _) | IdxError::Serde(_) | IdxError::IO(_, _)) => {
-                            LoopControlFlow::Return(unsafe { map.unwrap_err_unchecked() })
+                            Err(unsafe { map.unwrap_err_unchecked() })?;
                         }
                     }
                 }
-                None => LoopControlFlow::Result(None),
-            }
-        }
+            };
+        };
+        Ok((series, index))
     }
 
     pub async fn old(args: &Arguments, api: &mut audacity::AudacityApi) -> Result<(), Error> {
         let labels = get_labels(api).await?;
-        let (series, index) = IndexAccessor::read_index_from_args((), args).await?;
-        let index = index.as_deref();
+        let (series, index) = read_index_from_args(args).await?;
+        let index = index.as_ref();
         let mut ac = index.as_ref().map(|&index| {
             ChapterCompleter::new(index, common::str::filter::Levenshtein::new(true))
         });
