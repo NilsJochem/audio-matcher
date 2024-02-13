@@ -40,14 +40,14 @@ fn correlate_vs_bib(c: &mut Criterion) {
             my_algo
                 .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
-        })
+        });
     });
     group.bench_function("correlate old func", |b| {
         b.iter(|| {
             lib_algo
                 .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
-        })
+        });
     });
     group.finish();
 }
@@ -65,7 +65,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
             my_algo
                 .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
-        })
+        });
     });
     my_algo.use_conjugation = false;
     group.bench_function("correlate my func + reverse mult", |b| {
@@ -73,7 +73,7 @@ fn correlate_vs_conj(c: &mut Criterion) {
             my_algo
                 .correlate_with_sample(black_box(&data2), mode, false)
                 .unwrap()
-        })
+        });
     });
     group.finish();
 }
@@ -117,7 +117,7 @@ fn mp3_duration_vs_parallel(c: &mut Criterion) {
             BenchmarkId::new("get_mp3_duration", parallel),
             &parallel,
             |b, args| {
-                b.iter(|| mp3_reader::mp3_duration(black_box(&input), black_box(*args)).unwrap())
+                b.iter(|| mp3_reader::mp3_duration(black_box(&input), black_box(*args)).unwrap());
             },
         );
     }
@@ -136,7 +136,7 @@ fn read_mp3(c: &mut Criterion) {
                 .unwrap()
                 .1
                 .collect::<Vec<_>>()
-        })
+        });
     });
 
     group.finish();

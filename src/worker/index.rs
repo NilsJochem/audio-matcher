@@ -467,8 +467,8 @@ impl<'a> MultiIndex<'a> {
     pub fn has_index(&self, series: &OsString) -> bool {
         self.data.contains_key(series)
     }
-    pub fn get_known_index(&mut self, series: OsString) -> Option<&Index<'a>> {
-        self.data.get(&series)
+    pub fn get_known_index(&mut self, series: &OsString) -> Option<&Index<'a>> {
+        self.data.get(series)
     }
 
     pub async fn get_index(&mut self, series: OsString) -> Result<&Index<'a>, Error> {

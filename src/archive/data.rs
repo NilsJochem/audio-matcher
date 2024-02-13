@@ -38,11 +38,11 @@ impl StrOrOsStr for str {
     }
 
     fn push(s: &mut Self::Owned, push: &Self) {
-        s.push_str(push)
+        s.push_str(push);
     }
 
     fn push_char(s: &mut Self::Owned, push: char) {
-        s.push(push)
+        s.push(push);
     }
 }
 impl StrOrOsStr for OsStr {
@@ -52,11 +52,11 @@ impl StrOrOsStr for OsStr {
     }
 
     fn push(s: &mut Self::Owned, push: &Self) {
-        s.push(push)
+        s.push(push);
     }
 
     fn push_char(s: &mut Self::Owned, push: char) {
-        s.push(&push.to_string())
+        s.push(&push.to_string());
     }
 }
 

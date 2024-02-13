@@ -326,7 +326,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         .await
         .unwrap();
 
-    let re = Regex::new(r#"\((d+)\)(.[a-zA-Z0-9]+)?$"#).unwrap();
+    let re = Regex::new(r"\((d+)\)(.[a-zA-Z0-9]+)?$").unwrap();
 
     for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let name = audio_path
@@ -638,7 +638,7 @@ mod rename_labels {
                         .strip_prefix(series)
                         .and_then(|it| it.strip_prefix(' '))
                     {
-                        return if let Some(index) = self.m_index.get_known_index(series.into()) {
+                        return if let Some(index) = self.m_index.get_known_index(&series.into()) {
                             ChapterCompleter::new(index, self.metric.clone())
                                 .get_suggestions(chapter_start)
                                 .map(|res| {
@@ -1246,7 +1246,7 @@ async fn merge_parts<'a>(
         tag.set::<Genre>(args.genre());
         tag.set::<Track>(chapter_number.nr as u32);
 
-        if let Some(index) = m_index.get_index(OsString::from(series)).await.ok() {
+        if let Ok(index) = m_index.get_index(OsString::from(series)).await {
             let entry = index.get(chapter_number);
 
             tag.set::<TotalTracks>(index.main_len() as u32);
