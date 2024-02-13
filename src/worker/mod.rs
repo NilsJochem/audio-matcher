@@ -10,6 +10,7 @@ use common::{
 use futures::TryFutureExt;
 use itertools::{Itertools, Position};
 use log::trace;
+use regex::Regex;
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -325,15 +326,24 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         .await
         .unwrap();
 
-    for (pos, audio_path) in args.audio_paths().iter().with_position() {
-        let label_path = audio_path.with_extension("txt");
-        let audacity_api = audacity_api.get_api_handle().await?;
+    let re = Regex::new(r#"\((d+)\)(.[a-zA-Z0-9]+)?$"#).unwrap();
 
+    for (pos, audio_path) in args.audio_paths().iter().with_position() {
         let name = audio_path
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned();
+
+        if re.is_match(&name) {
+            log::info!("skipping sub file");
+            // TODO maybe run main file
+            continue;
+        }
+
+        let label_path = audio_path.with_extension("txt");
+
+        let audacity_api = audacity_api.get_api_handle().await?;
         let state = already_done.get(&name);
 
         if !args.skip_load() && state.is_none_or(|state| state < progress::State::Loaded) {
@@ -1034,8 +1044,10 @@ mod rename_labels {
                     let old_i = self.labels.remove(self.i);
                     self.labels = get_labels(self.api).await?;
 
-                    if old_i != self.labels[self.i] {
-                        // TODO shift i if it changed
+                    if self.labels.get(self.i).is_some_and(|label| *label != old_i) {
+                        if let Some((i, _)) = self.labels.iter().find_position(|&it| *it == old_i) {
+                            self.i = i;
+                        }
                     }
                 }
                 Command::Restart => {
