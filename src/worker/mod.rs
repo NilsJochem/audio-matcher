@@ -901,16 +901,13 @@ mod rename_labels {
                 )
                 .await?;
                 let (series, chapter_number, chapter_name, part) = loop {
-                    let initial = match self.last_read.as_ref() {
-                        Some((series, nr, _, chapter)) => {
-                            Some(if self.m_index.has_index(&series.into()) {
-                                format!("{series} {nr}")
-                            } else {
-                                format!("{series} {nr} {chapter}") // keep chapter when no index is found
-                            })
+                    let initial = self.last_read.as_ref().map(|(series, nr, _, chapter)| {
+                        if self.m_index.has_index(&series.into()) {
+                            format!("{series} {nr}")
+                        } else {
+                            format!("{series} {nr} {chapter}") // keep chapter when no index is found
                         }
-                        None => None,
-                    };
+                    });
                     let mut ac = FullNameCompleter::new(
                         self.m_index,
                         common::str::filter::Levenshtein::new(true),
