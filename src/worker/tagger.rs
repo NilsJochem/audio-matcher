@@ -323,7 +323,7 @@ mod opus {
                     log::warn!(
                         "more than one comment for {self:?} found: {comments:?}, will append"
                     );
-                    todo!("handle better")
+                    // TODO handle better
                 }
             }
             tag.add_comment((keys[0], value.to_string()));
@@ -629,7 +629,7 @@ impl TaggedFile {
         let value = value.into();
         {
             let ptr = self as *mut Self;
-            // SAFTY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
+            // SAFETY: the reborrow is only needed to inform the borrow checker, that after the if block no borrow remains
             if unsafe { &*ptr }.get::<F>() == value {
                 return;
             }

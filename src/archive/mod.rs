@@ -5,11 +5,7 @@ use log::{debug, warn};
 use shellwords::MismatchedQuotes;
 use thiserror::Error;
 
-use crate::worker::ChapterCompleter;
-use common::args::input::{
-    autocompleter::{self, VecCompleter},
-    Inputs,
-};
+use common::args::input::Inputs;
 
 use self::data::Archive;
 
@@ -137,27 +133,5 @@ impl Iterator for CommandReader {
             log::trace!("read {command:?}");
         };
         Some(command)
-    }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct CliCompleter<'a> {
-    archive: &'a Archive,
-    series_completer: VecCompleter,
-    chapter_completer: Option<ChapterCompleter<'a>>,
-    filter: Box<dyn common::str::filter::StrFilter + Send + Sync>,
-}
-impl<'a> autocompleter::Autocomplete for CliCompleter<'a> {
-    fn get_suggestions(&mut self, _input: &str) -> Result<Vec<String>, autocompleter::Error> {
-        todo!()
-    }
-
-    fn get_completion(
-        &mut self,
-        _input: &str,
-        _highlighted_suggestion: Option<String>,
-    ) -> Result<autocompleter::Replacement, autocompleter::Error> {
-        todo!()
     }
 }

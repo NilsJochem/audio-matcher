@@ -148,10 +148,13 @@ mod progress {
                         if let Some((pos, (old_path, _))) =
                             content.iter().find_position(|&(it, _)| path == it)
                         {
-                            todo!("duplicate at {pos}:{old_path:?} {}:{path:?}", content.len());
-                        } else {
-                            content.push((path.to_owned(), state));
+                            log::warn!(
+                                "duplicate at {pos}:{old_path:?} {}:{path:?}, forgetting old one",
+                                content.len()
+                            );
+                            content.remove(pos);
                         }
+                        content.push((path.to_owned(), state));
                     }
                 }
             }
@@ -176,7 +179,8 @@ mod progress {
             if !self.need_save {
                 return Ok(());
             }
-            todo!("save full file")
+            // TODO
+            unimplemented!("save full file")
         }
         pub async fn append(
             &mut self,
@@ -207,7 +211,8 @@ mod progress {
                     common::io::truncate_last_lines::<1>(&mut file).await?;
                 }
                 Some((Position::First | Position::Middle, _last)) => {
-                    todo!("handle non last occurance");
+                    // TODO needs proper save functionality
+                    unimplemented!("handle non last occurance");
                 }
             }
             file.seek(std::io::SeekFrom::End(0)).await?;
@@ -750,6 +755,7 @@ mod rename_labels {
                             continue;
                         }
                         Err(IdxError::Parse(_, _) | IdxError::Serde(_) | IdxError::IO(_, _)) => {
+                            // SAFETY: we are in the error case
                             Err(unsafe { map.unwrap_err_unchecked() })?;
                         }
                     }

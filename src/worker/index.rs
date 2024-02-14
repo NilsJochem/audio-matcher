@@ -359,7 +359,9 @@ impl<'a> Index<'a> {
                 .main
                 .get(chapter_number.nr - 1)
                 .map(|it| self.fill(it)),
-            IndexPart::SubSeries { subseries: _ } => todo!(),
+            IndexPart::SubSeries { subseries: _ } => {
+                unimplemented!("need more info to get chapter")
+            }
         }
     }
 
