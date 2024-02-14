@@ -83,7 +83,8 @@ impl LazyApi {
     }
 }
 mod progress {
-    use itertools::{Itertools, Position};
+    use common::extensions::iter::IteratorExt;
+    use itertools::Itertools;
     use std::path::PathBuf;
     use tokio::{
         fs,
@@ -124,6 +125,7 @@ mod progress {
         content: Vec<(String, State)>,
         need_save: bool,
     }
+    #[allow(dead_code)]
     impl Progress {
         pub async fn read(path: impl Into<PathBuf> + Send) -> Result<Self, std::io::Error> {
             let mut content = Vec::new();
@@ -137,26 +139,29 @@ mod progress {
                     .await?,
             )
             .lines();
+            let mut line_index = 0usize;
             while let Some(line) = lines.next_line().await? {
                 match line
                     .rsplit_once(' ')
                     .map(|(path, state)| (path, State::try_from(state)))
                 {
-                    None => log::warn!("can't parse"),
-                    Some((path, Err(state))) => log::warn!("unkown state {state:?} for {path}"),
+                    None => log::warn!("can't parse {line_index}:{line:?}, will ignore"),
+                    Some((path, Err(state))) => {
+                        log::warn!("unkown state for {line_index}:{path} {state:?}, will ignore");
+                    }
                     Some((path, Ok(state))) => {
                         if let Some((pos, (old_path, _))) =
                             content.iter().find_position(|&(it, _)| path == it)
                         {
                             log::warn!(
-                                "duplicate at {pos}:{old_path:?} {}:{path:?}, forgetting old one",
-                                content.len()
+                                "duplicate at {pos}:{old_path:?} {line_index}:{path:?}, forgetting old one"
                             );
                             content.remove(pos);
                         }
                         content.push((path.to_owned(), state));
                     }
                 }
+                line_index += 1;
             }
 
             Ok(Self {
@@ -166,7 +171,6 @@ mod progress {
             })
         }
 
-        #[allow(dead_code)]
         pub async fn delete(self) -> std::io::Result<()> {
             if fs::try_exists(&self.file).await? {
                 log::debug!("deleting progress file");
@@ -176,51 +180,106 @@ mod progress {
         }
         #[allow(clippy::unused_async)]
         pub async fn save(&self) -> std::io::Result<()> {
+            // assumes no external change to the file
             if !self.need_save {
                 return Ok(());
             }
-            // TODO
-            unimplemented!("save full file")
+            let mut file = tokio::io::BufWriter::new(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&self.file)
+                    .await?,
+            );
+            for (name, state) in &self.content {
+                file.write_all(build_line(name, *state).as_bytes()).await?;
+            }
+            file.flush().await
         }
         pub async fn append(
             &mut self,
             name: impl AsRef<str> + Send,
             state: State,
         ) -> std::io::Result<()> {
-            // assumes no external change to the file
-            self.save().await?;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .read(true)
-                .create(true)
-                .open(&self.file)
-                .await?;
-
-            let line = format!("{} {state:?}\n", name.as_ref());
-
+            // encode if saving is needed anyway, else prepare a file to try to append to
+            let mut file = if self.need_save {
+                None
+            } else {
+                Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .open(&self.file)
+                        .await?,
+                )
+            };
+            let content_len_without_last = self.content.len().saturating_sub(2);
             match self
                 .content
                 .iter_mut()
-                .with_position()
+                .lzip(
+                    (0..content_len_without_last)
+                        .map(Some)
+                        .chain(std::iter::once(None)),
+                )
                 .filter(|(_, (last_name, _))| last_name.as_str() == name.as_ref())
                 .last()
             {
+                Some((None, (_, old_state))) => {
+                    *old_state = state;
+                    if let Some(file) = file.as_mut() {
+                        common::io::truncate_const_last_lines::<1>(file).await?;
+                    }
+                }
+                Some((Some(pos), _)) => {
+                    file = None; // can't just append, so full save is needet
+                    self.content.remove(pos);
+                    self.content.push((name.as_ref().to_owned(), state));
+                }
                 None => self.content.push((name.as_ref().to_owned(), state)),
-                Some((Position::Last | Position::Only, last)) => {
-                    last.1 = state;
-                    common::io::truncate_last_lines::<1>(&mut file).await?;
-                }
-                Some((Position::First | Position::Middle, _last)) => {
-                    // TODO needs proper save functionality
-                    unimplemented!("handle non last occurance");
-                }
             }
-            file.seek(std::io::SeekFrom::End(0)).await?;
-            file.write_all(line.as_bytes()).await?;
-            file.flush().await
+
+            if let Some(mut file) = file {
+                file.seek(std::io::SeekFrom::End(0)).await?;
+                file.write_all(build_line(name, state).as_bytes()).await?;
+                file.flush().await
+            } else {
+                Ok(())
+            }
         }
-        //todo truncate
-        #[allow(dead_code)]
+        pub async fn truncate_fixed<const LINES: usize>(&mut self) -> std::io::Result<()> {
+            self.content.truncate(LINES);
+            if self.need_save {
+                Ok(()) // if save is already needed, no need to modify the file
+            } else {
+                common::io::truncate_const_last_lines::<LINES>(
+                    &mut fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .open(&self.file)
+                        .await?,
+                )
+                .await
+            }
+        }
+        pub async fn truncate(&mut self, lines: usize) -> std::io::Result<()> {
+            self.content.truncate(lines);
+            if !self.need_save {
+                // only save if not safe already needed
+                let mut file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&self.file)
+                    .await?;
+                common::io::truncate_last_lines(&mut file, lines).await?;
+            }
+            Ok(())
+        }
+
         pub fn set(&mut self, name: String, state: State) {
             // todo try append
             if let Some(last) = self
@@ -235,21 +294,15 @@ mod progress {
             }
             self.need_save = true;
         }
-        #[allow(dead_code)]
-        pub fn remove(&mut self, name: impl AsRef<str>) {
-            if let Some((pos, _)) = self
-                .content
+        pub fn remove(&mut self, name: impl AsRef<str>) -> Option<(String, State)> {
+            self.content
                 .iter()
                 .find_position(|(last_name, _)| last_name.as_str() == name.as_ref())
-            {
-                // todo truncate
-                // if pos == self.content.len()-1 {
-                //  self.truncate(1);
-                //  return;
-                // }
-                self.content.remove(pos);
-                self.need_save = true;
-            }
+                .map(|(pos, _)| pos) // extra map to end borrow of self.content
+                .map(|pos| {
+                    self.need_save = true;
+                    self.content.remove(pos)
+                })
         }
         pub fn get(&self, name: impl AsRef<str>) -> Option<State> {
             self.content
@@ -257,6 +310,9 @@ mod progress {
                 .find(|(last_name, _)| last_name.as_str() == name.as_ref())
                 .map(|(_, state)| *state)
         }
+    }
+    fn build_line(name: impl AsRef<str>, state: State) -> String {
+        format!("{} {state:?}\n", name.as_ref())
     }
 
     #[cfg(test)]
