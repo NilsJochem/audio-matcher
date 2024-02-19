@@ -98,7 +98,11 @@ where
         .tuple_windows()
         .lzip(1..)
         .map(move |(i, (start, end))| {
-            TimeLabel::new_with_pattern(start + delay_start, end, i, name_pattern)
+            TimeLabel::new::<String>(
+                start + delay_start,
+                end,
+                Some(name_pattern.replace('#', &i.to_string())),
+            )
         })
 }
 #[derive(Debug, Clone)]
@@ -161,19 +165,18 @@ impl Archive {
         for (source, labels) in value {
             for label in labels {
                 if label
-                    .name
-                    .as_deref()
+                    .name()
                     .is_some_and(|name| name.strip_prefix('#').is_some())
                 {
-                    debug!("skipping {:?}", label.name);
+                    debug!("skipping {:?}", label.name());
                     continue;
                 }
                 let Some((series_name, ch_nr, _, chapter_name)) =
-                    Self::parse_line(label.name.as_ref().map_or("", String::as_str))
+                    label.name().and_then(Self::parse_line)
                 else {
                     warn!(
                         "name {:?} in {source} couldn't be parsed to Series",
-                        label.name
+                        label.name()
                     );
                     continue;
                 };

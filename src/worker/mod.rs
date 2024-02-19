@@ -44,9 +44,29 @@ pub enum Error {
     Index(#[from] index::Error),
     Move(#[from] MoveError),
     Launch(#[from] audacity::LaunchError),
-    Audacity(#[from] audacity::Error),
+    Audacity(Box<dyn std::error::Error>),
     #[error("id3 Error {1} for {0:?}")]
     Tag(PathBuf, #[source] tagger::Error),
+}
+impl From<audacity::ConnectionError> for Error {
+    fn from(value: audacity::ConnectionError) -> Self {
+        Self::Audacity(value.into())
+    }
+}
+impl From<audacity::ExportLabelError> for Error {
+    fn from(value: audacity::ExportLabelError) -> Self {
+        Self::Audacity(value.into())
+    }
+}
+impl From<audacity::ImportLabelError> for Error {
+    fn from(value: audacity::ImportLabelError) -> Self {
+        Self::Audacity(value.into())
+    }
+}
+impl From<audacity::ImportAudioError> for Error {
+    fn from(value: audacity::ImportAudioError) -> Self {
+        Self::Audacity(value.into())
+    }
 }
 
 #[allow(dead_code)]
@@ -215,7 +235,7 @@ mod progress {
                         .await?,
                 )
             };
-            let content_len_without_last = self.content.len().saturating_sub(2);
+            let content_len_without_last = self.content.len().saturating_sub(1);
             match self
                 .content
                 .iter_mut()
@@ -420,7 +440,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
         // start rename
         if !args.skip_name() && state.is_none_or(|state| state < progress::State::Named) {
             audacity_api
-                .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+                .zoom_to(
+                    audacity::data::Selection::All,
+                    audacity::data::Save::Discard,
+                )
                 .await?;
             let _ = Inputs::read("press enter when you are ready to start renaming", None);
 
@@ -435,7 +458,10 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
             }
 
             audacity_api
-                .zoom_to(audacity::Selection::All, audacity::Save::Discard)
+                .zoom_to(
+                    audacity::data::Selection::All,
+                    audacity::data::Save::Discard,
+                )
                 .await?;
             audacity_api
                 .export_all_labels_to(label_path, args.dry_run())
@@ -454,7 +480,7 @@ pub async fn run(args: &Arguments) -> Result<(), Error> {
                 args,
                 audacity_api,
                 m_index.as_mut().expect("need index"),
-                audacity::TrackHint::LabelTrackNr(0),
+                audacity::data::TrackHint::LabelTrackNr(0),
             )
             .await?;
             let _ = Inputs::read(
@@ -518,7 +544,7 @@ async fn prepare_project(
     audacity: &mut AudacityApi,
     audio_path: impl AsRef<Path> + Send,
     label_path: impl AsRef<Path> + Send + Sync,
-) -> Result<(), audacity::Error> {
+) -> Result<(), Error> {
     trace!("opened audacity");
     if audacity.get_track_info().await?.is_empty() {
         trace!("no need to open new project");
@@ -765,10 +791,12 @@ mod rename_labels {
 
     async fn get_labels(api: &mut AudacityApi) -> Result<Vec<TimeLabel>, Error> {
         let labels = api.get_label_info().await?;
-        Ok(labels
-            .into_values()
-            .exactly_one()
-            .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())))
+        Ok::<_, Error>(
+            labels
+                .into_values()
+                .exactly_one()
+                .unwrap_or_else(|err| panic!("expecting one label track, but got {}", err.len())),
+        )
     }
     fn request_next_chapter_name() -> String {
         Inputs::read("Wie hei\u{df}t die n\u{e4}chste Folge: ", None)
@@ -1065,10 +1093,10 @@ mod rename_labels {
                     // assumes no overlapping labels in this track so no reload of labels is needed
                     let label_delete = self.labels.remove(self.i);
                     self.api
-                        .select(audacity::Selection::Part {
-                            start: label_delete.start,
-                            end: label_delete.end,
-                            relative_to: audacity::RelativeTo::ProjectStart,
+                        .select(audacity::data::Selection::Part {
+                            start: *label_delete.start(),
+                            end: *label_delete.end(),
+                            relative_to: audacity::data::RelativeTo::ProjectStart,
                         })
                         .await?;
                     self.api.select_tracks(std::iter::once(1)).await?;
@@ -1076,7 +1104,13 @@ mod rename_labels {
                         .write_assume_empty(audacity::command::SplitDelete)
                         .await?;
                     self.api
-                        .set_label(self.i - 1, None::<&str>, None, Some(label_delete.end), None)
+                        .set_label(
+                            self.i - 1,
+                            None::<&str>,
+                            None,
+                            Some(*label_delete.end()),
+                            None,
+                        )
                         .await?;
                 }
             }
@@ -1084,7 +1118,9 @@ mod rename_labels {
         }
     }
 
-    pub async fn adjust_labels(audacity: &mut AudacityApi) -> Result<(), audacity::Error> {
+    pub async fn adjust_labels(
+        audacity: &mut AudacityApi,
+    ) -> Result<(), audacity::ConnectionError> {
         let labels = audacity.get_label_info().await?; // get new labels
 
         for element in labels.values().flatten().open_border_pairs() {
@@ -1100,19 +1136,19 @@ mod rename_labels {
     async fn zoom_to_label(
         api: &mut audacity::AudacityApi,
         label: State<&TimeLabel>,
-    ) -> Result<(), audacity::Error> {
+    ) -> Result<(), audacity::ConnectionError> {
         let (prev_end, next_start) = match label {
-            State::Start(a) => (a.start, a.start + Duration::from_secs(10)),
-            State::Middle(a, b) => (a.end, b.start),
-            State::End(b) => (b.end, b.end + Duration::from_secs(10)),
+            State::Start(a) => (a.start(), *a.start() + Duration::from_secs(10)),
+            State::Middle(a, b) => (a.end(), *b.start()),
+            State::End(b) => (b.end(), *b.end() + Duration::from_secs(10)),
         };
         api.zoom_to(
-            audacity::Selection::Part {
-                start: prev_end - Duration::from_secs(10),
+            audacity::data::Selection::Part {
+                start: *prev_end - Duration::from_secs(10),
                 end: next_start + Duration::from_secs(10),
-                relative_to: audacity::RelativeTo::ProjectStart,
+                relative_to: audacity::data::RelativeTo::ProjectStart,
             },
-            audacity::Save::Discard,
+            audacity::data::Save::Discard,
         )
         .await
     }
@@ -1166,9 +1202,12 @@ async fn merge_parts<'a>(
     args: &Arguments,
     audacity: &mut audacity::AudacityApi,
     m_index: &mut MultiIndex<'a>,
-    hint: audacity::TrackHint,
-) -> Result<Vec<TaggedFile>, audacity::Error> {
-    let label_track_nr = hint.get_label_track_nr(audacity).await?;
+    hint: audacity::data::TrackHint,
+) -> Result<Vec<TaggedFile>, audacity::ConnectionError> {
+    let label_track_nr = hint
+        .get_label_track_nr(audacity)
+        .await?
+        .expect("no track found");
     let labels = audacity
         .get_label_info()
         .await?
@@ -1180,13 +1219,14 @@ async fn merge_parts<'a>(
         .await?;
     let grouped_labels = labels.iter().into_group_map_by(|label| {
         let Some((series, nr, _, chapter)) =
-            crate::archive::data::Archive::parse_line(label.name.as_ref().unwrap())
+            crate::archive::data::Archive::parse_line(label.name().unwrap())
         else {
-            panic!("couldn't parse {:?}", label.name.as_ref().unwrap());
+            panic!("couldn't parse {:?}", label.name().unwrap());
         };
         (series, nr, chapter)
     });
-    let hint = audacity::TrackHint::TrackNr(audacity.add_label_track(Some("merged")).await?).into();
+    let hint =
+        audacity::data::TrackHint::TrackNr(audacity.add_label_track(Some("merged")).await?).into();
     for (group, labels) in grouped_labels.iter().filter(|(_, value)| value.len() > 1) {
         let mut name = format!("{} {}", group.0, group.1);
         if let Some(chapter) = group.2 {
@@ -1194,9 +1234,9 @@ async fn merge_parts<'a>(
         }
         let _ = audacity
             .add_label(
-                audacity::data::TimeLabel::new(
-                    labels.first().unwrap().start,
-                    labels.last().unwrap().end,
+                audacity::data::TimeLabel::new::<String>(
+                    *labels.first().unwrap().start(),
+                    *labels.last().unwrap().end(),
                     Some(name),
                 ),
                 Some(hint),
@@ -1212,10 +1252,10 @@ async fn merge_parts<'a>(
     {
         for (b, a) in labels.iter().rev().tuple_windows() {
             audacity
-                .select(audacity::Selection::Part {
-                    start: a.end,
-                    end: b.start,
-                    relative_to: audacity::RelativeTo::ProjectStart,
+                .select(audacity::data::Selection::Part {
+                    start: *a.end(),
+                    end: *b.start(),
+                    relative_to: audacity::data::RelativeTo::ProjectStart,
                 })
                 .await?;
 
@@ -1294,17 +1334,17 @@ where
         .map(|labels| {
             let mut iter = labels.into_iter().peekable();
             let first = iter.peek().expect("need at least one element");
-            let point_zero = first.start - deleted;
-            let mut last = first.start;
+            let point_zero = *first.start() - deleted;
+            let mut last = first.start();
             let mut out = Vec::new();
             for (pos, label) in iter.with_position() {
-                deleted += label.start - last;
+                deleted += *label.start() - *last;
 
                 match pos {
                     Position::Last | Position::Only => {}
                     Position::First | Position::Middle => {
-                        last = label.end;
-                        out.push(label.end - point_zero - deleted);
+                        last = label.end();
+                        out.push(*label.end() - point_zero - deleted);
                     }
                 }
             }
@@ -1323,27 +1363,27 @@ mod tests {
     #[test]
     fn calc_offsets() {
         let labels = [
-            TimeLabel::new(
+            TimeLabel::new::<&str>(
                 duration_from_h_m_s_m(0, 3, 25, 372),
                 duration_from_h_m_s_m(0, 24, 15, 860),
                 None,
             ),
-            TimeLabel::new(
+            TimeLabel::new::<&str>(
                 duration_from_h_m_s_m(0, 24, 23, 90),
                 duration_from_h_m_s_m(0, 46, 37, 240),
                 None,
             ),
-            TimeLabel::new(
+            TimeLabel::new::<&str>(
                 duration_from_h_m_s_m(0, 46, 43, 970),
                 duration_from_h_m_s_m(1, 6, 24, 170),
                 None,
             ),
-            TimeLabel::new(
+            TimeLabel::new::<&str>(
                 duration_from_h_m_s_m(1, 6, 46, 170),
                 duration_from_h_m_s_m(1, 30, 32, 490),
                 None,
             ),
-            TimeLabel::new(
+            TimeLabel::new::<&str>(
                 duration_from_h_m_s_m(1, 30, 39, 830),
                 duration_from_h_m_s_m(1, 55, 4, 930),
                 None,
